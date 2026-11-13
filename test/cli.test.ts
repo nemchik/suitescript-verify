@@ -299,3 +299,89 @@ describe(".env.local must be gitignored", () => {
     assert.equal(cli(["deploy"], project).status, 0);
   });
 });
+
+describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
+  const roleKey = "SUITESCRIPT_VERIFY_ROLE_ID";
+  const sdfFile = (project: string, file: string) =>
+    readFileSync(join(project, "verification", "sdf", "src", file), "utf8");
+  const runner = "Objects/customscript_suitescript_verify_runner.xml";
+
+  it("defaults to customrole_suitescript_verify in the manifest and the runner", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      sdfFile(project, "manifest.xml"),
+      /<object>customrole_suitescript_verify<\/object>/,
+    );
+    assert.match(
+      sdfFile(project, runner),
+      /<audslctrole>\[customrole_suitescript_verify\]<\/audslctrole>/,
+    );
+  });
+
+  it("is overridden from the committed .env and used in both files", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${roleKey}=customrole_my_runner\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      sdfFile(project, "manifest.xml"),
+      /<object>customrole_my_runner<\/object>/,
+    );
+    assert.match(
+      sdfFile(project, runner),
+      /<audslctrole>\[customrole_my_runner\]<\/audslctrole>/,
+    );
+  });
+
+  it("layers: the process environment wins over .env", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${roleKey}=customrole_from_file\n`);
+    assert.equal(
+      cli(["deploy"], project, { [roleKey]: "customrole_from_env" }).status,
+      0,
+    );
+    assert.match(sdfFile(project, "manifest.xml"), /customrole_from_env/);
+  });
+
+  for (const value of [
+    "role_without_prefix",
+    "customrole_Upper",
+    "customrole_-",
+    "customrole_a</object>",
+  ]) {
+    it(`refuses ${JSON.stringify(value)}, names the key and never prints the value`, () => {
+      const project = fakeProject();
+      write(project, "verification/.env", `${roleKey}=${value}\n`);
+      const result = cli(["deploy"], project);
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes(roleKey), result.stderr);
+      assert.equal((result.stdout + result.stderr).includes(value), false);
+      assert.equal(existsSync(join(project, "calls.json")), false);
+    });
+  }
+
+  it("refuses a bad value from the process environment too", () => {
+    const project = fakeProject();
+    const result = cli(["deploy"], project, { [roleKey]: "nope" });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(roleKey));
+    assert.equal(result.stderr.includes("nope"), false);
+  });
+
+  it("accepts a long valid id that is not a secret", () => {
+    const project = fakeProject();
+    write(
+      project,
+      "verification/.env",
+      `${roleKey}=customrole_${"a".repeat(40)}\n`,
+    );
+    assert.equal(cli(["deploy"], project).status, 0);
+  });
+
+  it("doctor reports the role id in use", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${roleKey}=customrole_my_runner\n`);
+    const out = cli(["doctor"], project).stdout;
+    assert.match(out, /Runner role id: customrole_my_runner/);
+  });
+});

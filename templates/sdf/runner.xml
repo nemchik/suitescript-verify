@@ -7,7 +7,7 @@
   <scriptdeployments>
     <scriptdeployment scriptid="customdeploy_suitescript_verify_runner">
       <allroles>F</allroles>
-      <audslctrole>[customrole_suitescript_verify]</audslctrole>
+      <audslctrole>[%%ROLE_ID%%]</audslctrole>
       <isdeployed>%%DEPLOYED%%</isdeployed>
       <loglevel>DEBUG</loglevel>
       <status>RELEASED</status>

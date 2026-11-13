@@ -159,6 +159,8 @@ export function runChecks(
       : "Run account:setup:ci from the SDF folder once the steps above pass, so project.json gets a default auth id.",
   );
 
+  add(`Runner role id: ${config.roleId}`, true, "agent", "");
+
   return checks;
 }
 

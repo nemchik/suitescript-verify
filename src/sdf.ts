@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { defaultRoleId } from "./config.ts";
 import { fileCabinetFolder } from "./netsuite.ts";
 import {
   isRestlet,
@@ -53,7 +54,8 @@ export function buildSdfProject(
   {
     deployed,
     extraTags = [],
-  }: { deployed: boolean; extraTags?: readonly string[] },
+    roleId = defaultRoleId,
+  }: { deployed: boolean; extraTags?: readonly string[]; roleId?: string },
 ): { files: string[]; slugs: string[] } {
   const probes = listProbes(probesDir, extraTags).filter(isRestlet);
   const bad = probes.filter((probe) => tagProblems(probe).length > 0);
@@ -74,11 +76,16 @@ export function buildSdfProject(
     join(sdfDir, "suitecloud.config.js"),
     template("sdf/suitecloud.config.js"),
   );
-  writeFileSync(join(src, "manifest.xml"), template("sdf/manifest.xml"));
+  writeFileSync(
+    join(src, "manifest.xml"),
+    template("sdf/manifest.xml").replaceAll("%%ROLE_ID%%", roleId),
+  );
   writeFileSync(join(src, "deploy.xml"), template("sdf/deploy.xml"));
   writeFileSync(
     join(src, "Objects", "customscript_suitescript_verify_runner.xml"),
-    template("sdf/runner.xml").replace("%%DEPLOYED%%", deployed ? "T" : "F"),
+    template("sdf/runner.xml")
+      .replace("%%DEPLOYED%%", deployed ? "T" : "F")
+      .replaceAll("%%ROLE_ID%%", roleId),
   );
   const slugs = probes.map((probe) => probe.slug);
   const files = ["runner.js"];

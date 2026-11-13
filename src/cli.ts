@@ -4,6 +4,7 @@ import { certificate } from "./certificate.ts";
 import {
   type Config,
   loadConfig,
+  resultsDirGuidance,
   resultsDirKey,
   suggestedResultsDir,
 } from "./config.ts";
@@ -84,7 +85,7 @@ async function chooseResultsDir(
   if (config.resultsDir !== undefined || flagged !== undefined) return flagged;
   if (!process.stdin.isTTY) {
     throw new UsageError(
-      `${resultsDirKey} is not set, and the results folder is the project's choice. Rerun with --results-dir <path>, for example --results-dir ${suggestedResultsDir} (the suggested value), or set ${resultsDirKey} in the committed .env. Nothing was created.`,
+      `${resultsDirKey} is not set. ${resultsDirGuidance} Nothing was created.`,
     );
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });

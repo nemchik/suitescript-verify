@@ -609,6 +609,12 @@ describe("run", () => {
       });
       assert.equal(bare.status, 1, bare.all);
       assert.match(bare.all, /SUITESCRIPT_VERIFY_RESULTS_DIR is not set/);
+      assert.ok(
+        bare.all.includes(
+          "Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (docs/verification/results is the suggested value) or set SUITESCRIPT_VERIFY_RESULTS_DIR in the committed .env.",
+        ),
+        bare.all,
+      );
     });
 
     it("never overwrites an existing page", () => {

@@ -80,6 +80,9 @@ const pem = (key: KeyObject) =>
   key.export({ format: "pem", type: "pkcs8" }).toString();
 
 const suggested = ["--results-dir", "docs/verification/results"];
+/** The one sentence every command gives when the results folder is not chosen. */
+const resultsGuidance =
+  "Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (docs/verification/results is the suggested value) or set SUITESCRIPT_VERIFY_RESULTS_DIR in the committed .env.";
 
 describe("init", () => {
   it("will not choose the results folder for the project", () => {
@@ -91,6 +94,15 @@ describe("init", () => {
     assert.match(result.stderr, /docs\/verification\/results/);
     assert.equal(existsSync(join(project, "verification")), false);
     assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("gives init and doctor the same results folder guidance", () => {
+    const project = empty();
+    const fromInit = cli(["init"], project).stderr;
+    const fromDoctor = cli(["doctor"], project).stdout;
+    for (const text of [fromInit, fromDoctor]) {
+      assert.ok(text.includes(resultsGuidance), text);
+    }
   });
 
   it("writes the chosen results folder to the committed .env and creates it", () => {

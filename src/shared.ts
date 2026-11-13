@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { type Config, resultsDirKey, suggestedResultsDir } from "./config.ts";
+import { type Config, resultsDirGuidance, resultsDirKey } from "./config.ts";
 import { isSandboxAccount, names } from "./doctor.ts";
 import { applyEnvUpdate, planEnvUpdate } from "./envfile.ts";
 
@@ -147,9 +147,7 @@ export async function saveEnv(
 /** The results folder, or a refusal naming the key: the package imposes no layout for results. */
 export function requireResultsDir(config: Config): string {
   if (config.resultsDir === undefined) {
-    throw new UsageError(
-      `${resultsDirKey} is not set. Choose where results pages live in your project and set it in the committed .env (suitescript-verify init --results-dir <path> does this; ${suggestedResultsDir} is the suggested value).`,
-    );
+    throw new UsageError(`${resultsDirKey} is not set. ${resultsDirGuidance}`);
   }
   return config.resultsDir;
 }

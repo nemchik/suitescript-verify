@@ -15,6 +15,9 @@ export const resultsDirKey = "SUITESCRIPT_VERIFY_RESULTS_DIR";
 /** What `init` suggests for the results folder; it is never applied without the project's say-so. */
 export const suggestedResultsDir = "docs/verification/results";
 
+/** What every command says when the results folder is not chosen: one sentence, so the commands cannot drift apart. */
+export const resultsDirGuidance = `Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (${suggestedResultsDir} is the suggested value) or set ${resultsDirKey} in the committed .env.`;
+
 /** The committed `.env` may also register extra probe tags: a comma-separated list of tag names, not a path. */
 export const extraTagsKey = "SUITESCRIPT_VERIFY_EXTRA_TAGS";
 

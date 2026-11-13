@@ -13,13 +13,32 @@ function packedFiles(): string[] {
   });
   assert.equal(result.status, 0, result.stderr);
   const [pack] = JSON.parse(result.stdout) as { files: { path: string }[] }[];
-  return (pack?.files ?? []).map((file) => file.path);
+  assert.ok(pack, "npm pack reported no package");
+  return pack.files.map((file) => file.path);
 }
+
+/** What a published version must hold; a build that is missing fails here instead of passing the stray check on an empty list. */
+const required = [
+  "LICENSE",
+  "README.md",
+  "dist/bin/suitescript-verify.js",
+  "dist/cli.js",
+  "package.json",
+  "templates/runner.template.js",
+  "templates/sdf/manifest.xml",
+];
 
 describe("the published package", () => {
   const files = packedFiles();
 
-  it("holds only the compiled code, the templates, the README, the license and package.json", () => {
+  it("holds the built CLI, its templates, the README, the license and package.json", () => {
+    assert.deepEqual(
+      required.filter((file) => !files.includes(file)),
+      [],
+    );
+  });
+
+  it("holds nothing else", () => {
     const allowed = [
       /^dist\//,
       /^templates\//,
@@ -29,11 +48,6 @@ describe("the published package", () => {
     ];
     const stray = files.filter((file) => !allowed.some((a) => a.test(file)));
     assert.deepEqual(stray, []);
-  });
-
-  it("ships the built CLI and its templates", () => {
-    assert.ok(files.includes("dist/bin/suitescript-verify.js"));
-    assert.ok(files.includes("templates/runner.template.js"));
   });
 
   it("carries no verification results, credentials or the repository's own docs and tests", () => {

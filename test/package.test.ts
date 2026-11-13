@@ -12,7 +12,10 @@ function packedFiles(): string[] {
     shell: true,
   });
   assert.equal(result.status, 0, result.stderr);
-  const [pack] = JSON.parse(result.stdout) as { files: { path: string }[] }[];
+  // npm 11 prints an array of packages; npm 12 prints an object keyed by name.
+  type Pack = { files: { path: string }[] };
+  const parsed = JSON.parse(result.stdout) as Pack[] | Record<string, Pack>;
+  const [pack] = Array.isArray(parsed) ? parsed : Object.values(parsed);
   assert.ok(pack, "npm pack reported no package");
   return pack.files.map((file) => file.path);
 }

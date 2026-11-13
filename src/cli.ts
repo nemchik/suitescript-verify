@@ -118,10 +118,27 @@ async function cleanup(args: string[]): Promise<number> {
   ]);
 }
 
+const CI_SETTINGS = [
+  "ACCOUNT",
+  "CLIENT_ID",
+  "CERTIFICATE_ID",
+  "PRIVATE_KEY_PATH",
+  "SDF_CERTIFICATE_ID",
+  "SDF_PRIVATE_KEY_PATH",
+  "PASSKEY",
+].map((name) => `  SUITESCRIPT_VERIFY_${name}`);
+
+const CI_NOTES = [
+  "",
+  "Registered the SDF credentials with the SuiteCloud CLI. To run probes from a pipeline, the pipeline supplies these settings as its own secrets and variables (names only; this command wrote none and holds no value):",
+  ...CI_SETTINGS,
+  "Accept Oracle's SuiteCloud license yourself in the pipeline; this package never does.",
+].join("\n");
+
 function setupCi(args: string[]): number {
   const config = configure(args, true);
   const creds = requireSandbox(config);
-  return suitecloud(process.cwd(), config, [
+  const status = suitecloud(process.cwd(), config, [
     "account:setup:ci",
     "--account",
     creds.account,
@@ -135,6 +152,8 @@ function setupCi(args: string[]): number {
       ? ["--domain", config.values.SUITESCRIPT_VERIFY_DOMAIN]
       : []),
   ]);
+  if (status === 0) console.log(CI_NOTES);
+  return status;
 }
 
 async function envCommand(args: string[]): Promise<number> {

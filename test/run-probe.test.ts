@@ -281,6 +281,78 @@ describe("setup-ci", () => {
     assert.ok(args.includes("cert-sdf-id"));
     assert.ok(!args.includes("cert-runner-id"));
   });
+
+  const ci = (p: Project) =>
+    cli(p, ["setup-ci"], { SUITESCRIPT_VERIFY_PASSKEY: "ci-passkey-5555" });
+
+  it("lists the names the pipeline must supply, never a value", () => {
+    const p = project();
+    const result = ci(p);
+    assert.equal(result.status, 0, result.all);
+    for (const name of [
+      "SUITESCRIPT_VERIFY_ACCOUNT",
+      "SUITESCRIPT_VERIFY_CLIENT_ID",
+      "SUITESCRIPT_VERIFY_CERTIFICATE_ID",
+      "SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH",
+      "SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID",
+      "SUITESCRIPT_VERIFY_SDF_PRIVATE_KEY_PATH",
+      "SUITESCRIPT_VERIFY_PASSKEY",
+    ]) {
+      assert.match(result.stdout, new RegExp(name));
+    }
+    for (const value of [
+      "ci-passkey-5555",
+      "cert-sdf-id",
+      "cert-runner-id",
+      p.env.SUITESCRIPT_VERIFY_ACCOUNT ?? "never",
+      p.env.SUITESCRIPT_VERIFY_CLIENT_ID ?? "never",
+    ]) {
+      assert.equal(result.all.includes(value), false, value);
+    }
+  });
+
+  it("leaves the license to the person and sets no variable for it", () => {
+    const p = project();
+    const result = ci(p);
+    assert.match(result.stdout, /accept .*license.* yourself/i);
+    assert.equal(calls(p).license, null);
+  });
+
+  it("writes no credential or license variable and no file", () => {
+    const p = project();
+    const before = readdirSync(p.dir, {
+      encoding: "utf8",
+      recursive: true,
+    }).sort();
+    const result = ci(p);
+    assert.equal(result.status, 0, result.all);
+    assert.equal(existsSync(join(p.dir, "verification", ".env.local")), false);
+    assert.equal(existsSync(join(p.dir, "verification", ".env")), false);
+    const after = readdirSync(p.dir, {
+      encoding: "utf8",
+      recursive: true,
+    }).sort();
+    const added = after.filter((f) => !before.includes(f));
+    assert.deepEqual(
+      added.filter((f) => !f.startsWith("calls.json")),
+      [],
+    );
+  });
+
+  it("hands the CLI the passkey through the environment, not the arguments", () => {
+    const p = project();
+    ci(p);
+    assert.equal(calls(p).args.join(" ").includes("ci-passkey-5555"), false);
+  });
+
+  it("prints no list when the CLI fails", () => {
+    const p = project();
+    const result = cli(p, ["setup-ci"], {
+      SUITESCRIPT_VERIFY_ACCOUNT: "123_RP",
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /pipeline/);
+  });
 });
 
 describe("passkey and env", () => {

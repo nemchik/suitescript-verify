@@ -1,6 +1,6 @@
 {
   "name": "suitescript-verify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run probes in a NetSuite sandbox to verify what SuiteScript modules do, with guardrails for agents.",
   "keywords": [
     "suitescript",

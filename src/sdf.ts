@@ -1,7 +1,13 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileCabinetFolder } from "./netsuite.ts";
-import { isRestlet, listProbes, type Probe, read } from "./probes.ts";
+import {
+  isRestlet,
+  listProbes,
+  type Probe,
+  read,
+  tagProblems,
+} from "./probes.ts";
 import { UsageError } from "./shared.ts";
 
 const templates = new URL("../templates/", import.meta.url);
@@ -44,14 +50,17 @@ export function generateRunner(
 export function buildSdfProject(
   sdfDir: string,
   probesDir: string,
-  { deployed }: { deployed: boolean },
+  {
+    deployed,
+    extraTags = [],
+  }: { deployed: boolean; extraTags?: readonly string[] },
 ): { files: string[]; slugs: string[] } {
-  const probes = listProbes(probesDir).filter(isRestlet);
-  const bad = probes.filter((probe) => probe.paramProblems.length > 0);
+  const probes = listProbes(probesDir, extraTags).filter(isRestlet);
+  const bad = probes.filter((probe) => tagProblems(probe).length > 0);
   if (bad.length > 0) {
     throw new UsageError(
-      `Fix the probe parameters before deploying:\n${bad
-        .flatMap((p) => p.paramProblems.map((m) => `- ${p.slug}: ${m}`))
+      `Fix the probe tags before deploying:\n${bad
+        .flatMap((p) => tagProblems(p).map((m) => `- ${p.slug}: ${m}`))
         .join("\n")}`,
     );
   }

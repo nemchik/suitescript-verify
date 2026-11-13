@@ -79,6 +79,7 @@ async function deploy(args: string[]): Promise<number> {
   requireSandbox(config);
   const { files, slugs } = buildSdfProject(config.sdfDir, config.probesDir, {
     deployed: true,
+    extraTags: config.extraTags,
   });
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
   console.log(`Files to upload: ${files.join(", ")}`);
@@ -107,7 +108,10 @@ async function cleanup(args: string[]): Promise<number> {
       "Dry run only. This turns the runner's deployment off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
     );
   }
-  buildSdfProject(config.sdfDir, config.probesDir, { deployed: false });
+  buildSdfProject(config.sdfDir, config.probesDir, {
+    deployed: false,
+    extraTags: config.extraTags,
+  });
   return suitecloud(project, config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),

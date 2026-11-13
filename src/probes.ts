@@ -17,6 +17,8 @@ export interface Probe {
   params: ProbeParam[];
   scriptType: string;
   slug: string;
+  /** Tags in the block that neither the package nor the project registered. */
+  unknownTags: string[];
   writes: boolean;
 }
 
@@ -57,29 +59,70 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
   return { paramProblems, params };
 }
 
-/** Reads the tags in a probe's leading JSDoc block. Tags the package does not know are ignored. */
-export function parseProbe(slug: string, source: string): Probe {
+/** The tags the package gives meaning to, and the ordinary NetSuite and JSDoc ones it lets through. */
+const builtinTags = new Set(
+  [
+    "scriptType",
+    "writes",
+    "param",
+    "NApiVersion",
+    "NScriptType",
+    "NModuleScope",
+    "see",
+    "link",
+    "example",
+    "returns",
+    "since",
+    "deprecated",
+  ].map((name) => name.toLowerCase()),
+);
+
+/**
+ * Reads the tags in a probe's leading JSDoc block. A tag that is neither the
+ * package's own nor in `extraTags` (registered by the project) is reported.
+ */
+export function parseProbe(
+  slug: string,
+  source: string,
+  extraTags: readonly string[] = [],
+): Probe {
   const block = /^\s*\/\*\*([\s\S]*?)\*\//.exec(source)?.[1] ?? "";
   const tags = (name: string) =>
     [...block.matchAll(new RegExp(`@${name}\\b[ \\t]*([^\\n*]*)`, "g"))].map(
       (match) => (match[1] ?? "").trim(),
     );
+  const registered = new Set(extraTags.map((name) => name.toLowerCase()));
+  const unknownTags = [
+    ...new Set(
+      [...block.matchAll(/^[ \t]*\*?[ \t]*@([A-Za-z][\w-]*)/gm)].map(
+        (match) => match[1] ?? "",
+      ),
+    ),
+  ].filter(
+    (name) =>
+      !builtinTags.has(name.toLowerCase()) &&
+      !registered.has(name.toLowerCase()),
+  );
   return {
     ...parseParams(block),
     scriptType: tags("scriptType")[0] ?? "",
     slug,
+    unknownTags,
     writes: tags("writes").length > 0,
   };
 }
 
-export function listProbes(dir: string): Probe[] {
+export function listProbes(
+  dir: string,
+  extraTags: readonly string[] = [],
+): Probe[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((file) => file.endsWith(".js"))
     .map((file) => file.replace(/\.js$/, ""))
     .filter(isSlug)
     .sort()
-    .map((slug) => parseProbe(slug, read(join(dir, `${slug}.js`))));
+    .map((slug) => parseProbe(slug, read(join(dir, `${slug}.js`)), extraTags));
 }
 
 export const isRestlet = (probe: Probe) =>
@@ -93,3 +136,12 @@ export function readExpect(slug: string, dir: string): unknown {
 
 export const matchesExpect = (result: unknown, expected: unknown) =>
   isDeepStrictEqual(result, expected);
+
+/** What is wrong with a probe's tags, for the commands that refuse to run it. */
+export const tagProblems = (probe: Probe) => [
+  ...probe.paramProblems,
+  ...probe.unknownTags.map(
+    (name) =>
+      `@${name} is not a tag the package knows; register it with SUITESCRIPT_VERIFY_EXTRA_TAGS=${name}`,
+  ),
+];

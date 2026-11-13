@@ -677,3 +677,68 @@ describe("probe parameters", () => {
     assert.equal(seen.length, 1);
   });
 });
+
+describe("extra probe tags", () => {
+  const tagged = "@scriptType Restlet\n * @flavor sweet";
+  const withTag = (p: Project) =>
+    write(p.dir, "verification/probes/one.js", probeSource(tagged));
+
+  it("reports an unregistered unknown tag on run and deploy, before any request", () => {
+    const p = project();
+    withTag(p);
+    p.script(...ok({ result: {}, version: "1" }));
+    const run = cli(p, ["run", "one"]);
+    assert.equal(run.status, 1, run.all);
+    assert.match(run.stderr, /one.*@flavor/s);
+    assert.deepEqual(p.requests(), []);
+    const deploy = cli(p, ["deploy"]);
+    assert.equal(deploy.status, 1);
+    assert.match(deploy.stderr, /@flavor/);
+  });
+
+  it("accepts a tag registered in the process environment, .env.local or the committed .env", () => {
+    const p = project();
+    withTag(p);
+    p.script(...ok({ result: {}, version: "1" }));
+    const env = { SUITESCRIPT_VERIFY_EXTRA_TAGS: "flavor, other" };
+    assert.equal(cli(p, ["run", "one"], env).status, 0);
+    write(p.dir, "verification/.env", "SUITESCRIPT_VERIFY_EXTRA_TAGS=flavor\n");
+    const committed = cli(p, ["deploy"]);
+    assert.equal(committed.status, 0, committed.all);
+    assert.doesNotMatch(committed.all, /not a layout key/);
+  });
+
+  it("still validates the built-in tags when extras are registered", () => {
+    const p = project();
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource("@scriptType Restlet\n * @param bad"),
+    );
+    const result = cli(p, ["run", "one"], {
+      SUITESCRIPT_VERIFY_EXTRA_TAGS: "flavor",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /@param/);
+  });
+
+  it("rejects a committed registration that is not a list of tag names, or looks like a secret", () => {
+    const p = project();
+    withTag(p);
+    for (const value of [
+      "../../etc",
+      "a".repeat(40),
+      "-----BEGIN PRIVATE KEY-----",
+    ]) {
+      write(
+        p.dir,
+        "verification/.env",
+        `SUITESCRIPT_VERIFY_EXTRA_TAGS=${value}\n`,
+      );
+      const result = cli(p, ["deploy"]);
+      assert.equal(result.status, 1, value);
+      assert.match(result.all, /SUITESCRIPT_VERIFY_EXTRA_TAGS/);
+      assert.equal(result.all.includes(value), false);
+    }
+  });
+});

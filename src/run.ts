@@ -11,6 +11,7 @@ import {
   type Probe,
   read,
   readExpect,
+  tagProblems,
 } from "./probes.ts";
 import { resultsDraft } from "./results.ts";
 import { positionals, requireSandbox, UsageError } from "./shared.ts";
@@ -36,9 +37,10 @@ function suppliedParams(args: string[]): [string, string][] {
  * runner passes it to the probe as a string, never evaluating it.
  */
 function validateParams(probe: Probe, args: string[]): Record<string, string> {
-  if (probe.paramProblems.length > 0) {
+  const problems = tagProblems(probe);
+  if (problems.length > 0) {
     throw new UsageError(
-      `${probe.slug} has invalid @param tags:\n${probe.paramProblems.map((m) => `- ${m}`).join("\n")}`,
+      `${probe.slug} has invalid tags:\n${problems.map((m) => `- ${m}`).join("\n")}`,
     );
   }
   const supplied = suppliedParams(args);
@@ -90,7 +92,7 @@ export async function runProbe(
 ): Promise<number> {
   const creds = requireSandbox(config);
   const name = positionals(args)[0] ?? "";
-  const probes = listProbes(config.probesDir);
+  const probes = listProbes(config.probesDir, config.extraTags);
   const probe = isSlug(name)
     ? probes.find((candidate) => candidate.slug === name)
     : undefined;

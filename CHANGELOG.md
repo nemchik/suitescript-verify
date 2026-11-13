@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.1.0...suitescript-verify-v0.2.0) (2026-11-13)
+
+
+### Features
+
+* name the runner role with SUITESCRIPT_VERIFY_ROLE_ID ([#6](https://github.com/nemchik/suitescript-verify/issues/6)) ([b554130](https://github.com/nemchik/suitescript-verify/commit/b5541304fb6c3d44d725d4fb4d6c81d969904848))
+
 ## 0.1.0 (2026-11-13)
 
 

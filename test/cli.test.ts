@@ -248,7 +248,7 @@ describe("the committed .env allowlist", () => {
         `SUITESCRIPT_VERIFY_MYSTERY=${secret}\n`,
       );
       const result = cli([command], project);
-      assert.equal(result.status, 0);
+      assert.equal(result.status, command === "doctor" ? 1 : 0);
       assert.match(result.stdout, /SUITESCRIPT_VERIFY_MYSTERY/);
       assert.equal((result.stdout + result.stderr).includes(secret), false);
     });

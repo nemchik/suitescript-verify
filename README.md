@@ -4,12 +4,14 @@ Run probes in a NetSuite **sandbox** to verify what SuiteScript modules do, from
 
 > This package never accepts Oracle's SuiteCloud license. Install `@oracle/suitecloud-cli` in your project and accept the license yourself.
 
-Early version: only `help` and `deploy` exist. The rest of the CLI (`doctor`, `certificate`, `passkey`, `env`, `setup-ci`, `run`, `cleanup`, `init`) is being extracted from an existing project.
+Early version: `help`, `init`, `doctor` and `deploy` exist. The rest of the CLI (`certificate`, `passkey`, `env`, `setup-ci`, `run`, `cleanup`) is being extracted from an existing project.
 
 ```sh
 npm install --save-dev suitescript-verify @oracle/suitecloud-cli
 npx suitescript-verify help
 ```
+
+`init` scaffolds `verification/probes`, `verification/sdf`, `docs/verification/results` and a committed `verification/.env` of layout keys, then prints a to-do list. It creates no credentials. `doctor` checks the SuiteCloud CLI, account, sandbox, certificates, passkey and project files, and says which failing steps are the maintainer's own; it exits 1 while any fails.
 
 `deploy` dry-runs the runner deployment through your project's SuiteCloud CLI from `verification/sdf` (`--dir <path>` moves `verification/`). A real deploy needs `--approved` and a person at a terminal who types `DEPLOY`.
 

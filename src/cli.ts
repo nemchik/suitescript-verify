@@ -3,13 +3,15 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Config, loadConfig } from "./config.ts";
+import { formatChecks, runChecks } from "./doctor.ts";
+import { init } from "./init.ts";
 
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
   deploy [--approved] [--dir <path>]   Dry-run the runner deployment; --approved deploys, from your own terminal
-  doctor [--dir <path>]                Report what is wrong with the setup
-  init [--dir <path>]                  Report the configuration to fix before the first run
+  doctor [--dir <path>]                Check the setup; each failing step says who does it
+  init [--dir <path>]                  Scaffold the folders and .env, and print a to-do list
   help                                 Show this help
 
 Probes run in a NetSuite sandbox only. The package never accepts Oracle's SuiteCloud license:
@@ -95,14 +97,26 @@ function configure(args: string[], refuse: boolean): Config {
   return config;
 }
 
-/** Prints the configuration problems for `doctor` and `init`, which report instead of refusing. */
-function report(args: string[]): number {
-  const { problems } = configure(args, false);
-  if (problems.length === 0) console.log("Configuration: no problems found.");
-  else {
+/** Loads the configuration for `doctor` and `init`, which report problems instead of refusing. */
+function reporting(args: string[]): Config {
+  const config = configure(args, false);
+  if (config.problems.length > 0) {
     console.log("Configuration problems:");
-    for (const problem of problems) console.log(`- ${problem.message}`);
+    for (const problem of config.problems) console.log(`- ${problem.message}`);
+    console.log("");
   }
+  return config;
+}
+
+function doctor(args: string[]): number {
+  const config = reporting(args);
+  const checks = runChecks(process.cwd(), config);
+  console.log(formatChecks(checks));
+  return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
+}
+
+function initCommand(args: string[]): number {
+  console.log(init(process.cwd(), reporting(args)));
   return 0;
 }
 
@@ -132,7 +146,8 @@ export async function main(args: string[]): Promise<number> {
       return 0;
     }
     if (command === "deploy") return await deploy(rest);
-    if (command === "doctor" || command === "init") return report(rest);
+    if (command === "doctor") return doctor(rest);
+    if (command === "init") return initCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {
     if (error instanceof UsageError) {

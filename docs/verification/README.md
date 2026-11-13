@@ -8,7 +8,7 @@ Verify, or mark the claim **unverified**, whenever you depend on what the platfo
 
 ## For agents
 
-If you can run the test yourself, do: a **probe** runs in a sandbox through the runner. Setup is mostly the person's (browser login, role, certificate), so when a check fails, relay its next step and wait. Before you write a batch of probes read [`lessons.md`](lessons.md): each probe change costs a deploy, and one bad probe can take the whole runner down.
+If you can run the test yourself, do: a **probe** runs in a sandbox through the runner. Setup is mostly the person's (browser login, role, certificate), so when a check fails, relay its next step and wait. Run `suitescript-verify doctor` first. Before you write a batch of probes read [`lessons.md`](lessons.md): each probe change costs a deploy, and one bad probe can take the whole runner down. When you hit a runner, deploy, probe or sandbox problem that page does not describe, add it there in the same pull request (what happened, what it cost, how to avoid it), and correct any entry that proves wrong.
 
 Prompt the person to run a snippet by hand (the methods below) only when a probe cannot run: setup cannot pass, the claim depends on a script type the runner does not cover (anything but a RESTlet), or the probe would write to the account. Give the exact snippet and say where to run it. Never run anything in production.
 

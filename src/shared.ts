@@ -2,14 +2,20 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import type { Config } from "./config.ts";
+import { type Config, resultsDirKey, suggestedResultsDir } from "./config.ts";
 import { isSandboxAccount, names } from "./doctor.ts";
 import { applyEnvUpdate, planEnvUpdate } from "./envfile.ts";
 
 /** A refusal or mistake to report to the person; the message holds no secret. */
 export class UsageError extends Error {}
 
-const valueFlags = ["--dir", "--keys-dir", "--only", "--param"];
+const valueFlags = [
+  "--dir",
+  "--keys-dir",
+  "--only",
+  "--param",
+  "--results-dir",
+];
 
 /** The value after a flag, when given. */
 export function flagValue(args: string[], flag: string): string | undefined {
@@ -136,6 +142,16 @@ export async function saveEnv(
       `Kept the existing ${name}. To replace it, ask the user, then rerun with --overwrite.`,
     );
   }
+}
+
+/** The results folder, or a refusal naming the key: the package imposes no layout for results. */
+export function requireResultsDir(config: Config): string {
+  if (config.resultsDir === undefined) {
+    throw new UsageError(
+      `${resultsDirKey} is not set. Choose where results pages live in your project and set it in the committed .env (suitescript-verify init --results-dir <path> does this; ${suggestedResultsDir} is the suggested value).`,
+    );
+  }
+  return config.resultsDir;
 }
 
 /** The runner credentials, or a refusal: every command that reaches the sandbox needs a sandbox account. */

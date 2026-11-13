@@ -5,5 +5,8 @@ dist/
 .claude/skills/
 .claude/worktrees/
 
-# Runtime verification: credentials and generated files
+# Runtime verification: credentials and generated files. This repo is the tool,
+# not a project that uses it, so it never keeps results or generated SDF output.
 verification/.env.local
+verification/sdf/src/
+docs/verification/results/

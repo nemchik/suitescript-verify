@@ -79,10 +79,56 @@ const setLocal = (project: string, values: Record<string, string>) =>
 const pem = (key: KeyObject) =>
   key.export({ format: "pem", type: "pkcs8" }).toString();
 
+const suggested = ["--results-dir", "docs/verification/results"];
+
 describe("init", () => {
-  it("scaffolds the probe, results and SDF folders and a committed .env with layout keys only", () => {
+  it("will not choose the results folder for the project", () => {
     const project = empty();
     const result = cli(["init"], project);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+    assert.match(result.stderr, /--results-dir/);
+    assert.match(result.stderr, /docs\/verification\/results/);
+    assert.equal(existsSync(join(project, "verification")), false);
+    assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("writes the chosen results folder to the committed .env and creates it", () => {
+    const project = empty();
+    const result = cli(["init", "--results-dir", "notes/checks"], project);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      readFileSync(join(project, "verification", ".env"), "utf8"),
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=notes\/checks$/m,
+    );
+    assert.ok(existsSync(join(project, "notes", "checks")));
+    assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("asks for the results folder only when the .env does not already set it", () => {
+    const project = empty();
+    write(
+      project,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_SDF_DIR=mine\nSUITESCRIPT_VERIFY_RESULTS_DIR=kept/here\n",
+    );
+    assert.equal(cli(["init"], project).status, 0);
+    assert.ok(existsSync(join(project, "kept", "here")));
+    const bare = empty();
+    write(bare, "verification/.env", "SUITESCRIPT_VERIFY_SDF_DIR=mine\n");
+    assert.equal(cli(["init"], bare).status, 1);
+    assert.equal(cli(["init", ...suggested], bare).status, 0);
+    const env = readFileSync(join(bare, "verification", ".env"), "utf8");
+    assert.match(env, /^SUITESCRIPT_VERIFY_SDF_DIR=mine$/m);
+    assert.match(
+      env,
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=docs\/verification\/results$/m,
+    );
+  });
+
+  it("scaffolds the probe, results and SDF folders and a committed .env with layout keys only", () => {
+    const project = empty();
+    const result = cli(["init", ...suggested], project);
     assert.equal(result.status, 0, result.stderr);
     for (const dir of [
       "verification/probes",
@@ -99,7 +145,7 @@ describe("init", () => {
 
   it("creates no credentials", () => {
     const project = empty();
-    cli(["init"], project);
+    cli(["init", ...suggested], project);
     assert.equal(
       existsSync(join(project, "verification", ".env.local")),
       false,
@@ -112,7 +158,7 @@ describe("init", () => {
   });
 
   it("prints a to-do list for the person", () => {
-    const out = cli(["init"], empty()).stdout;
+    const out = cli(["init", ...suggested], empty()).stdout;
     assert.match(out, /To do/);
     assert.match(out, /@oracle\/suitecloud-cli/);
     assert.match(out, /license/i);
@@ -122,13 +168,15 @@ describe("init", () => {
 
   it("keeps an existing .env and moves with --dir", () => {
     const project = empty();
-    write(project, "verification/.env", "SUITESCRIPT_VERIFY_SDF_DIR=mine\n");
+    const mine =
+      "SUITESCRIPT_VERIFY_SDF_DIR=mine\nSUITESCRIPT_VERIFY_RESULTS_DIR=out\n";
+    write(project, "verification/.env", mine);
     cli(["init"], project);
     assert.equal(
       readFileSync(join(project, "verification", ".env"), "utf8"),
-      "SUITESCRIPT_VERIFY_SDF_DIR=mine\n",
+      mine,
     );
-    cli(["init", "--dir", "elsewhere"], project);
+    cli(["init", "--dir", "elsewhere", ...suggested], project);
     assert.ok(existsSync(join(project, "elsewhere", ".env")));
     assert.ok(existsSync(join(project, "elsewhere", "sdf")));
   });
@@ -223,9 +271,21 @@ describe("doctor", () => {
     );
   });
 
+  it("fails a results step naming the key until the project sets the results folder", () => {
+    const project = empty();
+    const before = cli(["doctor"], project).stdout;
+    assert.equal(status(before, /results folder/i), "FAIL");
+    assert.match(before, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+    cli(["init", ...suggested], project);
+    assert.equal(
+      status(cli(["doctor"], project).stdout, /results folder/i),
+      "ok",
+    );
+  });
+
   it("checks the project files", () => {
     const project = empty();
-    cli(["init"], project);
+    cli(["init", ...suggested], project);
     const before = cli(["doctor"], project).stdout;
     assert.equal(status(before, /project files/i), "FAIL");
     write(project, "verification/sdf/project.json", '{"defaultAuthId":"x"}');

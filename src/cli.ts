@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { createInterface } from "node:readline/promises";
 import { certificate } from "./certificate.ts";
-import { type Config, loadConfig } from "./config.ts";
+import {
+  type Config,
+  loadConfig,
+  resultsDirKey,
+  suggestedResultsDir,
+} from "./config.ts";
 import { formatChecks, names, runChecks } from "./doctor.ts";
 import { envNames } from "./envfile.ts";
 import { init } from "./init.ts";
@@ -19,7 +25,7 @@ import {
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
-  init                                 Scaffold the folders and .env, and print a to-do list
+  init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results)
   doctor                               Check the setup; each failing step says who does it
   certificate [--only runner|sdf] [--keys-dir <path>] [--overwrite | --keep]
                                        Generate the key pairs outside the project
@@ -68,8 +74,32 @@ function doctor(args: string[]): number {
   return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
 }
 
-function initCommand(args: string[]): number {
-  console.log(init(process.cwd(), reporting(args)));
+/** The results folder for `init`: already configured, the flag, or a prompt at a terminal. Never a silent default. */
+async function chooseResultsDir(
+  config: Config,
+  args: string[],
+): Promise<string | undefined> {
+  if (config.resultsDir !== undefined) return undefined;
+  const flagged = flagValue(args, "--results-dir");
+  if (flagged !== undefined) return flagged;
+  if (!process.stdin.isTTY) {
+    throw new UsageError(
+      `${resultsDirKey} is not set, and the results folder is the project's choice. Rerun with --results-dir <path>, for example --results-dir ${suggestedResultsDir} (the suggested value), or set ${resultsDirKey} in the committed .env. Nothing was created.`,
+    );
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(
+    `Where should results pages live in this project? [${suggestedResultsDir}] `,
+  );
+  rl.close();
+  return answer.trim() || suggestedResultsDir;
+}
+
+async function initCommand(args: string[]): Promise<number> {
+  const config = reporting(args);
+  console.log(
+    init(process.cwd(), config, await chooseResultsDir(config, args)),
+  );
   return 0;
 }
 
@@ -208,7 +238,7 @@ export async function main(args: string[]): Promise<number> {
     if (command === "env") return await envCommand(rest);
     if (command === "setup-ci") return setupCi(rest);
     if (command === "doctor") return doctor(rest);
-    if (command === "init") return initCommand(rest);
+    if (command === "init") return await initCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {
     if (error instanceof UsageError) {

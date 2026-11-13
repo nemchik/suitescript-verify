@@ -1,7 +1,7 @@
 import { createPrivateKey } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "./config.ts";
+import { type Config, resultsDirKey } from "./config.ts";
 
 /** Who does the next step. The maintainer's own steps are never an agent's. */
 export type Owner = "maintainer" | "agent";
@@ -147,8 +147,15 @@ export function runChecks(
       // A malformed project.json fails the step.
     }
   }
+  add(
+    `The results folder is set (${resultsDirKey})`,
+    config.resultsDir !== undefined,
+    "maintainer",
+    `Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (docs/verification/results is the suggested value) or set ${resultsDirKey} in the committed .env.`,
+  );
+
   const absent = [config.probesDir, config.resultsDir, config.sdfDir].filter(
-    (dir) => !existsSync(dir),
+    (dir): dir is string => dir !== undefined && !existsSync(dir),
   );
   add(
     "Project files: the probe, results and SDF folders exist and the SDF project has a default auth id",

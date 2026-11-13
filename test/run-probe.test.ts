@@ -102,6 +102,7 @@ function project(): Project {
       SUITESCRIPT_VERIFY_CERTIFICATE_ID: "cert-runner-id",
       SUITESCRIPT_VERIFY_CLIENT_ID: clientId,
       SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: keyPath,
+      SUITESCRIPT_VERIFY_RESULTS_DIR: "docs/verification/results",
       SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID: "cert-sdf-id",
       SUITESCRIPT_VERIFY_SDF_PRIVATE_KEY_PATH: join(dir, "sdf-private.pem"),
     },
@@ -583,6 +584,18 @@ describe("run", () => {
       assert.match(text, /\(\.\.\/\.\.\/\.\.\/verification\/probes\/one\.js\)/);
       assert.equal(text.includes(account), false);
       assert.doesNotMatch(text, /contradiction|rule/i);
+    });
+
+    it("refuses without a results folder, names the key and writes nothing", () => {
+      const p = project();
+      withProbe(p);
+      delete p.env.SUITESCRIPT_VERIFY_RESULTS_DIR;
+      rmSync(join(p.dir, "docs"), { force: true, recursive: true });
+      p.script(...ok({ result: { ok: true }, version: "2026.2" }));
+      const result = cli(p, ["run", "one", "--draft"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.all, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+      assert.equal(existsSync(join(p.dir, "docs")), false);
     });
 
     it("never overwrites an existing page", () => {

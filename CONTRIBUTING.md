@@ -2,6 +2,8 @@
 
 By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). For a security problem, follow [SECURITY.md](SECURITY.md) instead of opening an issue.
 
+Use the Node.js version in `.nvmrc` (mirrored in `package.json` `devEngines`). npm refuses a different version.
+
 ```sh
 npm install
 npm run skills:install   # optional unless you use agents

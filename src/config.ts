@@ -11,6 +11,13 @@ export const layoutKeys = [
   "SUITESCRIPT_VERIFY_SDF_DIR",
 ] as const;
 
+export const resultsDirKey = "SUITESCRIPT_VERIFY_RESULTS_DIR";
+/** What `init` suggests for the results folder; it is never applied without the project's say-so. */
+export const suggestedResultsDir = "docs/verification/results";
+
+/** What every command says when the results folder is not chosen: one sentence, so the commands cannot drift apart. */
+export const resultsDirGuidance = `Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (${suggestedResultsDir} is the suggested value) or set ${resultsDirKey} in the committed .env.`;
+
 /** The committed `.env` may also register extra probe tags: a comma-separated list of tag names, not a path. */
 export const extraTagsKey = "SUITESCRIPT_VERIFY_EXTRA_TAGS";
 
@@ -37,7 +44,8 @@ export interface Config {
   /** The folder holding `.env` and `.env.local` (default `verification`, moved with `--dir`). */
   root: string;
   probesDir: string;
-  resultsDir: string;
+  /** Where results pages go, from SUITESCRIPT_VERIFY_RESULTS_DIR. No default: the project chooses. */
+  resultsDir: string | undefined;
   sdfDir: string;
   /** The runner's role id, from SUITESCRIPT_VERIFY_ROLE_ID (default `customrole_suitescript_verify`). */
   roleId: string;
@@ -79,7 +87,7 @@ function readEnvFile(path: string): Map<string, string> {
     : new Map<string, string>();
 }
 
-const insideProject = (project: string, path: string) => {
+export const insideProject = (project: string, path: string) => {
   const rel = relative(project, resolve(project, path));
   return !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
 };
@@ -196,10 +204,9 @@ export function loadConfig(
       ...checkLocalIgnored(project, localFile),
       ...roleProblems,
     ],
-    resultsDir: path(
-      "SUITESCRIPT_VERIFY_RESULTS_DIR",
-      "docs/verification/results",
-    ),
+    resultsDir: values[resultsDirKey]
+      ? resolve(project, values[resultsDirKey])
+      : undefined,
     roleId,
     root,
     sdfDir: path("SUITESCRIPT_VERIFY_SDF_DIR", join(root, "sdf")),

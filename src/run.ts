@@ -14,7 +14,12 @@ import {
   tagProblems,
 } from "./probes.ts";
 import { resultsDraft } from "./results.ts";
-import { positionals, requireSandbox, UsageError } from "./shared.ts";
+import {
+  positionals,
+  requireResultsDir,
+  requireSandbox,
+  UsageError,
+} from "./shared.ts";
 
 /** Every `--param name=value` in the arguments, in order. The value may start with anything. */
 function suppliedParams(args: string[]): [string, string][] {
@@ -90,6 +95,10 @@ export async function runProbe(
   config: Config,
   args: string[],
 ): Promise<number> {
+  // A missing results key is the project's own layout choice: report it before the credentials.
+  const resultsDir = args.includes("--draft")
+    ? requireResultsDir(config)
+    : undefined;
   const creds = requireSandbox(config);
   const name = positionals(args)[0] ?? "";
   const probes = listProbes(config.probesDir, config.extraTags);
@@ -103,7 +112,7 @@ export async function runProbe(
   }
   if (!isRestlet(probe)) {
     throw new UsageError(
-      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand (docs/verification/README.md).`,
+      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand in a sandbox console.`,
     );
   }
   if (probe.writes) {
@@ -207,9 +216,9 @@ export async function runProbe(
     }
   }
 
-  if (args.includes("--draft")) {
+  if (resultsDir !== undefined) {
     const probeFile = join(config.probesDir, `${probe.slug}.js`);
-    const page = join(config.resultsDir, `${probe.slug}.md`);
+    const page = join(resultsDir, `${probe.slug}.md`);
     const shown = relative(project, page).replaceAll("\\", "/");
     if (existsSync(page)) {
       console.log(`\n${shown} already exists; not overwriting.`);
@@ -220,7 +229,7 @@ export async function runProbe(
           output: body.result,
           probe,
           probeFile,
-          resultsDir: config.resultsDir,
+          resultsDir,
           scriptSource: read(probeFile),
           version: body.version ?? "unknown",
         }),

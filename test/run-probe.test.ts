@@ -102,6 +102,7 @@ function project(): Project {
       SUITESCRIPT_VERIFY_CERTIFICATE_ID: "cert-runner-id",
       SUITESCRIPT_VERIFY_CLIENT_ID: clientId,
       SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: keyPath,
+      SUITESCRIPT_VERIFY_RESULTS_DIR: "docs/verification/results",
       SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID: "cert-sdf-id",
       SUITESCRIPT_VERIFY_SDF_PRIVATE_KEY_PATH: join(dir, "sdf-private.pem"),
     },
@@ -477,7 +478,9 @@ describe("run", () => {
     withProbe(p, "", "undeclared");
     withProbe(p, `${restlet}\n * @writes`, "writer");
     p.script(...ok({ result: {}, version: "1" }));
-    assert.match(cli(p, ["run", "client"]).stderr, /RESTlet probes/);
+    const client = cli(p, ["run", "client"]).stderr;
+    assert.match(client, /RESTlet probes/);
+    assert.doesNotMatch(client, /docs\/verification/);
     assert.match(cli(p, ["run", "undeclared"]).stderr, /undeclared/);
     assert.match(cli(p, ["run", "writer"]).stderr, /@writes/);
     assert.deepEqual(p.requests(), []);
@@ -583,6 +586,35 @@ describe("run", () => {
       assert.match(text, /\(\.\.\/\.\.\/\.\.\/verification\/probes\/one\.js\)/);
       assert.equal(text.includes(account), false);
       assert.doesNotMatch(text, /contradiction|rule/i);
+    });
+
+    it("refuses without a results folder, names the key and writes nothing", () => {
+      const p = project();
+      withProbe(p);
+      delete p.env.SUITESCRIPT_VERIFY_RESULTS_DIR;
+      rmSync(join(p.dir, "docs"), { force: true, recursive: true });
+      p.script(...ok({ result: { ok: true }, version: "2026.2" }));
+      const result = cli(p, ["run", "one", "--draft"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.all, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+      assert.equal(existsSync(join(p.dir, "docs")), false);
+    });
+
+    it("names the missing results key even before any credential is set", () => {
+      const p = project();
+      withProbe(p);
+      const bare = cli(p, ["run", "one", "--draft"], {
+        SUITESCRIPT_VERIFY_ACCOUNT: "",
+        SUITESCRIPT_VERIFY_RESULTS_DIR: "",
+      });
+      assert.equal(bare.status, 1, bare.all);
+      assert.match(bare.all, /SUITESCRIPT_VERIFY_RESULTS_DIR is not set/);
+      assert.ok(
+        bare.all.includes(
+          "Choose where results pages live in your project, then run suitescript-verify init --results-dir <path> (docs/verification/results is the suggested value) or set SUITESCRIPT_VERIFY_RESULTS_DIR in the committed .env.",
+        ),
+        bare.all,
+      );
     });
 
     it("never overwrites an existing page", () => {

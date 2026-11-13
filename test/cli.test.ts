@@ -255,7 +255,7 @@ describe("the committed .env allowlist", () => {
       write(
         project,
         "verification/.env",
-        `SUITESCRIPT_VERIFY_MYSTERY=${secret}\n`,
+        `SUITESCRIPT_VERIFY_RESULTS_DIR=docs/verification/results\nSUITESCRIPT_VERIFY_MYSTERY=${secret}\n`,
       );
       const result = cli([command], project);
       assert.equal(result.status, command === "doctor" ? 1 : 0);

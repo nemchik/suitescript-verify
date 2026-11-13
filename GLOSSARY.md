@@ -15,6 +15,9 @@ _Avoid_: Harness
 **Results page**:
 The document in a downstream project that records one verification: the test, the NetSuite version, the output, the explanation and the decision.
 
+**Results folder**:
+The folder in a downstream project where its results pages live, named by `SUITESCRIPT_VERIFY_RESULTS_DIR` in the committed `.env`. The package has no default: the project chooses it, and `init` only suggests `docs/verification/results`.
+
 **Expected output**:
 The `<probe>.expect.json` file holding the result a probe produced when it was verified, so a later run can report drift.
 

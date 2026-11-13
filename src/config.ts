@@ -84,7 +84,7 @@ function readEnvFile(path: string): Map<string, string> {
     : new Map<string, string>();
 }
 
-const insideProject = (project: string, path: string) => {
+export const insideProject = (project: string, path: string) => {
   const rel = relative(project, resolve(project, path));
   return !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
 };

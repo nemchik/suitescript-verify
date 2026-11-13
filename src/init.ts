@@ -1,6 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { type Config, resultsDirKey } from "./config.ts";
+import { type Config, insideProject, resultsDirKey } from "./config.ts";
+import { UsageError } from "./shared.ts";
 
 /**
  * Scaffolds the folders and a committed `.env` of layout keys, then returns
@@ -14,14 +21,25 @@ export function init(
   chosenResultsDir?: string,
 ): string {
   const rel = (path: string) => relative(project, path).replaceAll("\\", "/");
-  const resultsDir =
-    config.resultsDir ??
-    (chosenResultsDir === undefined
+  const chosen =
+    chosenResultsDir === undefined
       ? undefined
-      : resolve(project, chosenResultsDir));
+      : resolve(project, chosenResultsDir);
+  if (chosen !== undefined && !insideProject(project, chosen)) {
+    throw new UsageError(
+      `${resultsDirKey} must be a path inside the project, because the committed .env holds layout only. Nothing was created.`,
+    );
+  }
+  const resultsDir = config.resultsDir ?? chosen;
   if (resultsDir === undefined) {
     throw new Error("init needs a results folder; the caller must choose one.");
   }
+  const ignored =
+    config.resultsDir !== undefined &&
+    chosen !== undefined &&
+    chosen !== config.resultsDir
+      ? `${resultsDirKey} is already set to ${rel(config.resultsDir)}, so --results-dir ${rel(chosen)} was ignored. Change the key itself to move the results folder.\n\n`
+      : "";
   const dirs = [config.probesDir, resultsDir, config.sdfDir];
   for (const dir of dirs) mkdirSync(dir, { recursive: true });
   const envFile = join(config.root, ".env");
@@ -39,11 +57,13 @@ export function init(
       ].join("\n"),
     );
   } else if (config.resultsDir === undefined) {
-    appendFileSync(envFile, `${resultsDirKey}=${rel(resultsDir)}\n`);
+    const text = readFileSync(envFile, "utf8");
+    const lead = text === "" || text.endsWith("\n") ? "" : "\n";
+    appendFileSync(envFile, `${lead}${resultsDirKey}=${rel(resultsDir)}\n`);
   }
   const local = rel(join(config.root, ".env.local"));
   return [
-    `${created ? "Created" : "Kept"} ${rel(envFile)} and the folders ${dirs.map(rel).join(", ")}. No credentials were created.`,
+    `${ignored}${created ? "Created" : "Kept"} ${rel(envFile)} and the folders ${dirs.map(rel).join(", ")}. No credentials were created.`,
     "",
     "To do (each step is yours, the maintainer's):",
     "1. Install the SuiteCloud CLI: npm install --save-dev @oracle/suitecloud-cli. Read Oracle's license and accept it yourself; this package never does.",

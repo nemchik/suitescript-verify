@@ -74,14 +74,14 @@ function doctor(args: string[]): number {
   return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
 }
 
-/** The results folder for `init`: already configured, the flag, or a prompt at a terminal. Never a silent default. */
+/** The results folder `init` was told to use: the flag, or a prompt at a terminal when the key is not set. Never a silent default. */
 async function chooseResultsDir(
   config: Config,
   args: string[],
 ): Promise<string | undefined> {
-  if (config.resultsDir !== undefined) return undefined;
   const flagged = flagValue(args, "--results-dir");
-  if (flagged !== undefined) return flagged;
+  // Already configured: the flag is passed on only so `init` can say it was ignored.
+  if (config.resultsDir !== undefined || flagged !== undefined) return flagged;
   if (!process.stdin.isTTY) {
     throw new UsageError(
       `${resultsDirKey} is not set, and the results folder is the project's choice. Rerun with --results-dir <path>, for example --results-dir ${suggestedResultsDir} (the suggested value), or set ${resultsDirKey} in the committed .env. Nothing was created.`,

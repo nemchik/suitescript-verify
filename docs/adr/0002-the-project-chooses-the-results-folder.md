@@ -1,0 +1,3 @@
+# The project chooses the results folder
+
+`SUITESCRIPT_VERIFY_RESULTS_DIR` has no default: a downstream project must set it in its committed `.env`, and `init` asks for it (a prompt at a terminal, `--results-dir <path>` otherwise) while suggesting `docs/verification/results`. Results describe a project's own platform and decisions, so the package must not decide where they live or write them anywhere the project did not name. Rejected: a silent default (it imposed a layout on every downstream project and let `run --draft` write into a folder the project never agreed to). The cost is a breaking change before 1.0 and one more setup step.

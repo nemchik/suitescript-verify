@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
 const bin = join(
@@ -103,6 +103,47 @@ describe("init", () => {
     );
     assert.ok(existsSync(join(project, "notes", "checks")));
     assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("refuses a results folder outside the project before creating anything", () => {
+    const project = empty();
+    const outside = join(project, "..", `${basename(project)}-outside`);
+    for (const path of [`../${basename(project)}-outside`, outside]) {
+      const result = cli(["init", "--results-dir", path], project);
+      assert.equal(result.status, 1, path);
+      assert.match(result.stderr, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+      assert.match(result.stderr, /inside the project/);
+      assert.equal(existsSync(outside), false);
+      assert.equal(existsSync(join(project, "verification")), false);
+    }
+  });
+
+  it("starts its line on a new line when the existing .env has no trailing newline", () => {
+    const project = empty();
+    write(project, "verification/.env", "SUITESCRIPT_VERIFY_SDF_DIR=mine");
+    assert.equal(cli(["init", ...suggested], project).status, 0);
+    const lines = readFileSync(join(project, "verification", ".env"), "utf8")
+      .split("\n")
+      .filter(Boolean);
+    assert.deepEqual(lines, [
+      "SUITESCRIPT_VERIFY_SDF_DIR=mine",
+      "SUITESCRIPT_VERIFY_RESULTS_DIR=docs/verification/results",
+    ]);
+  });
+
+  it("says when --results-dir is ignored because the project already sets the key", () => {
+    const project = empty();
+    write(
+      project,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_RESULTS_DIR=kept/here\n",
+    );
+    const result = cli(["init", "--results-dir", "other/place"], project);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
+    assert.match(result.stdout, /ignored/i);
+    assert.equal(existsSync(join(project, "other")), false);
+    assert.ok(existsSync(join(project, "kept", "here")));
   });
 
   it("asks for the results folder only when the .env does not already set it", () => {

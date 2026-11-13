@@ -95,10 +95,11 @@ export async function runProbe(
   config: Config,
   args: string[],
 ): Promise<number> {
-  const creds = requireSandbox(config);
+  // A missing results key is the project's own layout choice: report it before the credentials.
   const resultsDir = args.includes("--draft")
     ? requireResultsDir(config)
     : undefined;
+  const creds = requireSandbox(config);
   const name = positionals(args)[0] ?? "";
   const probes = listProbes(config.probesDir, config.extraTags);
   const probe = isSlug(name)
@@ -111,7 +112,7 @@ export async function runProbe(
   }
   if (!isRestlet(probe)) {
     throw new UsageError(
-      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand (docs/verification/README.md).`,
+      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand in a sandbox console.`,
     );
   }
   if (probe.writes) {

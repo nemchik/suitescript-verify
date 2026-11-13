@@ -478,7 +478,9 @@ describe("run", () => {
     withProbe(p, "", "undeclared");
     withProbe(p, `${restlet}\n * @writes`, "writer");
     p.script(...ok({ result: {}, version: "1" }));
-    assert.match(cli(p, ["run", "client"]).stderr, /RESTlet probes/);
+    const client = cli(p, ["run", "client"]).stderr;
+    assert.match(client, /RESTlet probes/);
+    assert.doesNotMatch(client, /docs\/verification/);
     assert.match(cli(p, ["run", "undeclared"]).stderr, /undeclared/);
     assert.match(cli(p, ["run", "writer"]).stderr, /@writes/);
     assert.deepEqual(p.requests(), []);
@@ -596,6 +598,17 @@ describe("run", () => {
       assert.equal(result.status, 1, result.all);
       assert.match(result.all, /SUITESCRIPT_VERIFY_RESULTS_DIR/);
       assert.equal(existsSync(join(p.dir, "docs")), false);
+    });
+
+    it("names the missing results key even before any credential is set", () => {
+      const p = project();
+      withProbe(p);
+      const bare = cli(p, ["run", "one", "--draft"], {
+        SUITESCRIPT_VERIFY_ACCOUNT: "",
+        SUITESCRIPT_VERIFY_RESULTS_DIR: "",
+      });
+      assert.equal(bare.status, 1, bare.all);
+      assert.match(bare.all, /SUITESCRIPT_VERIFY_RESULTS_DIR is not set/);
     });
 
     it("never overwrites an existing page", () => {

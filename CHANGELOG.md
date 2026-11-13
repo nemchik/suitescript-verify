@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.2.0...suitescript-verify-v0.3.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* set SUITESCRIPT_VERIFY_RESULTS_DIR in verification/.env (rerun init --results-dir docs/verification/results to keep the old location).
+
+### Features
+
+* require the project to choose the results folder ([#12](https://github.com/nemchik/suitescript-verify/issues/12)) ([fb0451c](https://github.com/nemchik/suitescript-verify/commit/fb0451c580e9749bc018d3ed8edf6ce618851841))
+
 ## [0.2.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.1.0...suitescript-verify-v0.2.0) (2026-11-13)
 
 

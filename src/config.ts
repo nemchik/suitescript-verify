@@ -1,0 +1,159 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+
+const prefix = "SUITESCRIPT_VERIFY_";
+
+/** Layout keys: the only ones the committed `.env` may hold. Each is a path in the project. */
+export const layoutKeys = [
+  "SUITESCRIPT_VERIFY_PROBES_DIR",
+  "SUITESCRIPT_VERIFY_RESULTS_DIR",
+  "SUITESCRIPT_VERIFY_SDF_DIR",
+] as const;
+
+/** One thing wrong with the configuration. The message names a key or file and never holds a value. */
+export interface Problem {
+  message: string;
+}
+
+export interface Config {
+  /** The folder holding `.env` and `.env.local` (default `verification`, moved with `--dir`). */
+  root: string;
+  probesDir: string;
+  resultsDir: string;
+  sdfDir: string;
+  /** Every SUITESCRIPT_VERIFY_ value after layering, for the commands that need one. */
+  values: Record<string, string>;
+  problems: Problem[];
+}
+
+const unquote = (raw: string) => {
+  const value = raw.trim();
+  const quote = value[0];
+  if (
+    value.length >= 2 &&
+    (quote === '"' || quote === "'") &&
+    value.endsWith(quote)
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+};
+
+/** Reads `NAME=value` lines; comments and other lines are ignored. */
+export function parseEnv(text: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(
+      line,
+    );
+    if (match) values.set(match[1] ?? "", unquote(match[2] ?? ""));
+  }
+  return values;
+}
+
+function readEnvFile(path: string): Map<string, string> {
+  return existsSync(path)
+    ? parseEnv(readFileSync(path, "utf8"))
+    : new Map<string, string>();
+}
+
+const insideProject = (project: string, path: string) => {
+  const rel = relative(project, resolve(project, path));
+  return !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
+};
+
+/** A value a person would not write as a folder: a PEM block, a JWT or a long token. */
+const looksSecret = (value: string) =>
+  /-----BEGIN /.test(value) ||
+  /^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(value) ||
+  /^[A-Za-z0-9+_=-]{32,}$/.test(value);
+
+/** Checks the committed `.env` against the allowlist. Messages name the key, never the value. */
+function checkCommitted(
+  project: string,
+  committed: Map<string, string>,
+  file: string,
+): Problem[] {
+  const problems: Problem[] = [];
+  for (const [key, value] of committed) {
+    if (!(layoutKeys as readonly string[]).includes(key)) {
+      problems.push({
+        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${layoutKeys.join(", ")}); put anything else in .env.local or the process environment.`,
+      });
+    } else if (!insideProject(project, value)) {
+      problems.push({
+        message: `${key} in ${file} points outside the project. Use a path inside the project.`,
+      });
+    } else if (looksSecret(value)) {
+      problems.push({
+        message: `${key} in ${file} looks like a secret, not a path. The committed file is public: move a secret to .env.local.`,
+      });
+    }
+  }
+  return problems;
+}
+
+/** `.env.local` holds credentials: it must be gitignored and never tracked. */
+function checkLocalIgnored(project: string, localFile: string): Problem[] {
+  const git = (args: string[]) =>
+    spawnSync("git", args, { cwd: project, encoding: "utf8" });
+  const rel = relative(project, localFile).replaceAll("\\", "/");
+  if (git(["rev-parse", "--is-inside-work-tree"]).status !== 0) return [];
+  const problems: Problem[] = [];
+  if (git(["ls-files", "--error-unmatch", "--", rel]).status === 0) {
+    problems.push({
+      message: `${rel} is tracked by git, so its credentials are in the repository. Run git rm --cached ${rel} and rotate what it held.`,
+    });
+  }
+  if (git(["check-ignore", "-q", "--", rel]).status !== 0) {
+    problems.push({
+      message: `${rel} is not gitignored. Add it to .gitignore before saving any value: it holds credentials.`,
+    });
+  }
+  return problems;
+}
+
+/**
+ * Layers defaults, the committed `.env`, the gitignored `.env.local` and the
+ * process environment (later wins). The root of the env files is `dir`
+ * (default `verification`), relative to the project.
+ */
+export function loadConfig(
+  project: string,
+  dir: string | undefined,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): Config {
+  const root = resolve(project, dir ?? "verification");
+  const envFile = join(root, ".env");
+  const localFile = join(root, ".env.local");
+  const committed = readEnvFile(envFile);
+  const values: Record<string, string> = {};
+  const layers: Iterable<[string, string | undefined]>[] = [
+    committed,
+    readEnvFile(localFile),
+    Object.entries(processEnv),
+  ];
+  for (const layer of layers) {
+    for (const [key, value] of layer) {
+      if (key.startsWith(prefix) && value !== undefined) values[key] = value;
+    }
+  }
+  const path = (key: string, fallback: string) =>
+    resolve(project, values[key] || fallback);
+  const shown = relative(project, envFile).replaceAll("\\", "/");
+  return {
+    probesDir: path("SUITESCRIPT_VERIFY_PROBES_DIR", join(root, "probes")),
+    problems: [
+      ...checkCommitted(project, committed, shown),
+      ...checkLocalIgnored(project, localFile),
+    ],
+    resultsDir: path(
+      "SUITESCRIPT_VERIFY_RESULTS_DIR",
+      "docs/verification/results",
+    ),
+    root,
+    sdfDir: path("SUITESCRIPT_VERIFY_SDF_DIR", join(root, "sdf")),
+    values,
+  };
+}

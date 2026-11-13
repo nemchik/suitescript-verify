@@ -1,12 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { type Config, loadConfig } from "./config.ts";
 
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
   deploy [--approved] [--dir <path>]   Dry-run the runner deployment; --approved deploys, from your own terminal
+  doctor [--dir <path>]                Report what is wrong with the setup
+  init [--dir <path>]                  Report the configuration to fix before the first run
   help                                 Show this help
 
 Probes run in a NetSuite sandbox only. The package never accepts Oracle's SuiteCloud license:
@@ -33,8 +36,13 @@ function suitecloudEntry(project: string): string {
 }
 
 /** Runs the project's SuiteCloud CLI from the SDF project folder. */
-function suitecloud(project: string, sdfDir: string, args: string[]): number {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+function suitecloud(
+  project: string,
+  sdfDir: string,
+  args: string[],
+  layered: Record<string, string>,
+): number {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...layered };
   // Hand the passkey to the CLI for this child process only.
   if (env.SUITESCRIPT_VERIFY_PASSKEY) {
     env.SUITECLOUD_CI_PASSKEY = env.SUITESCRIPT_VERIFY_PASSKEY;
@@ -67,14 +75,40 @@ async function confirmWrite(action: string, what: string) {
   }
 }
 
+/** The value after `--dir`, when given. */
+function dirFlag(args: string[]): string | undefined {
+  const flag = args.indexOf("--dir");
+  if (flag < 0) return undefined;
+  const value = args[flag + 1];
+  if (!value) throw new UsageError("--dir needs a path.");
+  return value;
+}
+
+/** Loads the layered configuration; a problem stops every command except the reporting ones. */
+function configure(args: string[], refuse: boolean): Config {
+  const config = loadConfig(process.cwd(), dirFlag(args));
+  if (refuse && config.problems.length > 0) {
+    throw new UsageError(
+      `Refusing to run:\n${config.problems.map((p) => `- ${p.message}`).join("\n")}`,
+    );
+  }
+  return config;
+}
+
+/** Prints the configuration problems for `doctor` and `init`, which report instead of refusing. */
+function report(args: string[]): number {
+  const { problems } = configure(args, false);
+  if (problems.length === 0) console.log("Configuration: no problems found.");
+  else {
+    console.log("Configuration problems:");
+    for (const problem of problems) console.log(`- ${problem.message}`);
+  }
+  return 0;
+}
+
 async function deploy(args: string[]): Promise<number> {
   const project = process.cwd();
-  const dirFlag = args.indexOf("--dir");
-  const root = resolve(
-    project,
-    dirFlag >= 0 ? (args[dirFlag + 1] ?? "") : "verification",
-  );
-  const sdfDir = join(root, "sdf");
+  const config = configure(args, true);
   const approved = args.includes("--approved");
   if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
   else {
@@ -82,10 +116,12 @@ async function deploy(args: string[]): Promise<number> {
       "Dry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
     );
   }
-  return suitecloud(project, sdfDir, [
-    "project:deploy",
-    ...(approved ? [] : ["--dryrun"]),
-  ]);
+  return suitecloud(
+    project,
+    config.sdfDir,
+    ["project:deploy", ...(approved ? [] : ["--dryrun"])],
+    config.values,
+  );
 }
 
 export async function main(args: string[]): Promise<number> {
@@ -96,6 +132,7 @@ export async function main(args: string[]): Promise<number> {
       return 0;
     }
     if (command === "deploy") return await deploy(rest);
+    if (command === "doctor" || command === "init") return report(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {
     if (error instanceof UsageError) {

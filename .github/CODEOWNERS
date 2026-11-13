@@ -1,0 +1,3 @@
+# Agent skills are instructions that agents follow: changes need the owner's review.
+/.agents/ @nemchik
+/skills-lock.json @nemchik

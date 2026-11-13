@@ -1,0 +1,76 @@
+{
+  "name": "suitescript-verify",
+  "version": "0.0.0",
+  "description": "Run probes in a NetSuite sandbox to verify what SuiteScript modules do, with guardrails for agents.",
+  "keywords": [
+    "suitescript",
+    "netsuite",
+    "verification",
+    "probe",
+    "suitecloud"
+  ],
+  "homepage": "https://github.com/nemchik/suitescript-verify#readme",
+  "bugs": "https://github.com/nemchik/suitescript-verify/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nemchik/suitescript-verify.git"
+  },
+  "license": "MIT",
+  "author": "Eric Nemchik",
+  "type": "module",
+  "bin": {
+    "suitescript-verify": "./dist/bin/suitescript-verify.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node -e \"require(\\\"node:fs\\\").rmSync(\\\"dist\\\",{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "biome check",
+    "preformat": "npm run typecheck",
+    "format": "biome check --write",
+    "lint": "biome lint",
+    "prepack": "npm run build",
+    "skills": "node scripts/skills.ts",
+    "skills:add": "node scripts/skills.ts add --skill \"*\" --agent universal --agent claude-code --yes",
+    "skills:check": "node scripts/skills.ts check",
+    "skills:install": "node scripts/skills.ts experimental_install && node scripts/link-claude-skills.ts",
+    "skills:list": "node scripts/skills.ts list",
+    "skills:update": "node scripts/skills.ts update --project --yes && node scripts/link-claude-skills.ts",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@types/node": "24.19.2",
+    "git-pull-run": "2.1.0",
+    "lefthook": "2.2.2",
+    "skills": "1.7.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@oracle/suitecloud-cli": "^4.1.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.22.3",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "12.2.2",
+      "onFail": "warn"
+    }
+  },
+  "allowScripts": {
+    "lefthook": true
+  }
+}

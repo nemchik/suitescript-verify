@@ -1,0 +1,3 @@
+# Normalize line endings to LF in the repository and in working copies, as
+# .editorconfig and Biome require, even where core.autocrlf is set.
+* text=auto eol=lf

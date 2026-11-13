@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tgz
+*lefthook-local*
+.claude/skills/
+.claude/worktrees/
+
+# Runtime verification: credentials and generated files
+verification/.env.local

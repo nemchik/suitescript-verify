@@ -1,0 +1,24 @@
+name: setup
+description: Install the Node.js and npm versions from package.json devEngines, then the dependencies without install scripts
+
+inputs:
+  cache:
+    description: Restore and save the npm cache. Set to "false" in workflows that publish or hold secrets.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Use Node.js from package.json devEngines
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: package.json
+        registry-url: https://registry.npmjs.org
+        package-manager-cache: ${{ inputs.cache }}
+    - name: Use npm from package.json devEngines
+      shell: bash
+      run: npm install --global "npm@$(node -p "require('./package.json').devEngines.packageManager.version")"
+    - name: Install npm dependencies
+      shell: bash
+      # Install scripts stay off: the SuiteCloud CLI's postinstall needs Oracle's license, which only a maintainer accepts.
+      run: npm ci --ignore-scripts

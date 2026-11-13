@@ -1,0 +1,18 @@
+assert_lefthook_installed: true
+
+pre-commit:
+  commands:
+    biome:
+      glob: "*.{js,ts,json,jsonc}"
+      run: npx -- biome check --write --staged --no-errors-on-unmatched
+      stage_fixed: true
+
+post-checkout:
+  commands:
+    git-pull-run:
+      run: npx -- git-pull-run --install || true
+
+post-merge:
+  commands:
+    git-pull-run:
+      run: npx -- git-pull-run --install || true

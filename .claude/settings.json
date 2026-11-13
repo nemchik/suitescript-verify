@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "deny": [
+      "Skill(mattpocock-skills:codebase-design)",
+      "Skill(mattpocock-skills:code-review)",
+      "Skill(mattpocock-skills:diagnosing-bugs)",
+      "Skill(mattpocock-skills:domain-modeling)",
+      "Skill(mattpocock-skills:grill-with-docs)",
+      "Skill(mattpocock-skills:grilling)",
+      "Skill(mattpocock-skills:prototype)",
+      "Skill(mattpocock-skills:research)",
+      "Skill(mattpocock-skills:tdd)",
+      "Skill(mattpocock-skills:wizard)",
+      "Skill(mattpocock-skills:writing-for-agents)",
+      "Skill(netsuite-ai-companion:netsuite-ai-connector-instructions)",
+      "Skill(netsuite-finance-analyst:netsuite-finance-analyst)",
+      "Skill(netsuite-suitecloud:netsuite-owasp-secure-coding)",
+      "Skill(netsuite-suitecloud:netsuite-sdf-project-documentation)",
+      "Skill(netsuite-suitecloud:netsuite-sdf-roles-and-permissions)",
+      "Skill(netsuite-suitecloud:netsuite-sdf-safe-guide)",
+      "Skill(netsuite-suitecloud:netsuite-suitescript-learning)",
+      "Skill(netsuite-suitecloud:netsuite-suitescript-records-reference)",
+      "Skill(netsuite-suitecloud:netsuite-suitescript-upgrade)",
+      "Skill(netsuite-suitecloud:netsuite-uif-spa-reference)"
+    ]
+  }
+}

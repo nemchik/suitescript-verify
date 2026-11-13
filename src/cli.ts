@@ -1,90 +1,43 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { createInterface } from "node:readline/promises";
+import { randomBytes } from "node:crypto";
+import { certificate } from "./certificate.ts";
 import { type Config, loadConfig } from "./config.ts";
-import { formatChecks, runChecks } from "./doctor.ts";
+import { formatChecks, names, runChecks } from "./doctor.ts";
+import { envNames } from "./envfile.ts";
 import { init } from "./init.ts";
+import { runProbe } from "./run.ts";
+import { buildSdfProject } from "./sdf.ts";
+import {
+  confirmWrite,
+  flagValue,
+  positionals,
+  requireSandbox,
+  saveEnv,
+  suitecloud,
+  UsageError,
+} from "./shared.ts";
 
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
-  deploy [--approved] [--dir <path>]   Dry-run the runner deployment; --approved deploys, from your own terminal
-  doctor [--dir <path>]                Check the setup; each failing step says who does it
-  init [--dir <path>]                  Scaffold the folders and .env, and print a to-do list
+  init                                 Scaffold the folders and .env, and print a to-do list
+  doctor                               Check the setup; each failing step says who does it
+  certificate [--only runner|sdf] [--keys-dir <path>] [--overwrite | --keep]
+                                       Generate the key pairs outside the project
+  passkey [--overwrite | --keep]       Generate the SuiteCloud passkey into .env.local
+  env set NAME=value [--overwrite | --keep]
+                                       Save a setting in .env.local
+  setup-ci                             Register the SDF credentials (account:setup:ci)
+  deploy [--approved]                  Dry-run the runner deployment; --approved deploys, from your own terminal
+  run <probe> [--draft]                Run one RESTlet probe through the runner; --draft writes a results page
+  cleanup [--approved]                 Turn the runner's deployment off (dry run without --approved)
   help                                 Show this help
+
+Every command takes --dir <path> to move the verification folder (default verification).
 
 Probes run in a NetSuite sandbox only. The package never accepts Oracle's SuiteCloud license:
 install @oracle/suitecloud-cli in your project and accept the license yourself.`;
 
-class UsageError extends Error {}
-
-/** The project's own SuiteCloud CLI (a peer dependency), never a global one. */
-function suitecloudEntry(project: string): string {
-  const entry = join(
-    project,
-    "node_modules",
-    "@oracle",
-    "suitecloud-cli",
-    "src",
-    "suitecloud.js",
-  );
-  if (!existsSync(entry)) {
-    throw new UsageError(
-      "Install @oracle/suitecloud-cli in this project (npm install --save-dev @oracle/suitecloud-cli), and accept Oracle's license yourself.",
-    );
-  }
-  return entry;
-}
-
-/** Runs the project's SuiteCloud CLI from the SDF project folder. */
-function suitecloud(
-  project: string,
-  sdfDir: string,
-  args: string[],
-  layered: Record<string, string>,
-): number {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...layered };
-  // Hand the passkey to the CLI for this child process only.
-  if (env.SUITESCRIPT_VERIFY_PASSKEY) {
-    env.SUITECLOUD_CI_PASSKEY = env.SUITESCRIPT_VERIFY_PASSKEY;
-  }
-  if (env.SUITECLOUD_CI_PASSKEY) env.SUITECLOUD_CI = "1";
-  const result = spawnSync(
-    process.execPath,
-    [suitecloudEntry(project), ...args],
-    { cwd: sdfDir, env, stdio: "inherit" },
-  );
-  return result.status ?? 1;
-}
-
-/**
- * A write to the sandbox needs a person at a terminal, on top of --approved:
- * an agent's shell has none, so an agent cannot run it. The person types the
- * action name to confirm.
- */
-async function confirmWrite(action: string, what: string) {
-  if (!process.stdin.isTTY) {
-    throw new UsageError(
-      `${what} needs the user at a terminal. Ask the user to run this same command, with --approved, in their own terminal.`,
-    );
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question(`${what}. Type ${action} to continue: `);
-  rl.close();
-  if (answer.trim() !== action) {
-    throw new UsageError("Not confirmed. Nothing was changed.");
-  }
-}
-
-/** The value after `--dir`, when given. */
-function dirFlag(args: string[]): string | undefined {
-  const flag = args.indexOf("--dir");
-  if (flag < 0) return undefined;
-  const value = args[flag + 1];
-  if (!value) throw new UsageError("--dir needs a path.");
-  return value;
-}
+const dirFlag = (args: string[]) => flagValue(args, "--dir");
 
 /** Loads the layered configuration; a problem stops every command except the reporting ones. */
 function configure(args: string[], refuse: boolean): Config {
@@ -123,19 +76,85 @@ function initCommand(args: string[]): number {
 async function deploy(args: string[]): Promise<number> {
   const project = process.cwd();
   const config = configure(args, true);
+  requireSandbox(config);
+  const { files, slugs } = buildSdfProject(config.sdfDir, config.probesDir, {
+    deployed: true,
+  });
+  console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
+  console.log(`Files to upload: ${files.join(", ")}`);
   const approved = args.includes("--approved");
   if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
   else {
     console.log(
-      "Dry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
+      "\nDry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
     );
   }
-  return suitecloud(
-    project,
-    config.sdfDir,
-    ["project:deploy", ...(approved ? [] : ["--dryrun"])],
-    config.values,
-  );
+  return suitecloud(project, config, [
+    "project:deploy",
+    ...(approved ? [] : ["--dryrun"]),
+  ]);
+}
+
+async function cleanup(args: string[]): Promise<number> {
+  const project = process.cwd();
+  const config = configure(args, true);
+  requireSandbox(config);
+  const approved = args.includes("--approved");
+  if (approved) {
+    await confirmWrite("CLEANUP", "This turns the runner's deployment off");
+  } else {
+    console.log(
+      "Dry run only. This turns the runner's deployment off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
+    );
+  }
+  buildSdfProject(config.sdfDir, config.probesDir, { deployed: false });
+  return suitecloud(project, config, [
+    "project:deploy",
+    ...(approved ? [] : ["--dryrun"]),
+  ]);
+}
+
+function setupCi(args: string[]): number {
+  const config = configure(args, true);
+  const creds = requireSandbox(config);
+  return suitecloud(process.cwd(), config, [
+    "account:setup:ci",
+    "--account",
+    creds.account,
+    "--authid",
+    "suitescript-verify",
+    "--certificateid",
+    creds.sdfCertificateId,
+    "--privatekeypath",
+    creds.sdfPrivateKeyPath,
+    ...(config.values.SUITESCRIPT_VERIFY_DOMAIN
+      ? ["--domain", config.values.SUITESCRIPT_VERIFY_DOMAIN]
+      : []),
+  ]);
+}
+
+async function envCommand(args: string[]): Promise<number> {
+  const config = configure(args, true);
+  const [action, assignment] = positionals(args);
+  const match = /^([A-Z0-9_]+)=([\s\S]*)$/.exec(assignment ?? "");
+  if (action !== "set" || !match) {
+    throw new UsageError(
+      "Usage: suitescript-verify env set NAME=value [--overwrite | --keep]",
+    );
+  }
+  const name = match[1] ?? "";
+  if (name === names.passkey) {
+    throw new UsageError(
+      "Generate the passkey with `suitescript-verify passkey`.",
+    );
+  }
+  if (!(envNames as readonly string[]).includes(name)) {
+    throw new UsageError(
+      `Unknown variable ${name}. Known: ${envNames.join(", ")}`,
+    );
+  }
+  await saveEnv(config, args, { [name]: match[2] ?? "" });
+  return 0;
 }
 
 export async function main(args: string[]): Promise<number> {
@@ -146,6 +165,23 @@ export async function main(args: string[]): Promise<number> {
       return 0;
     }
     if (command === "deploy") return await deploy(rest);
+    if (command === "cleanup") return await cleanup(rest);
+    if (command === "run") {
+      const config = configure(rest, true);
+      return await runProbe(process.cwd(), config, rest);
+    }
+    if (command === "certificate") {
+      await certificate(process.cwd(), configure(rest, true), rest);
+      return 0;
+    }
+    if (command === "passkey") {
+      await saveEnv(configure(rest, true), rest, {
+        [names.passkey]: randomBytes(30).toString("hex"),
+      });
+      return 0;
+    }
+    if (command === "env") return await envCommand(rest);
+    if (command === "setup-ci") return setupCi(rest);
     if (command === "doctor") return doctor(rest);
     if (command === "init") return initCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);

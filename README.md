@@ -4,8 +4,6 @@ Run probes in a NetSuite **sandbox** to verify what SuiteScript modules do, from
 
 > This package never accepts Oracle's SuiteCloud license. Install `@oracle/suitecloud-cli` in your project and accept the license yourself.
 
-Early version: `help`, `init`, `doctor` and `deploy` exist. The rest of the CLI (`certificate`, `passkey`, `env`, `setup-ci`, `run`, `cleanup`) is being extracted from an existing project.
-
 ```sh
 npm install --save-dev suitescript-verify @oracle/suitecloud-cli
 npx suitescript-verify help
@@ -13,7 +11,13 @@ npx suitescript-verify help
 
 `init` scaffolds `verification/probes`, `verification/sdf`, `docs/verification/results` and a committed `verification/.env` of layout keys, then prints a to-do list. It creates no credentials. `doctor` checks the SuiteCloud CLI, account, sandbox, certificates, passkey and project files, and says which failing steps are the maintainer's own; it exits 1 while any fails.
 
-`deploy` dry-runs the runner deployment through your project's SuiteCloud CLI from `verification/sdf` (`--dir <path>` moves `verification/`). A real deploy needs `--approved` and a person at a terminal who types `DEPLOY`.
+`certificate` generates the runner key pair (EC P-256) and the SDF key pair (RSA-4096) outside the project with `openssl` (`--keys-dir`, default `~/.suitescript-verify`), `passkey` and `env set NAME=value` save settings in the gitignored `verification/.env.local` (values are never printed; a different existing value is kept unless `--overwrite`), and `setup-ci` registers the SDF credentials with the SuiteCloud CLI.
+
+`deploy` generates the runner and an SDF project into `verification/sdf` (the generated `src/` and `package.json` there are yours to gitignore) from the RESTlet probes in `verification/probes`, then dry-runs it through your project's SuiteCloud CLI. A real deploy needs `--approved` and a person at a terminal who types `DEPLOY`. `cleanup` does the same with the runner's deployment switched off and needs `CLEANUP`. `--dir <path>` moves `verification/`.
+
+`run <probe> [--draft]` runs one probe by name through the deployed runner. The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request. Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier. A probe with an `<probe>.expect.json` is compared with it and a difference exits 2 as drift. `--draft` writes `docs/verification/results/<probe>.md` (never over an existing page) with the test, NetSuite version and results, and empty explanation and decision sections. Probes must declare `@scriptType Restlet` and no `@writes`.
+
+Every command that reaches the sandbox refuses an account that is not a sandbox (`digits_SBn`). The runner uses the script id `customscript_suitescript_verify_runner` and is limited to a role with the ID `customrole_suitescript_verify`, which you create in the sandbox.
 
 See [docs/verification/README.md](docs/verification/README.md) and [docs/verification/lessons.md](docs/verification/lessons.md).
 

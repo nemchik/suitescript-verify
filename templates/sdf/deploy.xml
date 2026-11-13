@@ -1,0 +1,8 @@
+<deploy>
+  <files>
+    <path>~/FileCabinet/SuiteScripts/suitescript-verify/*</path>
+  </files>
+  <objects>
+    <path>~/Objects/*</path>
+  </objects>
+</deploy>

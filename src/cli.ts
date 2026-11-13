@@ -28,7 +28,7 @@ Commands:
                                        Save a setting in .env.local
   setup-ci                             Register the SDF credentials (account:setup:ci)
   deploy [--approved]                  Dry-run the runner deployment; --approved deploys, from your own terminal
-  run <probe> [--draft]                Run one RESTlet probe through the runner; --draft writes a results page
+  run <probe> [--param name=value ...] [--draft]              Run one RESTlet probe through the runner; --draft writes a results page
   cleanup [--approved]                 Turn the runner's deployment off (dry run without --approved)
   help                                 Show this help
 

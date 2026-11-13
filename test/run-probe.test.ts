@@ -524,3 +524,156 @@ describe("run", () => {
     });
   });
 });
+
+describe("probe parameters", () => {
+  const withParams = (p: Project, params: string[], slug = "one") =>
+    write(
+      p.dir,
+      `verification/probes/${slug}.js`,
+      probeSource([restlet, ...params.map((line) => ` * ${line}`)].join("\n")),
+    );
+  const sent = (p: Project) => p.requests().length;
+
+  it("passes a valid parameter to the probe as data in the request body", () => {
+    const p = project();
+    withParams(p, ["@param recordType ^[a-z_]+$", "@param count ^[0-9]{1,3}$"]);
+    p.script(...ok({ result: {}, version: "1" }));
+    const result = cli(p, [
+      "run",
+      "one",
+      "--param",
+      "recordType=salesorder",
+      "--param",
+      "count=25",
+    ]);
+    assert.equal(result.status, 0, result.all);
+    assert.deepEqual(JSON.parse(p.requests()[1]?.body ?? "{}"), {
+      params: { count: "25", recordType: "salesorder" },
+      probe: "one",
+    });
+  });
+
+  it("matches the whole value against the pattern and keeps code-like text as inert data", () => {
+    const p = project();
+    withParams(p, ["@param text ^.+$", "@param id [0-9]+"]);
+    p.script(...ok({ result: {}, version: "1" }));
+    const text = "1); evil(`x`) //";
+    const ok1 = cli(p, [
+      "run",
+      "one",
+      "--param",
+      `text=${text}`,
+      "--param",
+      "id=7",
+    ]);
+    assert.equal(ok1.status, 0, ok1.all);
+    assert.deepEqual(JSON.parse(p.requests()[1]?.body ?? "{}").params, {
+      id: "7",
+      text,
+    });
+    const before = sent(p);
+    const partial = cli(p, [
+      "run",
+      "one",
+      "--param",
+      "text=a",
+      "--param",
+      "id=7x",
+    ]);
+    assert.equal(partial.status, 1);
+    assert.match(partial.stderr, /id/);
+    assert.equal(sent(p), before);
+  });
+
+  it("rejects an invalid, undeclared, missing or repeated parameter before any request", () => {
+    const p = project();
+    withParams(p, ["@param id ^[0-9]+$"]);
+    p.script(...ok({ result: {}, version: "1" }));
+    const cases: [string[], RegExp][] = [
+      [["--param", "id=abc"], /does not match/],
+      [["--param", "id=1", "--param", "other=2"], /not declared/],
+      [[], /needs/],
+      [["--param", "id=1", "--param", "id=2"], /more than once/],
+      [["--param", "noequals"], /name=value/],
+    ];
+    for (const [extra, message] of cases) {
+      const result = cli(p, ["run", "one", ...extra]);
+      assert.equal(result.status, 1, extra.join(" "));
+      assert.match(result.stderr, message);
+    }
+    assert.deepEqual(p.requests(), []);
+  });
+
+  it("takes no parameters for a probe that declares none", () => {
+    const p = project();
+    withParams(p, []);
+    p.script(...ok({ result: {}, version: "1" }));
+    const result = cli(p, ["run", "one", "--param", "id=1"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /takes no parameters/);
+    assert.deepEqual(p.requests(), []);
+  });
+
+  it("refuses a bad declaration at run and at deploy, before anything is generated or sent", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const line of [
+      "@param id ([",
+      "@param id",
+      "@param 1bad x",
+      "@param id a\n * @param id b",
+    ]) {
+      withParams(p, [line]);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, line);
+      assert.match(run.stderr, /@param/);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, line);
+      assert.match(deploy.stderr, /@param/);
+    }
+    assert.deepEqual(p.requests(), []);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+
+  it("generates a runner that enforces the declarations itself and passes only declared strings", () => {
+    const p = project();
+    withParams(p, ["@param id ^[0-9]+$"]);
+    cli(p, ["deploy"]);
+    const source = calls(p).runner.join("");
+    let factory: (...modules: unknown[]) => {
+      post: (b: unknown) => { error?: string; result?: unknown };
+    } = () => {
+      throw new Error("no define");
+    };
+    const define = (_deps: string[], f: typeof factory) => {
+      factory = f;
+    };
+    new Function("define", source)(define);
+    const seen: unknown[] = [];
+    const runtime = {
+      EnvType: { SANDBOX: "SANDBOX" },
+      envType: "SANDBOX",
+      version: "1",
+    };
+    const runner = factory(runtime, {
+      run: (params: unknown) => {
+        seen.push(params);
+        return "done";
+      },
+    });
+    assert.equal(
+      runner.post({ params: { id: "42" }, probe: "one" }).result,
+      "done",
+    );
+    assert.deepEqual(seen, [{ id: "42" }]);
+    for (const params of [
+      { id: "x" },
+      { extra: "2", id: "1" },
+      {},
+      { id: 1 },
+    ]) {
+      assert.match(runner.post({ params, probe: "one" }).error ?? "", /param/);
+    }
+    assert.equal(seen.length, 1);
+  });
+});

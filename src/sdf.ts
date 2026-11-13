@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileCabinetFolder } from "./netsuite.ts";
-import { isRestlet, listProbes, read } from "./probes.ts";
+import { isRestlet, listProbes, type Probe, read } from "./probes.ts";
+import { UsageError } from "./shared.ts";
 
 const templates = new URL("../templates/", import.meta.url);
 const template = (name: string) =>
@@ -10,7 +11,11 @@ const template = (name: string) =>
 const q = (value: string) => JSON.stringify(value);
 
 /** The runner source with its dependency list generated from the probe slugs. */
-export function generateRunner(slugs: string[], source: string): string {
+export function generateRunner(
+  probes: Pick<Probe, "params" | "slug">[],
+  source: string,
+): string {
+  const slugs = probes.map((probe) => probe.slug);
   const names = slugs.map((_, i) => `probe${i}`);
   // Each list item carries its own leading comma, so the template stays valid
   // when the formatter moves the placeholder comments around.
@@ -22,7 +27,12 @@ export function generateRunner(slugs: string[], source: string): string {
     .replace("/*PROBE_NAMES*/", names.map((name) => `, ${name}`).join(""))
     .replace(
       "/*PROBE_ENTRIES*/",
-      slugs.map((slug, i) => `[${q(slug)}, ${names[i]}],`).join(" "),
+      slugs
+        .map(
+          (slug, i) =>
+            `[${q(slug)}, [${names[i]}, ${JSON.stringify(probes[i]?.params ?? [])}]],`,
+        )
+        .join(" "),
     );
 }
 
@@ -37,6 +47,14 @@ export function buildSdfProject(
   { deployed }: { deployed: boolean },
 ): { files: string[]; slugs: string[] } {
   const probes = listProbes(probesDir).filter(isRestlet);
+  const bad = probes.filter((probe) => probe.paramProblems.length > 0);
+  if (bad.length > 0) {
+    throw new UsageError(
+      `Fix the probe parameters before deploying:\n${bad
+        .flatMap((p) => p.paramProblems.map((m) => `- ${p.slug}: ${m}`))
+        .join("\n")}`,
+    );
+  }
   const src = join(sdfDir, "src");
   const folder = join(src, "FileCabinet", "SuiteScripts", fileCabinetFolder);
   rmSync(join(src, "FileCabinet"), { force: true, recursive: true });
@@ -57,7 +75,7 @@ export function buildSdfProject(
   const files = ["runner.js"];
   writeFileSync(
     join(folder, "runner.js"),
-    generateRunner(slugs, template("runner.template.js")),
+    generateRunner(probes, template("runner.template.js")),
   );
   for (const slug of slugs) {
     writeFileSync(

@@ -3,15 +3,80 @@ import { join, relative } from "node:path";
 import type { Config } from "./config.ts";
 import { clientAssertion, restletUrl, scrub, tokenUrl } from "./netsuite.ts";
 import {
+  anchored,
   isRestlet,
   isSlug,
   listProbes,
   matchesExpect,
+  type Probe,
   read,
   readExpect,
 } from "./probes.ts";
 import { resultsDraft } from "./results.ts";
 import { positionals, requireSandbox, UsageError } from "./shared.ts";
+
+/** Every `--param name=value` in the arguments, in order. The value may start with anything. */
+function suppliedParams(args: string[]): [string, string][] {
+  const out: [string, string][] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== "--param") continue;
+    const text = args[++i] ?? "";
+    const at = text.indexOf("=");
+    if (at < 1) {
+      throw new UsageError(`--param needs name=value, got "${text}".`);
+    }
+    out.push([text.slice(0, at), text.slice(at + 1)]);
+  }
+  return out;
+}
+
+/**
+ * Checks the supplied parameters against what the probe declares, before any
+ * request. A value is only ever data: it goes into the JSON body, and the
+ * runner passes it to the probe as a string, never evaluating it.
+ */
+function validateParams(probe: Probe, args: string[]): Record<string, string> {
+  if (probe.paramProblems.length > 0) {
+    throw new UsageError(
+      `${probe.slug} has invalid @param tags:\n${probe.paramProblems.map((m) => `- ${m}`).join("\n")}`,
+    );
+  }
+  const supplied = suppliedParams(args);
+  if (probe.params.length === 0) {
+    if (supplied.length > 0) {
+      throw new UsageError(
+        `${probe.slug} takes no parameters; it declares no @param tags.`,
+      );
+    }
+    return {};
+  }
+  const values = new Map<string, string>();
+  for (const [name, value] of supplied) {
+    if (!probe.params.some((param) => param.name === name)) {
+      throw new UsageError(
+        `Parameter "${name}" is not declared by ${probe.slug}. Declared: ${probe.params.map((p) => p.name).join(", ")}`,
+      );
+    }
+    if (values.has(name)) {
+      throw new UsageError(`Parameter "${name}" was given more than once.`);
+    }
+    values.set(name, value);
+  }
+  for (const { name, pattern } of probe.params) {
+    const value = values.get(name);
+    if (value === undefined) {
+      throw new UsageError(
+        `${probe.slug} needs --param ${name}=<value> matching ${pattern}`,
+      );
+    }
+    if (!anchored(pattern).test(value)) {
+      throw new UsageError(`Parameter "${name}" does not match ${pattern}`);
+    }
+  }
+  return Object.fromEntries(
+    probe.params.map(({ name }) => [name, values.get(name) ?? ""]),
+  );
+}
 
 /**
  * Runs one probe, by name from the fixed list in the probes folder, through
@@ -44,6 +109,7 @@ export async function runProbe(
       `${probe.slug} declares @writes, which needs the user's separate approval. That path is not automated.`,
     );
   }
+  const params = validateParams(probe, args);
   if (!existsSync(creds.privateKeyPath)) {
     throw new UsageError("The runner private key file does not exist.");
   }
@@ -87,7 +153,11 @@ export async function runProbe(
       );
     }
     const response = await fetch(restletUrl(creds.account), {
-      body: JSON.stringify({ probe: probe.slug }),
+      body: JSON.stringify(
+        probe.params.length > 0
+          ? { params, probe: probe.slug }
+          : { probe: probe.slug },
+      ),
       headers: {
         authorization: `Bearer ${tokenBody.access_token}`,
         "content-type": "application/json",

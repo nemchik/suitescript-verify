@@ -20,13 +20,36 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         return { error: "refused: the runner only runs in a sandbox" };
       }
       const name = body && typeof body.probe === "string" ? body.probe : "";
-      const probe = probes.get(name);
-      if (!probe) {
+      const entry = probes.get(name);
+      if (!entry) {
         return { error: "unknown probe", known: [...probes.keys()] };
+      }
+      const [probe, declared] = entry;
+      // Parameters are data: only declared names, only strings that match the
+      // declared pattern in full, and never evaluated.
+      const sent = body.params === undefined ? {} : body.params;
+      if (!sent || typeof sent !== "object" || Array.isArray(sent)) {
+        return { error: "invalid params: expected an object" };
+      }
+      const params = {};
+      for (const key of Object.keys(sent)) {
+        if (!declared.some((param) => param.name === key)) {
+          return { error: `undeclared param: ${key}` };
+        }
+      }
+      for (const { name: key, pattern } of declared) {
+        const value = sent[key];
+        if (typeof value !== "string") {
+          return { error: `missing or non-string param: ${key}` };
+        }
+        if (!new RegExp(`^(?:${pattern})$`, "u").test(value)) {
+          return { error: `param does not match its pattern: ${key}` };
+        }
+        params[key] = value;
       }
       let result;
       try {
-        result = probe.run();
+        result = probe.run(params);
       } catch (e) {
         result = `THROWS: ${e.name}: ${e.message}`;
       }

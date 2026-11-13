@@ -9,7 +9,7 @@ import { applyEnvUpdate, planEnvUpdate } from "./envfile.ts";
 /** A refusal or mistake to report to the person; the message holds no secret. */
 export class UsageError extends Error {}
 
-const valueFlags = ["--dir", "--keys-dir", "--only"];
+const valueFlags = ["--dir", "--keys-dir", "--only", "--param"];
 
 /** The value after a flag, when given. */
 export function flagValue(args: string[], flag: string): string | undefined {

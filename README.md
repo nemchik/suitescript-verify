@@ -17,6 +17,18 @@ npx suitescript-verify help
 
 `run <probe> [--draft]` runs one probe by name through the deployed runner. The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request. Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier. A probe with an `<probe>.expect.json` is compared with it and a difference exits 2 as drift. `--draft` writes `docs/verification/results/<probe>.md` (never over an existing page) with the test, NetSuite version and results, and empty explanation and decision sections. Probes must declare `@scriptType Restlet` and no `@writes`.
 
+A probe takes data by declaring parameters in its leading JSDoc block, one tag per parameter: `@param <name> <pattern>`. The name is lowercase-initial letters and digits (`recordType`); the pattern is a JavaScript regular expression (Unicode mode) that the whole value must match, so `[a-z_]+` cannot match `a;b`. Pass each value with `run <probe> --param name=value`. Every declared parameter is required and its value is always a string. The runner validates the parameters against the declarations before any request, rejecting an invalid, undeclared, missing or repeated one, and a probe that declares none takes none; the generated runner checks them again and hands the probe only declared strings in `run(params)`. A value goes in the JSON request body and is never evaluated or turned into code. A bad `@param` tag (no pattern, an invalid pattern, a duplicate name) stops `run` and `deploy`.
+
+```js
+/**
+ * @scriptType Restlet
+ * @param recordType ^[a-z_]+$
+ */
+define(["N/record"], (record) => ({
+  run: ({ recordType }) => /* ... */,
+}));
+```
+
 Every command that reaches the sandbox refuses an account that is not a sandbox (`digits_SBn`). The runner uses the script id `customscript_suitescript_verify_runner` and is limited to a role with the ID `customrole_suitescript_verify`, which you create in the sandbox.
 
 See [docs/verification/README.md](docs/verification/README.md) and [docs/verification/lessons.md](docs/verification/lessons.md).

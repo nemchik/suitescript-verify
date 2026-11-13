@@ -1,7 +1,12 @@
 import { createPrivateKey } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Config, resultsDirGuidance, resultsDirKey } from "./config.ts";
+import {
+  type Config,
+  insideProject,
+  resultsDirGuidance,
+  resultsDirKey,
+} from "./config.ts";
 
 /** Who does the next step. The maintainer's own steps are never an agent's. */
 export type Owner = "maintainer" | "agent";
@@ -148,8 +153,9 @@ export function runChecks(
     }
   }
   add(
-    `The results folder is set (${resultsDirKey})`,
-    config.resultsDir !== undefined,
+    `The results folder is set, inside the project (${resultsDirKey})`,
+    config.resultsDir !== undefined &&
+      insideProject(project, config.resultsDir),
     "maintainer",
     resultsDirGuidance,
   );

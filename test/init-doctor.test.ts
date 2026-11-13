@@ -336,6 +336,19 @@ describe("doctor", () => {
     );
   });
 
+  it("fails the results step when the key points outside the project", () => {
+    const project = empty();
+    write(
+      project,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_RESULTS_DIR=../elsewhere\n",
+    );
+    assert.equal(
+      status(cli(["doctor"], project).stdout, /results folder/i),
+      "FAIL",
+    );
+  });
+
   it("checks the project files", () => {
     const project = empty();
     cli(["init", ...suggested], project);

@@ -15,7 +15,7 @@ npx suitescript-verify help
 
 `setup-ci` prepares a pipeline: it registers the SDF credentials (auth id `suitescript-verify`) with your project's SuiteCloud CLI and passes the passkey to it through the environment, never an argument. On success it prints the `SUITESCRIPT_VERIFY_` names the pipeline must supply as its own secrets (account, client id, both certificate ids, both private key paths, passkey), never a value. It writes no file, no credential variable and no license variable, and it holds no credential itself: the pipeline provides them. Accepting Oracle's SuiteCloud license in the pipeline is yours.
 
-`deploy` generates the runner and an SDF project into `verification/sdf` (the generated `src/` and `package.json` there are yours to gitignore) from the RESTlet probes in `verification/probes`, then dry-runs it through your project's SuiteCloud CLI. A real deploy needs `--approved` and a person at a terminal who types `DEPLOY`. `cleanup` does the same with the runner's deployment switched off and needs `CLEANUP`. `--dir <path>` moves `verification/`.
+`deploy` generates the runner and an SDF project into `verification/sdf` (the generated `src/` there is yours to gitignore) from the RESTlet probes in `verification/probes`, then dry-runs it through your project's SuiteCloud CLI. A real deploy needs `--approved` and a person at a terminal who types `DEPLOY`. `cleanup` does the same with the runner's deployment switched off and needs `CLEANUP`. `--dir <path>` moves `verification/`.
 
 `run <probe> [--draft]` runs one probe by name through the deployed runner. The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request. Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier. A probe with an `<probe>.expect.json` is compared with it and a difference exits 2 as drift. `--draft` writes `<probe>.md` into your results folder (`SUITESCRIPT_VERIFY_RESULTS_DIR`; never over an existing page) with the test, NetSuite version and results, and empty explanation and decision sections. Probes must declare `@scriptType Restlet` and no `@writes`.
 
@@ -39,7 +39,7 @@ The verification method and the lessons learned running probes are in the reposi
 
 ## Development
 
-You need the Node.js and npm versions in `package.json` `devEngines`. [fnm](https://github.com/Schniz/fnm) reads `.nvmrc`: run `fnm install` once, then `fnm use` in the project (or `fnm env --use-on-cd` in your shell profile). `npm pack` and `npm test` refuse any other Node version.
+You need the Node.js and npm versions in `package.json` `devEngines` (mirrored in `.nvmrc`). `npm pack` and `npm test` refuse any other Node version.
 
 ```sh
 npm install

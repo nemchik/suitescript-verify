@@ -33,7 +33,7 @@ define(["N/record"], (record) => ({
 }));
 ```
 
-Every command that reaches the sandbox refuses an account that is not a sandbox (`digits_SBn`). The runner uses the script id `customscript_suitescript_verify_runner` and is limited to a role with the ID `customrole_suitescript_verify`, which you create in the sandbox.
+Every command that reaches the sandbox refuses an account that is not a sandbox (`digits_SBn`). The runner uses the script id `customscript_suitescript_verify_runner` and is limited to a role with the ID `customrole_suitescript_verify`, which you create in the sandbox. A project that names its own role sets `SUITESCRIPT_VERIFY_ROLE_ID` (for example `SUITESCRIPT_VERIFY_ROLE_ID=customrole_my_runner`); the generated SDF project uses it in the manifest and the runner. Like every `SUITESCRIPT_VERIFY_` setting it layers from the committed `verification/.env`, the gitignored `.env.local` and the process environment. The value must match `^customrole_[a-z0-9_]+$`; a bad value stops every command that reaches the sandbox, and the error names the key, never the value. `doctor` reports the id in use.
 
 See [docs/verification/README.md](docs/verification/README.md) and [docs/verification/lessons.md](docs/verification/lessons.md).
 

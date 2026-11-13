@@ -6,7 +6,7 @@
       <feature required="true">SERVERSIDESCRIPTING</feature>
     </features>
     <objects>
-      <object>customrole_suitescript_verify</object>
+      <object>%%ROLE_ID%%</object>
     </objects>
   </dependencies>
 </manifest>

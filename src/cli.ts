@@ -80,6 +80,7 @@ async function deploy(args: string[]): Promise<number> {
   const { files, slugs } = buildSdfProject(config.sdfDir, config.probesDir, {
     deployed: true,
     extraTags: config.extraTags,
+    roleId: config.roleId,
   });
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
   console.log(`Files to upload: ${files.join(", ")}`);
@@ -111,6 +112,7 @@ async function cleanup(args: string[]): Promise<number> {
   buildSdfProject(config.sdfDir, config.probesDir, {
     deployed: false,
     extraTags: config.extraTags,
+    roleId: config.roleId,
   });
   return suitecloud(project, config, [
     "project:deploy",

@@ -24,6 +24,16 @@ after(() => {
   for (const dir of temps) rmSync(dir, { force: true, recursive: true });
 });
 
+/** Settings every command that reaches the sandbox needs; none is a real account. */
+const sandboxEnv = {
+  SUITESCRIPT_VERIFY_ACCOUNT: "1234567_SB1",
+  SUITESCRIPT_VERIFY_CERTIFICATE_ID: "cert-runner-id",
+  SUITESCRIPT_VERIFY_CLIENT_ID: "client-id-value",
+  SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: "unused.pem",
+  SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID: "cert-sdf-id",
+  SUITESCRIPT_VERIFY_SDF_PRIVATE_KEY_PATH: "unused-sdf.pem",
+};
+
 /** Runs the built CLI in `cwd`, with the SuiteCloud license variable removed from the environment. */
 function cli(
   args: string[],
@@ -35,7 +45,7 @@ function cli(
   for (const name of Object.keys(env)) {
     if (name.startsWith("SUITESCRIPT_VERIFY_")) delete env[name];
   }
-  Object.assign(env, extraEnv);
+  Object.assign(env, sandboxEnv, extraEnv);
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd,
     encoding: "utf8",

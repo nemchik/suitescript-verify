@@ -13,7 +13,7 @@ export interface Check {
   owner?: Owner;
 }
 
-const names = {
+export const names = {
   account: "SUITESCRIPT_VERIFY_ACCOUNT",
   certificateId: "SUITESCRIPT_VERIFY_CERTIFICATE_ID",
   clientId: "SUITESCRIPT_VERIFY_CLIENT_ID",
@@ -38,7 +38,7 @@ function keyType(path: string): string {
 
 /** A sandbox account id looks like `1234567_SB1`. Verification never runs in production. */
 export const isSandboxAccount = (account: string) =>
-  /^\d+_SB\d*$/i.test(account);
+  /^\d{5,8}_SB\d+$/i.test(account);
 
 /** Read-only checklist: each failing step says what to do next and who does it. */
 export function runChecks(

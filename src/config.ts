@@ -11,6 +11,18 @@ export const layoutKeys = [
   "SUITESCRIPT_VERIFY_SDF_DIR",
 ] as const;
 
+/** The committed `.env` may also register extra probe tags: a comma-separated list of tag names, not a path. */
+export const extraTagsKey = "SUITESCRIPT_VERIFY_EXTRA_TAGS";
+
+const tagName = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/** The tag names in a registration value, without the `@`; blank entries are dropped. */
+export const parseTagList = (value: string) =>
+  value
+    .split(",")
+    .map((name) => name.trim().replace(/^@/, ""))
+    .filter((name) => name !== "");
+
 /** One thing wrong with the configuration. The message names a key or file and never holds a value. */
 export interface Problem {
   message: string;
@@ -22,6 +34,8 @@ export interface Config {
   probesDir: string;
   resultsDir: string;
   sdfDir: string;
+  /** Probe tags registered beyond the package's own, from SUITESCRIPT_VERIFY_EXTRA_TAGS. */
+  extraTags: string[];
   /** Every SUITESCRIPT_VERIFY_ value after layering, for the commands that need one. */
   values: Record<string, string>;
   problems: Problem[];
@@ -77,9 +91,19 @@ function checkCommitted(
 ): Problem[] {
   const problems: Problem[] = [];
   for (const [key, value] of committed) {
-    if (!(layoutKeys as readonly string[]).includes(key)) {
+    if (key === extraTagsKey) {
+      if (!parseTagList(value).every((name) => tagName.test(name))) {
+        problems.push({
+          message: `${key} in ${file} is not a comma-separated list of tag names like flavor,other.`,
+        });
+      } else if (looksSecret(value)) {
+        problems.push({
+          message: `${key} in ${file} looks like a secret, not a list of tag names. The committed file is public: move a secret to .env.local.`,
+        });
+      }
+    } else if (!(layoutKeys as readonly string[]).includes(key)) {
       problems.push({
-        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${layoutKeys.join(", ")}); put anything else in .env.local or the process environment.`,
+        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${[...layoutKeys, extraTagsKey].join(", ")}); put anything else in .env.local or the process environment.`,
       });
     } else if (!insideProject(project, value)) {
       problems.push({
@@ -143,6 +167,7 @@ export function loadConfig(
     resolve(project, values[key] || fallback);
   const shown = relative(project, envFile).replaceAll("\\", "/");
   return {
+    extraTags: parseTagList(values[extraTagsKey] ?? ""),
     probesDir: path("SUITESCRIPT_VERIFY_PROBES_DIR", join(root, "probes")),
     problems: [
       ...checkCommitted(project, committed, shown),

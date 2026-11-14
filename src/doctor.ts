@@ -36,6 +36,10 @@ export const names = {
  */
 const javaVersions = ["17", "21"];
 
+/** Where Oracle's SDK keeps its jar (`cli/`) and its saved logins, under the home folder. */
+const sdkFolder = ".suitecloud-sdk";
+const loginFiles = ["credentials_browser_based.p12", "credentials_ci.p12"];
+
 /** The installed Java's version, read the way the SuiteCloud CLI reads it (`java -version`, no shell); empty when there is none. */
 function installedJavaVersion(): string {
   const result = spawnSync("java", ["-version"], {
@@ -116,12 +120,13 @@ export function runChecks(
   const javaVersion = installedJavaVersion();
   add(
     `Java ${javaVersions.join(" or ")} is on the PATH`,
-    javaVersions.some((version) => javaVersion.startsWith(version)),
+    // The major version: "17.0.4" is Java 17, but "170.0.1" is not.
+    javaVersions.includes(javaVersion.split(".")[0] ?? ""),
     "maintainer",
     `Install Java ${javaVersions.join(" or ")} and make sure \`java -version\` works: the SuiteCloud SDK runs on no other version.`,
   );
 
-  const sdkRoot = join(homedir(), ".suitecloud-sdk");
+  const sdkRoot = join(homedir(), sdkFolder);
   const jarName = sdkFilename(project);
   add(
     "The SuiteCloud SDK jar is downloaded",
@@ -132,9 +137,7 @@ export function runChecks(
 
   add(
     "SuiteCloud login is set up (browser-based once, or CI)",
-    ["credentials_browser_based.p12", "credentials_ci.p12"].some((file) =>
-      existsSync(join(sdkRoot, file)),
-    ),
+    loginFiles.some((file) => existsSync(join(sdkRoot, file))),
     "maintainer",
     "With SUITECLOUD_CI_PASSKEY unset, run the project's SuiteCloud CLI account:setup from the SDF folder, log in to the sandbox and choose a role. This one-time browser login installs Oracle's SuiteCloud Development Integration in the account.",
   );

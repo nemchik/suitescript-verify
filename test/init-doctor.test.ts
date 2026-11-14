@@ -431,6 +431,8 @@ describe("doctor: Java, the SuiteCloud SDK and the login", () => {
     ['openjdk version "21.0.1" 2023-10-17', "ok"],
     ['openjdk version "11.0.2" 2019-01-15', "FAIL"],
     ['java version "1.8.0_381"', "FAIL"],
+    ['openjdk version "170.0.1" 2024-01-01', "FAIL"],
+    ['openjdk version "17" 2021-09-14', "ok"],
   ] as const) {
     it(`gives ${version} the verdict ${expected}`, { skip: posix }, () => {
       const out = cli(["doctor"], withCli(empty()), fakeJava(version)).stdout;

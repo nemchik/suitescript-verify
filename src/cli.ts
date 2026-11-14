@@ -6,6 +6,7 @@ import {
   loadConfig,
   resultsDirGuidance,
   resultsDirKey,
+  runnerIdKey,
   suggestedResultsDir,
 } from "./config.ts";
 import { formatChecks, names, runChecks } from "./doctor.ts";
@@ -104,16 +105,26 @@ async function initCommand(args: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * Generates the runner and its SDF project. A runner generated here under
+ * another id may still be deployed (the SuiteCloud CLI cannot delete a script),
+ * so say how to turn it off.
+ */
+function buildRunner(config: Config, deployed: boolean) {
+  const built = buildSdfProject(config, { deployed });
+  for (const id of built.replacedRunners) {
+    console.warn(
+      `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
+    );
+  }
+  return built;
+}
+
 async function deploy(args: string[]): Promise<number> {
   const project = process.cwd();
   const config = configure(args, true);
   requireSandbox(config);
-  const { files, slugs } = buildSdfProject(config.sdfDir, config.probesDir, {
-    deployed: true,
-    extraTags: config.extraTags,
-    roleId: config.roleId,
-    runnerId: config.runnerId,
-  });
+  const { files, slugs } = buildRunner(config, true);
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
   console.log(`Files to upload: ${files.join(", ")}`);
   const approved = args.includes("--approved");
@@ -141,12 +152,7 @@ async function cleanup(args: string[]): Promise<number> {
       "Dry run only. This turns the runner's deployment off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
     );
   }
-  buildSdfProject(config.sdfDir, config.probesDir, {
-    deployed: false,
-    extraTags: config.extraTags,
-    roleId: config.roleId,
-    runnerId: config.runnerId,
-  });
+  buildRunner(config, false);
   return suitecloud(project, config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),

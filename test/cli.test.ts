@@ -369,14 +369,29 @@ describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
     assert.equal(result.stderr.includes("nope"), false);
   });
 
-  it("accepts a long valid id that is not a secret", () => {
+  it("accepts the longest id the platform allows, 40 characters with the prefix, though it looks like a token", () => {
     const project = fakeProject();
     write(
       project,
       "verification/.env",
-      `${roleKey}=customrole_${"a".repeat(40)}\n`,
+      `${roleKey}=customrole_${"a".repeat(29)}\n`,
     );
     assert.equal(cli(["deploy"], project).status, 0);
+  });
+
+  it("refuses an id of 41 characters, which the platform rejects, naming the key and not the value", () => {
+    const id = `customrole_${"a".repeat(30)}`;
+    const fromFile = fakeProject();
+    write(fromFile, "verification/.env", `${roleKey}=${id}\n`);
+    const fromEnv = fakeProject();
+    for (const result of [
+      cli(["deploy"], fromFile),
+      cli(["deploy"], fromEnv, { [roleKey]: id }),
+    ]) {
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes(roleKey));
+      assert.equal(result.stderr.includes(id), false);
+    }
   });
 
   it("doctor reports the role id in use", () => {
@@ -432,6 +447,28 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
       ),
       false,
     );
+  });
+
+  it("replaces a runner generated under another id, and warns that the old one may still be deployed", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${key}=old_one\n`);
+    const first = cli(["deploy"], project);
+    assert.equal(first.status, 0);
+    assert.equal(first.stderr.includes("still be deployed"), false);
+    write(project, "verification/.env", `${key}=new_one\n`);
+    const second = cli(["deploy"], project);
+    assert.equal(second.status, 0);
+    assert.equal(
+      existsSync(src(project, "Objects/customscript_old_one_runner.xml")),
+      false,
+    );
+    assert.ok(
+      existsSync(src(project, "Objects/customscript_new_one_runner.xml")),
+    );
+    assert.match(second.stderr, /old_one/);
+    assert.match(second.stderr, /still be deployed/);
+    assert.match(second.stderr, /cleanup/);
+    assert.equal(cli(["deploy"], project).stderr.includes("old_one"), false);
   });
 
   it("turns the named runner's deployment off in cleanup", () => {

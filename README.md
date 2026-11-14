@@ -13,7 +13,7 @@ npm install --save-dev suitescript-verify @oracle/suitecloud-cli
 npx suitescript-verify help
 ```
 
-This README is the whole guide and ships with each published version. Read the copy in your project (`node_modules/suitescript-verify/README.md`), which matches the version you installed.
+This README is the whole guide and ships with each published version. Read the copy installed with the package, which matches the version you use: `suitescript-verify init` prints its path (it is in `node_modules/suitescript-verify/` under npm and pnpm).
 
 ## Contents
 

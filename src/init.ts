@@ -6,8 +6,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { type Config, insideProject, resultsDirKey } from "./config.ts";
 import { UsageError } from "./shared.ts";
+
+/** The README shipped with the running package, wherever the package manager put it. */
+const readme = fileURLToPath(new URL("../README.md", import.meta.url));
 
 /** A path relative to the project, with forward slashes, for messages and the committed `.env`. */
 const shown = (project: string, path: string) =>
@@ -104,7 +108,7 @@ export function init(
     "1. Install the SuiteCloud CLI: npm install --save-dev @oracle/suitecloud-cli. Read Oracle's license and accept it yourself; this package never does.",
     `2. Add ${local} to .gitignore before saving any value: it holds credentials.`,
     "3. In a sandbox, create the integration record, the role and the certificate mappings, and generate the private keys outside the repository.",
-    `4. Save the account, client id, certificate ids, key paths and a passkey in ${local}. Setup is described in the installed package README: node_modules/suitescript-verify/README.md`,
+    `4. Save the account, client id, certificate ids, key paths and a passkey in ${local}. Setup is described in the installed package README: ${shown(project, readme)}`,
     "5. Run suitescript-verify doctor until every step passes.",
   ].join("\n");
 }

@@ -7,13 +7,15 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 
+const root = join(import.meta.dirname, "..");
 const bin = join(
   import.meta.dirname,
   "..",
@@ -219,9 +221,15 @@ describe("init", () => {
     assert.match(out, /doctor/);
   });
 
-  it("points at the installed README, not the repository", () => {
-    const out = cli(["init", ...suggested], empty()).stdout;
-    assert.match(out, /node_modules\/suitescript-verify\/README\.md/);
+  it("points at the README of the running package, wherever it is installed", () => {
+    const project = empty();
+    const out = cli(["init", ...suggested], project).stdout;
+    const printed = /installed package README: (\S+)/.exec(out)?.[1];
+    assert.ok(printed, "the to-do list names the README");
+    assert.equal(
+      realpathSync(resolve(project, printed)),
+      realpathSync(join(root, "README.md")),
+    );
     assert.doesNotMatch(out, /github\.com/);
   });
 

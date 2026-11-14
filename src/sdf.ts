@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { defaultRoleId } from "./config.ts";
-import { fileCabinetFolder } from "./netsuite.ts";
+import { defaultRoleId, defaultRunnerId } from "./config.ts";
+import { runnerNames } from "./netsuite.ts";
 import {
   isRestlet,
   listProbes,
@@ -55,7 +55,13 @@ export function buildSdfProject(
     deployed,
     extraTags = [],
     roleId = defaultRoleId,
-  }: { deployed: boolean; extraTags?: readonly string[]; roleId?: string },
+    runnerId = defaultRunnerId,
+  }: {
+    deployed: boolean;
+    extraTags?: readonly string[];
+    roleId?: string;
+    runnerId?: string;
+  },
 ): { files: string[]; slugs: string[] } {
   const probes = listProbes(probesDir, extraTags).filter(isRestlet);
   const bad = probes.filter((probe) => tagProblems(probe).length > 0);
@@ -67,7 +73,8 @@ export function buildSdfProject(
     );
   }
   const src = join(sdfDir, "src");
-  const folder = join(src, "FileCabinet", "SuiteScripts", fileCabinetFolder);
+  const names = runnerNames(runnerId);
+  const folder = join(src, "FileCabinet", "SuiteScripts", names.folder);
   rmSync(join(src, "FileCabinet"), { force: true, recursive: true });
   mkdirSync(join(folder, "probes"), { recursive: true });
   mkdirSync(join(src, "Objects"), { recursive: true });
@@ -80,10 +87,22 @@ export function buildSdfProject(
     join(src, "manifest.xml"),
     template("sdf/manifest.xml").replaceAll("%%ROLE_ID%%", roleId),
   );
-  writeFileSync(join(src, "deploy.xml"), template("sdf/deploy.xml"));
   writeFileSync(
-    join(src, "Objects", "customscript_suitescript_verify_runner.xml"),
+    join(src, "deploy.xml"),
+    template("sdf/deploy.xml").replaceAll("%%FOLDER%%", names.folder),
+  );
+  writeFileSync(
+    join(src, "Objects", `${names.scriptId}.xml`),
     template("sdf/runner.xml")
+      .replaceAll("%%SCRIPT_ID%%", names.scriptId)
+      .replaceAll("%%DEPLOY_ID%%", names.deployId)
+      .replaceAll("%%FOLDER%%", names.folder)
+      .replaceAll(
+        "%%TITLE%%",
+        runnerId === defaultRunnerId
+          ? "suitescript-verify runner"
+          : `suitescript-verify runner (${runnerId})`,
+      )
       .replace("%%DEPLOYED%%", deployed ? "T" : "F")
       .replaceAll("%%ROLE_ID%%", roleId),
   );

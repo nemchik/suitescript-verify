@@ -1,8 +1,11 @@
 import { createPrivateKey, sign } from "node:crypto";
 
-export const runnerScriptId = "customscript_suitescript_verify_runner";
-export const runnerDeployId = "customdeploy_suitescript_verify_runner";
-export const fileCabinetFolder = "suitescript-verify";
+/** The names a runner takes from its id: the script, the deployment and the File Cabinet folder. */
+export const runnerNames = (runnerId: string) => ({
+  deployId: `customdeploy_${runnerId}_runner`,
+  folder: runnerId.replaceAll("_", "-"),
+  scriptId: `customscript_${runnerId}_runner`,
+});
 
 const host = (account: string) =>
   account.trim().toLowerCase().replace(/_/g, "-");
@@ -10,8 +13,10 @@ const host = (account: string) =>
 export const tokenUrl = (account: string) =>
   `https://${host(account)}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token`;
 
-export const restletUrl = (account: string) =>
-  `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${runnerScriptId}&deploy=${runnerDeployId}`;
+export const restletUrl = (account: string, runnerId: string) => {
+  const { deployId, scriptId } = runnerNames(runnerId);
+  return `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${scriptId}&deploy=${deployId}`;
+};
 
 const base64url = (data: Buffer | string) =>
   Buffer.from(data).toString("base64url");

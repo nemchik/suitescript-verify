@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { createPrivateKey } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type Config,
@@ -27,6 +29,45 @@ export const names = {
   sdfCertificateId: "SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID",
   sdfPrivateKeyPath: "SUITESCRIPT_VERIFY_SDF_PRIVATE_KEY_PATH",
 } as const;
+
+/**
+ * The Java versions Oracle's SDK runs on: the SuiteCloud CLI's own
+ * `SDK_COMPATIBLE_JAVA_VERSIONS`, which refuses to run on any other.
+ */
+const javaVersions = ["17", "21"];
+
+/** The installed Java's version, read the way the SuiteCloud CLI reads it (`java -version`, no shell); empty when there is none. */
+function installedJavaVersion(): string {
+  const result = spawnSync("java", ["-version"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const match = /(?:\bjava version\b|\bopenjdk version\b) "([\d.]+)"/.exec(
+    result.stderr ?? "",
+  );
+  return match?.[1] ?? "";
+}
+
+/** The SDK jar the installed SuiteCloud CLI downloads, from its package.json; empty when unknown. */
+function sdkFilename(project: string): string {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(
+        join(
+          project,
+          "node_modules",
+          "@oracle",
+          "suitecloud-cli",
+          "package.json",
+        ),
+        "utf8",
+      ),
+    ) as { sdkFilename?: string };
+    return manifest.sdkFilename ?? "";
+  } catch {
+    return "";
+  }
+}
 
 /** `ec:<curve>`, `rsa:<bits>` or `other`, from a private key file. Never the key itself. */
 function keyType(path: string): string {
@@ -70,6 +111,32 @@ export function runChecks(
     ),
     "maintainer",
     "Run npm install --save-dev @oracle/suitecloud-cli, read Oracle's license and accept it yourself. This package never accepts it.",
+  );
+
+  const javaVersion = installedJavaVersion();
+  add(
+    `Java ${javaVersions.join(" or ")} is on the PATH`,
+    javaVersions.some((version) => javaVersion.startsWith(version)),
+    "maintainer",
+    `Install Java ${javaVersions.join(" or ")} and make sure \`java -version\` works: the SuiteCloud SDK runs on no other version.`,
+  );
+
+  const sdkRoot = join(homedir(), ".suitecloud-sdk");
+  const jarName = sdkFilename(project);
+  add(
+    "The SuiteCloud SDK jar is downloaded",
+    jarName !== "" && existsSync(join(sdkRoot, "cli", jarName)),
+    "maintainer",
+    "Run the SuiteCloud CLI's postinstall script in your project (node node_modules/@oracle/suitecloud-cli/postinstall.js) and read and accept Oracle's license yourself when it asks. This package never accepts it. A headless machine needs a desktop install, or the maintainer to accept the license first.",
+  );
+
+  add(
+    "SuiteCloud login is set up (browser-based once, or CI)",
+    ["credentials_browser_based.p12", "credentials_ci.p12"].some((file) =>
+      existsSync(join(sdkRoot, file)),
+    ),
+    "maintainer",
+    "With SUITECLOUD_CI_PASSKEY unset, run the project's SuiteCloud CLI account:setup from the SDF folder, log in to the sandbox and choose a role. This one-time browser login installs Oracle's SuiteCloud Development Integration in the account.",
   );
 
   const missing = [
@@ -173,6 +240,7 @@ export function runChecks(
   );
 
   add(`Runner role id: ${config.roleId}`, true, "agent", "");
+  add(`Runner id: ${config.runnerId}`, true, "agent", "");
 
   return checks;
 }

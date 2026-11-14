@@ -112,6 +112,7 @@ async function deploy(args: string[]): Promise<number> {
     deployed: true,
     extraTags: config.extraTags,
     roleId: config.roleId,
+    runnerId: config.runnerId,
   });
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
   console.log(`Files to upload: ${files.join(", ")}`);
@@ -144,6 +145,7 @@ async function cleanup(args: string[]): Promise<number> {
     deployed: false,
     extraTags: config.extraTags,
     roleId: config.roleId,
+    runnerId: config.runnerId,
   });
   return suitecloud(project, config, [
     "project:deploy",

@@ -118,14 +118,19 @@ function project(): Project {
   };
 }
 
-function cli(p: Project, args: string[], env: Record<string, string> = {}) {
+function cli(
+  p: Project,
+  args: string[],
+  env: Record<string, string> = {},
+  cwd: string = p.dir,
+) {
   const base: NodeJS.ProcessEnv = { ...process.env };
   delete base.SUITECLOUD_CLI_ACCEPT_LICENSE;
   for (const name of Object.keys(base)) {
     if (name.startsWith("SUITESCRIPT_VERIFY_")) delete base[name];
   }
   const result = spawnSync(process.execPath, [bin, ...args], {
-    cwd: p.dir,
+    cwd,
     encoding: "utf8",
     env: { ...base, ...p.env, ...env },
     input: "",
@@ -458,6 +463,45 @@ describe("run", () => {
     assert.match(token?.body ?? "", /client_assertion=/);
     assert.match(call?.url ?? "", /^https:\/\/1234567-sb1\.restlets\./);
     assert.equal(call?.body, JSON.stringify({ probe: "one" }));
+  });
+
+  it("calls the default runner, and the one named by SUITESCRIPT_VERIFY_RUNNER_ID", () => {
+    const p = project();
+    withProbe(p);
+    p.script(...ok({ probe: "one", result: {}, version: "1" }));
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+    assert.match(
+      p.requests()[1]?.url ?? "",
+      /script=customscript_suitescript_verify_runner&deploy=customdeploy_suitescript_verify_runner$/,
+    );
+    write(
+      p.dir,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_RUNNER_ID=my_project\n",
+    );
+    p.script(...ok({ probe: "one", result: {}, version: "1" }));
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+    assert.match(
+      p.requests().at(-1)?.url ?? "",
+      /script=customscript_my_project_runner&deploy=customdeploy_my_project_runner$/,
+    );
+  });
+
+  it("runs a probe from a project nested in a subfolder, with --dir .", () => {
+    const p = project();
+    const tools = join(p.dir, "tools");
+    write(tools, "probes/one.js", probeSource(restlet));
+    mkdirSync(join(tools, "docs", "verification", "results"), {
+      recursive: true,
+    });
+    p.script(...ok({ probe: "one", result: { ok: true }, version: "2026.2" }));
+    const result = cli(p, ["run", "one", "--dir", "."], {}, tools);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /"ok": true/);
+    assert.match(
+      p.requests()[1]?.url ?? "",
+      /^https:\/\/1234567-sb1\.restlets\./,
+    );
   });
 
   it("takes only a probe name from the fixed list, never code", () => {

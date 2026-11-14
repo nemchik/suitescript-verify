@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -383,5 +384,153 @@ describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
     write(project, "verification/.env", `${roleKey}=customrole_my_runner\n`);
     const out = cli(["doctor"], project).stdout;
     assert.match(out, /Runner role id: customrole_my_runner/);
+  });
+});
+
+describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
+  const key = "SUITESCRIPT_VERIFY_RUNNER_ID";
+  const src = (project: string, file: string) =>
+    join(project, "verification", "sdf", "src", file);
+  const read = (project: string, file: string) =>
+    readFileSync(src(project, file), "utf8");
+
+  it("defaults to today's runner ids and folder", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    const runner = read(
+      project,
+      "Objects/customscript_suitescript_verify_runner.xml",
+    );
+    assert.match(runner, /scriptid="customscript_suitescript_verify_runner"/);
+    assert.match(runner, /scriptid="customdeploy_suitescript_verify_runner"/);
+    assert.match(runner, /\[\/SuiteScripts\/suitescript-verify\/runner\.js\]/);
+    assert.match(
+      read(project, "deploy.xml"),
+      /~\/FileCabinet\/SuiteScripts\/suitescript-verify\/\*/,
+    );
+    assert.ok(
+      existsSync(src(project, "FileCabinet/SuiteScripts/suitescript-verify")),
+    );
+  });
+
+  it("names the runner, its deployment and its folder from the committed .env", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${key}=my_project\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const runner = read(project, "Objects/customscript_my_project_runner.xml");
+    assert.match(runner, /scriptid="customscript_my_project_runner"/);
+    assert.match(runner, /scriptid="customdeploy_my_project_runner"/);
+    assert.match(runner, /\[\/SuiteScripts\/my-project\/runner\.js\]/);
+    assert.match(
+      read(project, "deploy.xml"),
+      /~\/FileCabinet\/SuiteScripts\/my-project\/\*/,
+    );
+    assert.ok(existsSync(src(project, "FileCabinet/SuiteScripts/my-project")));
+    assert.equal(
+      existsSync(
+        src(project, "Objects/customscript_suitescript_verify_runner.xml"),
+      ),
+      false,
+    );
+  });
+
+  it("turns the named runner's deployment off in cleanup", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${key}=my_project\n`);
+    assert.equal(cli(["cleanup"], project).status, 0);
+    assert.match(
+      read(project, "Objects/customscript_my_project_runner.xml"),
+      /<isdeployed>F<\/isdeployed>/,
+    );
+  });
+
+  it("layers: the process environment wins over .env", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${key}=from_file\n`);
+    assert.equal(cli(["deploy"], project, { [key]: "from_env" }).status, 0);
+    assert.ok(
+      existsSync(src(project, "Objects/customscript_from_env_runner.xml")),
+    );
+  });
+
+  for (const bad of ["Nope", "has-dash", "x".repeat(21), "1abc", ""]) {
+    if (bad === "") continue;
+    it(`refuses ${JSON.stringify(bad)} from the committed .env, naming the key and not the value`, () => {
+      const project = fakeProject();
+      write(project, "verification/.env", `${key}=${bad}\n`);
+      const result = cli(["deploy"], project);
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes(key));
+      assert.equal(result.stderr.includes(bad), false);
+    });
+  }
+
+  it("refuses a bad value from the process environment too", () => {
+    const project = fakeProject();
+    const result = cli(["deploy"], project, { [key]: "Bad-Value" });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(key));
+    assert.equal(result.stderr.includes("Bad-Value"), false);
+  });
+
+  it("doctor reports the runner id in use", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${key}=my_project\n`);
+    assert.match(cli(["doctor"], project).stdout, /Runner id: my_project/);
+  });
+});
+
+describe("a project nested in a subfolder of a repository", () => {
+  /**
+   * A repository whose verification tooling is its own npm project in `tools/`
+   * (its own `node_modules`, with the fake SuiteCloud CLI), as when the
+   * repository root publishes a package of its own.
+   */
+  function nestedProject({ ignoreLocal = true } = {}) {
+    const repo = fakeProject();
+    const tools = join(repo, "tools");
+    mkdirSync(tools, { recursive: true });
+    cpSync(join(repo, "node_modules"), join(tools, "node_modules"), {
+      recursive: true,
+    });
+    rmSync(join(repo, "node_modules"), { force: true, recursive: true });
+    rmSync(join(repo, "verification"), { force: true, recursive: true });
+    writeFileSync(join(tools, "package.json"), '{"private":true}');
+    git(repo, ["init", "-q"]);
+    if (ignoreLocal) write(repo, ".gitignore", ".env.local\n");
+    return { repo, tools };
+  }
+
+  it("runs init, doctor and deploy from the subfolder with --dir .", () => {
+    const { repo, tools } = nestedProject();
+    const init = cli(["init", "--dir", ".", "--results-dir", "results"], tools);
+    assert.equal(init.status, 0, init.stderr);
+    for (const folder of ["probes", "results", "sdf"]) {
+      assert.ok(existsSync(join(tools, folder)), folder);
+    }
+    assert.match(
+      readFileSync(join(tools, ".env"), "utf8"),
+      /SUITESCRIPT_VERIFY_RESULTS_DIR=results/,
+    );
+
+    const doctor = cli(["doctor", "--dir", "."], tools);
+    assert.match(
+      doctor.stdout,
+      /ok {3}SuiteCloud CLI \(@oracle\/suitecloud-cli\) is installed/,
+    );
+    assert.equal(doctor.stdout.includes("not gitignored"), false);
+
+    const deploy = cli(["deploy", "--dir", "."], tools);
+    assert.equal(deploy.status, 0, deploy.stderr);
+    assert.ok(existsSync(join(tools, "sdf", "src", "manifest.xml")));
+    assert.equal(norm(calls(repo).cwd), norm(join(tools, "sdf")));
+  });
+
+  it("checks .env.local against the repository's .gitignore", () => {
+    const { tools } = nestedProject({ ignoreLocal: false });
+    write(tools, ".env.local", "SUITESCRIPT_VERIFY_ACCOUNT=1234567_SB1\n");
+    const result = cli(["deploy", "--dir", "."], tools);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\.env\.local is not gitignored/);
   });
 });

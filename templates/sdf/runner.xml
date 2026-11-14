@@ -1,17 +1,17 @@
-<restlet scriptid="customscript_suitescript_verify_runner">
+<restlet scriptid="%%SCRIPT_ID%%">
   <description>Runs one version-controlled probe by name in a sandbox. Source: the project's verification folder, through suitescript-verify.</description>
   <isinactive>F</isinactive>
-  <name>suitescript-verify runner</name>
+  <name>%%TITLE%%</name>
   <notifyowner>F</notifyowner>
-  <scriptfile>[/SuiteScripts/suitescript-verify/runner.js]</scriptfile>
+  <scriptfile>[/SuiteScripts/%%FOLDER%%/runner.js]</scriptfile>
   <scriptdeployments>
-    <scriptdeployment scriptid="customdeploy_suitescript_verify_runner">
+    <scriptdeployment scriptid="%%DEPLOY_ID%%">
       <allroles>F</allroles>
       <audslctrole>[%%ROLE_ID%%]</audslctrole>
       <isdeployed>%%DEPLOYED%%</isdeployed>
       <loglevel>DEBUG</loglevel>
       <status>RELEASED</status>
-      <title>suitescript-verify runner</title>
+      <title>%%TITLE%%</title>
     </scriptdeployment>
   </scriptdeployments>
 </restlet>

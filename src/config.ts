@@ -26,6 +26,12 @@ export const roleIdKey = "SUITESCRIPT_VERIFY_ROLE_ID";
 export const defaultRoleId = "customrole_suitescript_verify";
 const roleIdPattern = /^customrole_[a-z0-9_]+$/;
 
+/** The committed `.env` may also name the runner: a short stem for its script id, deployment id and File Cabinet folder. */
+export const runnerIdKey = "SUITESCRIPT_VERIFY_RUNNER_ID";
+export const defaultRunnerId = "suitescript_verify";
+// Short enough that `customscript_<id>_runner` fits NetSuite's script id length limit.
+const runnerIdPattern = /^[a-z][a-z0-9_]{0,19}$/;
+
 const tagName = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 /** The tag names in a registration value, without the `@`; blank entries are dropped. */
@@ -49,6 +55,8 @@ export interface Config {
   sdfDir: string;
   /** The runner's role id, from SUITESCRIPT_VERIFY_ROLE_ID (default `customrole_suitescript_verify`). */
   roleId: string;
+  /** The runner's name stem, from SUITESCRIPT_VERIFY_RUNNER_ID (default `suitescript_verify`). */
+  runnerId: string;
   /** Probe tags registered beyond the package's own, from SUITESCRIPT_VERIFY_EXTRA_TAGS. */
   extraTags: string[];
   /** Every SUITESCRIPT_VERIFY_ value after layering, for the commands that need one. */
@@ -102,6 +110,10 @@ const roleIdProblem = (file: string) => ({
   message: `${roleIdKey} in ${file} is not a NetSuite custom role id like customrole_suitescript_verify (lowercase letters, digits and underscores after customrole_).`,
 });
 
+const runnerIdProblem = (file: string) => ({
+  message: `${runnerIdKey} in ${file} is not a runner id like my_project (a lowercase letter, then lowercase letters, digits and underscores, 20 characters at most).`,
+});
+
 /** Checks the committed `.env` against the allowlist. Messages name the key, never the value. */
 function checkCommitted(
   project: string,
@@ -113,6 +125,8 @@ function checkCommitted(
     if (key === roleIdKey) {
       // The pattern is the whole check: a valid id may be long enough to look like a token.
       if (!roleIdPattern.test(value)) problems.push(roleIdProblem(file));
+    } else if (key === runnerIdKey) {
+      if (!runnerIdPattern.test(value)) problems.push(runnerIdProblem(file));
     } else if (key === extraTagsKey) {
       if (!parseTagList(value).every((name) => tagName.test(name))) {
         problems.push({
@@ -125,7 +139,7 @@ function checkCommitted(
       }
     } else if (!(layoutKeys as readonly string[]).includes(key)) {
       problems.push({
-        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${[...layoutKeys, extraTagsKey, roleIdKey].join(", ")}); put anything else in .env.local or the process environment.`,
+        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${[...layoutKeys, extraTagsKey, roleIdKey, runnerIdKey].join(", ")}); put anything else in .env.local or the process environment.`,
       });
     } else if (!insideProject(project, value)) {
       problems.push({
@@ -195,6 +209,13 @@ export function loadConfig(
     (committedRole !== undefined && !roleIdPattern.test(committedRole))
       ? []
       : [roleIdProblem(".env.local or the environment")];
+  const runnerId = values[runnerIdKey] || defaultRunnerId;
+  const committedRunner = committed.get(runnerIdKey);
+  const runnerProblems =
+    runnerIdPattern.test(runnerId) ||
+    (committedRunner !== undefined && !runnerIdPattern.test(committedRunner))
+      ? []
+      : [runnerIdProblem(".env.local or the environment")];
   const shown = relative(project, envFile).replaceAll("\\", "/");
   return {
     extraTags: parseTagList(values[extraTagsKey] ?? ""),
@@ -203,12 +224,14 @@ export function loadConfig(
       ...checkCommitted(project, committed, shown),
       ...checkLocalIgnored(project, localFile),
       ...roleProblems,
+      ...runnerProblems,
     ],
     resultsDir: values[resultsDirKey]
       ? resolve(project, values[resultsDirKey])
       : undefined,
     roleId,
     root,
+    runnerId,
     sdfDir: path("SUITESCRIPT_VERIFY_SDF_DIR", join(root, "sdf")),
     values,
   };

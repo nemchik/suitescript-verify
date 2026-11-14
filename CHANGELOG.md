@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.3.0...suitescript-verify-v1.0.0) (2026-11-14)
+
+
+### Bug Fixes
+
+* ship the guidance in the README so it matches the installed version ([#16](https://github.com/nemchik/suitescript-verify/issues/16)) ([a001489](https://github.com/nemchik/suitescript-verify/commit/a0014891162e4c059b7969fc9b9c67b054bd06d6)), closes [#13](https://github.com/nemchik/suitescript-verify/issues/13)
+
 ## [0.3.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.2.0...suitescript-verify-v0.3.0) (2026-11-13)
 
 

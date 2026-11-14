@@ -18,6 +18,9 @@ The document in a downstream project that records one verification: the test, th
 **Results folder**:
 The folder in a downstream project where its results pages live, named by `SUITESCRIPT_VERIFY_RESULTS_DIR` in the committed `.env`. The package has no default: the project chooses it, and `init` only suggests `docs/verification/results`.
 
+**Lesson**:
+A short, generic account of a runner, deploy, probe or sandbox problem: what happened, what it cost and how to avoid it. It holds no account identifiers and no findings about NetSuite itself, which belong on a results page.
+
 **Expected output**:
 The `<probe>.expect.json` file holding the result a probe produced when it was verified, so a later run can report drift.
 

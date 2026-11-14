@@ -21,10 +21,45 @@ export const resultsDirGuidance = `Choose where results pages live in your proje
 /** The committed `.env` may also register extra probe tags: a comma-separated list of tag names, not a path. */
 export const extraTagsKey = "SUITESCRIPT_VERIFY_EXTRA_TAGS";
 
-/** The committed `.env` may also name the runner role: a NetSuite custom role id. */
+/**
+ * A committed setting that holds an id the platform checks. NetSuite rejects a
+ * script, deployment or role id over 40 characters, prefix included (checked by
+ * SDF server validation), so the pattern carries the length and a bad value
+ * stops every command before a deploy can.
+ */
+interface IdSetting {
+  key: string;
+  fallback: string;
+  pattern: RegExp;
+  /** What the value should be, for the message: "is not <expects>". */
+  expects: string;
+}
+
+/** The committed `.env` may name the runner role: a NetSuite custom role id. */
 export const roleIdKey = "SUITESCRIPT_VERIFY_ROLE_ID";
 export const defaultRoleId = "customrole_suitescript_verify";
-const roleIdPattern = /^customrole_[a-z0-9_]+$/;
+const roleSetting: IdSetting = {
+  // `customrole_` is 11 characters, so 29 more make 40.
+  expects:
+    "a NetSuite custom role id like customrole_suitescript_verify (lowercase letters, digits and underscores after customrole_, 40 characters at most in all)",
+  fallback: defaultRoleId,
+  key: roleIdKey,
+  pattern: /^customrole_[a-z0-9_]{1,29}$/,
+};
+
+/** The committed `.env` may name the runner: a short stem for its script id, deployment id and File Cabinet folder. */
+export const runnerIdKey = "SUITESCRIPT_VERIFY_RUNNER_ID";
+export const defaultRunnerId = "suitescript_verify";
+const runnerSetting: IdSetting = {
+  // `customscript_` and `customdeploy_` are 13 characters and `_runner` is 7, so 20 more make 40.
+  expects:
+    "a runner id like my_project (a lowercase letter, then lowercase letters, digits and underscores, 20 characters at most)",
+  fallback: defaultRunnerId,
+  key: runnerIdKey,
+  pattern: /^[a-z][a-z0-9_]{0,19}$/,
+};
+
+const idSettings = [roleSetting, runnerSetting];
 
 const tagName = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
@@ -49,6 +84,8 @@ export interface Config {
   sdfDir: string;
   /** The runner's role id, from SUITESCRIPT_VERIFY_ROLE_ID (default `customrole_suitescript_verify`). */
   roleId: string;
+  /** The runner's name stem, from SUITESCRIPT_VERIFY_RUNNER_ID (default `suitescript_verify`). */
+  runnerId: string;
   /** Probe tags registered beyond the package's own, from SUITESCRIPT_VERIFY_EXTRA_TAGS. */
   extraTags: string[];
   /** Every SUITESCRIPT_VERIFY_ value after layering, for the commands that need one. */
@@ -98,8 +135,8 @@ const looksSecret = (value: string) =>
   /^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(value) ||
   /^[A-Za-z0-9+_=-]{32,}$/.test(value);
 
-const roleIdProblem = (file: string) => ({
-  message: `${roleIdKey} in ${file} is not a NetSuite custom role id like customrole_suitescript_verify (lowercase letters, digits and underscores after customrole_).`,
+const idProblem = (setting: IdSetting, file: string) => ({
+  message: `${setting.key} in ${file} is not ${setting.expects}.`,
 });
 
 /** Checks the committed `.env` against the allowlist. Messages name the key, never the value. */
@@ -110,9 +147,12 @@ function checkCommitted(
 ): Problem[] {
   const problems: Problem[] = [];
   for (const [key, value] of committed) {
-    if (key === roleIdKey) {
+    const idSetting = idSettings.find((setting) => setting.key === key);
+    if (idSetting) {
       // The pattern is the whole check: a valid id may be long enough to look like a token.
-      if (!roleIdPattern.test(value)) problems.push(roleIdProblem(file));
+      if (!idSetting.pattern.test(value)) {
+        problems.push(idProblem(idSetting, file));
+      }
     } else if (key === extraTagsKey) {
       if (!parseTagList(value).every((name) => tagName.test(name))) {
         problems.push({
@@ -125,7 +165,7 @@ function checkCommitted(
       }
     } else if (!(layoutKeys as readonly string[]).includes(key)) {
       problems.push({
-        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${[...layoutKeys, extraTagsKey, roleIdKey].join(", ")}); put anything else in .env.local or the process environment.`,
+        message: `${key} in ${file} is not a layout key. The committed file holds layout only (${[...layoutKeys, extraTagsKey, ...idSettings.map((setting) => setting.key)].join(", ")}); put anything else in .env.local or the process environment.`,
       });
     } else if (!insideProject(project, value)) {
       problems.push({
@@ -187,14 +227,16 @@ export function loadConfig(
   }
   const path = (key: string, fallback: string) =>
     resolve(project, values[key] || fallback);
-  const roleId = values[roleIdKey] || defaultRoleId;
+  const idValue = (setting: IdSetting) =>
+    values[setting.key] || setting.fallback;
   // The committed file reports its own bad value; this covers .env.local and the environment.
-  const committedRole = committed.get(roleIdKey);
-  const roleProblems =
-    roleIdPattern.test(roleId) ||
-    (committedRole !== undefined && !roleIdPattern.test(committedRole))
+  const idProblems = idSettings.flatMap((setting) => {
+    const committedValue = committed.get(setting.key);
+    return setting.pattern.test(idValue(setting)) ||
+      (committedValue !== undefined && !setting.pattern.test(committedValue))
       ? []
-      : [roleIdProblem(".env.local or the environment")];
+      : [idProblem(setting, ".env.local or the environment")];
+  });
   const shown = relative(project, envFile).replaceAll("\\", "/");
   return {
     extraTags: parseTagList(values[extraTagsKey] ?? ""),
@@ -202,13 +244,14 @@ export function loadConfig(
     problems: [
       ...checkCommitted(project, committed, shown),
       ...checkLocalIgnored(project, localFile),
-      ...roleProblems,
+      ...idProblems,
     ],
     resultsDir: values[resultsDirKey]
       ? resolve(project, values[resultsDirKey])
       : undefined,
-    roleId,
+    roleId: idValue(roleSetting),
     root,
+    runnerId: idValue(runnerSetting),
     sdfDir: path("SUITESCRIPT_VERIFY_SDF_DIR", join(root, "sdf")),
     values,
   };

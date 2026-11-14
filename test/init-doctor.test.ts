@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 
 const root = join(import.meta.dirname, "..");
@@ -28,8 +29,20 @@ after(() => {
   for (const dir of temps) rmSync(dir, { force: true, recursive: true });
 });
 
-function cli(args: string[], cwd: string) {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+/** Every run gets an empty home folder, so nothing depends on the machine running the tests. */
+function cli(
+  args: string[],
+  cwd: string,
+  extraEnv: Record<string, string> = {},
+) {
+  const home = mkdtempSync(join(tmpdir(), "suitescript-verify-home-"));
+  temps.push(home);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    ...extraEnv,
+  };
   delete env.SUITECLOUD_CLI_ACCEPT_LICENSE;
   for (const name of Object.keys(env)) {
     if (
@@ -226,9 +239,10 @@ describe("init", () => {
     const out = cli(["init", ...suggested], project).stdout;
     const printed = /installed package README: (\S+)/.exec(out)?.[1];
     assert.ok(printed, "the to-do list names the README");
+    // `.native` agrees on the drive-letter case on Windows (`C:` and `c:` are one file).
     assert.equal(
-      realpathSync(resolve(project, printed)),
-      realpathSync(join(root, "README.md")),
+      realpathSync.native(resolve(project, printed)),
+      realpathSync.native(join(root, "README.md")),
     );
     assert.doesNotMatch(out, /github\.com/);
   });
@@ -385,5 +399,99 @@ describe("doctor", () => {
     const out = cli(["doctor"], project).stdout;
     assert.match(out, /Maintainer's own/);
     assert.equal(existsSync(join(project, "ran")), false);
+  });
+});
+
+describe("doctor: Java, the SuiteCloud SDK and the login", () => {
+  const steps = (out: string) =>
+    out.split("\n").filter((l) => /^(ok|FAIL) /.test(l));
+  const line = (out: string, name: RegExp) =>
+    steps(out).find((l) => name.test(l));
+  const java = /Java/;
+  const jar = /SDK jar/;
+  const login = /SuiteCloud login/;
+
+  /** A folder on the PATH holding a fake `java` that prints `version` to stderr, as the real one does. */
+  const fakeJava = (version: string) => {
+    const bin = empty();
+    write(bin, "java", `#!/bin/sh\necho '${version}' 1>&2\n`);
+    chmodSync(join(bin, "java"), 0o755);
+    return { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  };
+  const posix = process.platform === "win32" ? "needs a POSIX shell" : false;
+
+  it("fails the Java step when there is no java on the PATH, as the maintainer's own", () => {
+    const out = cli(["doctor"], withCli(empty()), { PATH: empty() }).stdout;
+    assert.match(line(out, java) ?? "", /^FAIL /);
+    assert.match(out, /17 or 21/);
+  });
+
+  for (const [version, expected] of [
+    ['java version "17.0.4" 2022-07-19 LTS', "ok"],
+    ['openjdk version "21.0.1" 2023-10-17', "ok"],
+    ['openjdk version "11.0.2" 2019-01-15', "FAIL"],
+    ['java version "1.8.0_381"', "FAIL"],
+    ['openjdk version "170.0.1" 2024-01-01', "FAIL"],
+    ['openjdk version "17" 2021-09-14', "ok"],
+  ] as const) {
+    it(`gives ${version} the verdict ${expected}`, { skip: posix }, () => {
+      const out = cli(["doctor"], withCli(empty()), fakeJava(version)).stdout;
+      assert.match(line(out, java) ?? "", new RegExp(`^${expected} `));
+    });
+  }
+
+  const sdk = (project: string) =>
+    write(
+      project,
+      "node_modules/@oracle/suitecloud-cli/package.json",
+      '{"name":"@oracle/suitecloud-cli","version":"0.0.0","sdkFilename":"cli-9.9.9.jar"}',
+    );
+  /** Runs doctor with `files` created under an empty home folder. */
+  const withHome = (project: string, files: string[]) => {
+    const home = empty();
+    for (const file of files) write(home, file, "x");
+    return cli(["doctor"], project, { HOME: home, USERPROFILE: home }).stdout;
+  };
+
+  it("checks the SDK jar the installed CLI names is downloaded", () => {
+    const project = withCli(empty());
+    sdk(project);
+    const missing = withHome(project, []);
+    assert.match(line(missing, jar) ?? "", /^FAIL /);
+    assert.match(missing, /accept Oracle's license yourself|license/i);
+    const there = withHome(project, [".suitecloud-sdk/cli/cli-9.9.9.jar"]);
+    assert.match(line(there, jar) ?? "", /^ok /);
+    const other = withHome(project, [".suitecloud-sdk/cli/cli-1.0.0.jar"]);
+    assert.match(line(other, jar) ?? "", /^FAIL /);
+  });
+
+  it("fails the SDK jar step when no CLI is installed to name it", () => {
+    const out = withHome(empty(), [".suitecloud-sdk/cli/cli-9.9.9.jar"]);
+    assert.match(line(out, jar) ?? "", /^FAIL /);
+  });
+
+  it("checks SuiteCloud login is set up, by browser once or by CI", () => {
+    const project = withCli(empty());
+    const none = withHome(project, []);
+    assert.match(line(none, login) ?? "", /^FAIL /);
+    assert.match(none, /account:setup/);
+    for (const file of [
+      "credentials_browser_based.p12",
+      "credentials_ci.p12",
+    ]) {
+      const out = withHome(project, [`.suitecloud-sdk/${file}`]);
+      assert.match(line(out, login) ?? "", /^ok /, file);
+    }
+  });
+
+  it("leaves all three as the maintainer's own and writes nothing to the home folder", () => {
+    const home = empty();
+    const project = withCli(empty());
+    const out = cli(["doctor"], project, {
+      HOME: home,
+      USERPROFILE: home,
+    }).stdout;
+    assert.match(out, /Maintainer's own/);
+    assert.deepEqual(readdirSync(home), []);
   });
 });

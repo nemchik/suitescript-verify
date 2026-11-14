@@ -1,7 +1,13 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import { defaultRoleId } from "./config.ts";
-import { fileCabinetFolder } from "./netsuite.ts";
+import type { Config } from "./config.ts";
+import { runnerIdOfObjectFile, runnerNames } from "./netsuite.ts";
 import {
   isRestlet,
   listProbes,
@@ -46,17 +52,20 @@ export function generateRunner(
 /**
  * Writes the generated runner, the probe copies and the SDF project files into
  * the SDF folder. Only RESTlet probes go in: the runner is a RESTlet. With
- * `deployed: false` the runner's deployment is switched off (cleanup).
+ * `deployed: false` the runner's deployment is switched off (cleanup). A runner
+ * generated here under another id is removed so it is not deployed again;
+ * `replacedRunners` names those ids, since each may still be deployed in the sandbox.
  */
 export function buildSdfProject(
-  sdfDir: string,
-  probesDir: string,
   {
-    deployed,
-    extraTags = [],
-    roleId = defaultRoleId,
-  }: { deployed: boolean; extraTags?: readonly string[]; roleId?: string },
-): { files: string[]; slugs: string[] } {
+    extraTags,
+    probesDir,
+    roleId,
+    runnerId,
+    sdfDir,
+  }: Pick<Config, "extraTags" | "probesDir" | "roleId" | "runnerId" | "sdfDir">,
+  { deployed }: { deployed: boolean },
+): { files: string[]; replacedRunners: string[]; slugs: string[] } {
   const probes = listProbes(probesDir, extraTags).filter(isRestlet);
   const bad = probes.filter((probe) => tagProblems(probe).length > 0);
   if (bad.length > 0) {
@@ -67,10 +76,19 @@ export function buildSdfProject(
     );
   }
   const src = join(sdfDir, "src");
-  const folder = join(src, "FileCabinet", "SuiteScripts", fileCabinetFolder);
+  const names = runnerNames(runnerId);
+  const folder = join(src, "FileCabinet", "SuiteScripts", names.folder);
   rmSync(join(src, "FileCabinet"), { force: true, recursive: true });
   mkdirSync(join(folder, "probes"), { recursive: true });
   mkdirSync(join(src, "Objects"), { recursive: true });
+  const replacedRunners: string[] = [];
+  for (const file of readdirSync(join(src, "Objects"))) {
+    const id = runnerIdOfObjectFile(file);
+    if (id !== undefined && id !== runnerId) {
+      rmSync(join(src, "Objects", file));
+      replacedRunners.push(id);
+    }
+  }
   writeFileSync(join(sdfDir, "package.json"), template("sdf/package.json"));
   writeFileSync(
     join(sdfDir, "suitecloud.config.js"),
@@ -80,10 +98,17 @@ export function buildSdfProject(
     join(src, "manifest.xml"),
     template("sdf/manifest.xml").replaceAll("%%ROLE_ID%%", roleId),
   );
-  writeFileSync(join(src, "deploy.xml"), template("sdf/deploy.xml"));
   writeFileSync(
-    join(src, "Objects", "customscript_suitescript_verify_runner.xml"),
+    join(src, "deploy.xml"),
+    template("sdf/deploy.xml").replaceAll("%%FOLDER%%", names.folder),
+  );
+  writeFileSync(
+    join(src, "Objects", `${names.scriptId}.xml`),
     template("sdf/runner.xml")
+      .replaceAll("%%SCRIPT_ID%%", names.scriptId)
+      .replaceAll("%%DEPLOY_ID%%", names.deployId)
+      .replaceAll("%%FOLDER%%", names.folder)
+      .replaceAll("%%TITLE%%", names.title)
       .replace("%%DEPLOYED%%", deployed ? "T" : "F")
       .replaceAll("%%ROLE_ID%%", roleId),
   );
@@ -100,5 +125,5 @@ export function buildSdfProject(
     );
     files.push(`probes/${slug}.js`);
   }
-  return { files, slugs };
+  return { files, replacedRunners, slugs };
 }

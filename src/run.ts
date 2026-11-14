@@ -163,7 +163,7 @@ export async function runProbe(
         ),
       );
     }
-    const response = await fetch(restletUrl(creds.account), {
+    const response = await fetch(restletUrl(creds.account, config.runnerId), {
       body: JSON.stringify(
         probe.params.length > 0
           ? { params, probe: probe.slug }

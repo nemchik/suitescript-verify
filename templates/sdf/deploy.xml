@@ -1,6 +1,6 @@
 <deploy>
   <files>
-    <path>~/FileCabinet/SuiteScripts/suitescript-verify/*</path>
+    <path>~/FileCabinet/SuiteScripts/%%FOLDER%%/*</path>
   </files>
   <objects>
     <path>~/Objects/*</path>

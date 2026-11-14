@@ -1,8 +1,21 @@
 import { createPrivateKey, sign } from "node:crypto";
+import { defaultRunnerId } from "./config.ts";
 
-export const runnerScriptId = "customscript_suitescript_verify_runner";
-export const runnerDeployId = "customdeploy_suitescript_verify_runner";
-export const fileCabinetFolder = "suitescript-verify";
+/** The names a runner takes from its id: the script, the deployment, the File Cabinet folder and the title shown in the account. */
+export const runnerNames = (runnerId: string) => ({
+  deployId: `customdeploy_${runnerId}_runner`,
+  folder: runnerId.replaceAll("_", "-"),
+  scriptId: `customscript_${runnerId}_runner`,
+  // A runner of another id says so, so two runners in one account can be told apart.
+  title:
+    runnerId === defaultRunnerId
+      ? "suitescript-verify runner"
+      : `suitescript-verify runner (${runnerId})`,
+});
+
+/** The id of the runner that wrote an object file, from its name; undefined for any other file. */
+export const runnerIdOfObjectFile = (file: string) =>
+  /^customscript_([a-z0-9_]+)_runner.xml$/.exec(file)?.[1];
 
 const host = (account: string) =>
   account.trim().toLowerCase().replace(/_/g, "-");
@@ -10,8 +23,10 @@ const host = (account: string) =>
 export const tokenUrl = (account: string) =>
   `https://${host(account)}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token`;
 
-export const restletUrl = (account: string) =>
-  `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${runnerScriptId}&deploy=${runnerDeployId}`;
+export const restletUrl = (account: string, runnerId: string) => {
+  const { deployId, scriptId } = runnerNames(runnerId);
+  return `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${scriptId}&deploy=${deployId}`;
+};
 
 const base64url = (data: Buffer | string) =>
   Buffer.from(data).toString("base64url");

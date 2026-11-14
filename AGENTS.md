@@ -32,7 +32,7 @@ Source is TypeScript in `src/` and compiles to `dist/` (gitignored, published). 
 
 ## Verification
 
-This package is the verification tooling, so it holds the generic lessons: read `docs/verification/README.md` and `docs/verification/lessons.md` before changing the runner or a probe flow. When you hit a runner, deploy, probe or sandbox problem the lessons page does not describe, add it there in the same pull request, and correct an entry that proves wrong. Never run a real deploy or cleanup yourself, never create credentials, never touch production, and never put an account number, URL, user, token or real record id in the repository.
+This package is the verification tooling, and the README is the whole guide that ships with each version: the method, setup, deploy, probes, settings and troubleshooting. Read it before changing the runner or a probe flow. Everything a downstream project needs must be in the published package, so do not move guidance into a file the package does not ship. When you hit a runner, deploy, probe or sandbox problem the README does not describe, add it to the matching README section in the same pull request, and correct an entry that proves wrong. A release or toolchain lesson goes in `docs/maintaining.md`. Never run a real deploy or cleanup yourself, never create credentials, never touch production, and never put an account number, URL, user, token or real record id in the repository.
 
 ## Releases
 

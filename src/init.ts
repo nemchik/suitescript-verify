@@ -104,7 +104,7 @@ export function init(
     "1. Install the SuiteCloud CLI: npm install --save-dev @oracle/suitecloud-cli. Read Oracle's license and accept it yourself; this package never does.",
     `2. Add ${local} to .gitignore before saving any value: it holds credentials.`,
     "3. In a sandbox, create the integration record, the role and the certificate mappings, and generate the private keys outside the repository.",
-    `4. Save the account, client id, certificate ids, key paths and a passkey in ${local}. Setup is described in the package README: https://github.com/nemchik/suitescript-verify#readme`,
+    `4. Save the account, client id, certificate ids, key paths and a passkey in ${local}. Setup is described in the installed package README: node_modules/suitescript-verify/README.md`,
     "5. Run suitescript-verify doctor until every step passes.",
   ].join("\n");
 }

@@ -219,6 +219,12 @@ describe("init", () => {
     assert.match(out, /doctor/);
   });
 
+  it("points at the installed README, not the repository", () => {
+    const out = cli(["init", ...suggested], empty()).stdout;
+    assert.match(out, /node_modules\/suitescript-verify\/README\.md/);
+    assert.doesNotMatch(out, /github\.com/);
+  });
+
   it("keeps an existing .env and moves with --dir", () => {
     const project = empty();
     const mine =

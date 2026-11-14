@@ -29,7 +29,9 @@ const roleIdPattern = /^customrole_[a-z0-9_]+$/;
 /** The committed `.env` may also name the runner: a short stem for its script id, deployment id and File Cabinet folder. */
 export const runnerIdKey = "SUITESCRIPT_VERIFY_RUNNER_ID";
 export const defaultRunnerId = "suitescript_verify";
-// Short enough that `customscript_<id>_runner` fits NetSuite's script id length limit.
+// NetSuite rejects a script or deployment id over 40 characters, prefix included
+// (checked by SDF server validation): `customscript_` and `customdeploy_` are 13
+// characters and `_runner` is 7, so the id is at most 20.
 const runnerIdPattern = /^[a-z][a-z0-9_]{0,19}$/;
 
 const tagName = /^[A-Za-z][A-Za-z0-9_-]*$/;

@@ -453,8 +453,18 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     );
   });
 
-  for (const bad of ["Nope", "has-dash", "x".repeat(21), "1abc", ""]) {
-    if (bad === "") continue;
+  it("accepts 20 characters, the longest id whose script and deployment ids fit the platform's 40", () => {
+    const project = fakeProject();
+    const id = "a".repeat(20);
+    write(project, "verification/.env", `${key}=${id}\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const script = `customscript_${id}_runner`;
+    assert.equal(script.length, 40);
+    assert.ok(existsSync(src(project, `Objects/${script}.xml`)));
+    assert.equal(`customdeploy_${id}_runner`.length, 40);
+  });
+
+  for (const bad of ["Nope", "has-dash", "x".repeat(21), "1abc"]) {
     it(`refuses ${JSON.stringify(bad)} from the committed .env, naming the key and not the value`, () => {
       const project = fakeProject();
       write(project, "verification/.env", `${key}=${bad}\n`);

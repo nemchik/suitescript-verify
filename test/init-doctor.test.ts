@@ -239,9 +239,10 @@ describe("init", () => {
     const out = cli(["init", ...suggested], project).stdout;
     const printed = /installed package README: (\S+)/.exec(out)?.[1];
     assert.ok(printed, "the to-do list names the README");
+    // `.native` agrees on the drive-letter case on Windows (`C:` and `c:` are one file).
     assert.equal(
-      realpathSync(resolve(project, printed)),
-      realpathSync(join(root, "README.md")),
+      realpathSync.native(resolve(project, printed)),
+      realpathSync.native(join(root, "README.md")),
     );
     assert.doesNotMatch(out, /github\.com/);
   });

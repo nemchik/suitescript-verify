@@ -20,7 +20,6 @@ The folder in a downstream project where its results pages live, named by `SUITE
 
 **Lesson**:
 A short, generic account of a runner, deploy, probe or sandbox problem: what happened, what it cost and how to avoid it. It holds no account identifiers and no findings about NetSuite itself, which belong on a results page.
-_Avoid_: Finding (a finding is about the platform, a lesson is about using this package)
 
 **Expected output**:
 The `<probe>.expect.json` file holding the result a probe produced when it was verified, so a later run can report drift.

@@ -32,7 +32,7 @@ Oracle's skills, type definitions and documentation disagree with each other and
 
 ### When to verify
 
-Verify, or mark the claim **unverified**, whenever you depend on what the platform accepts, rejects or returns, research how a module, method or script type behaves, or find a source that contradicts itself or another. An unverified claim stays unverified until a results page settles it. Do not mark a claim verified from a paraphrase of documentation: verified means a test ran.
+Verify, or mark the claim **unverified**, whenever you depend on what the platform accepts, rejects or returns, research how a module, method or script type behaves, or find a source that contradicts itself or another. An unverified claim stays marked unverified until a results page settles it. Do not mark a claim verified from a paraphrase of documentation: verified means a test ran.
 
 ### For agents
 
@@ -48,7 +48,7 @@ Record the method, the NetSuite version (for example `2026.2`; Help > About), an
 
 | Method                          | Use it for                                                        | Limits                                                                                                                                                                                                |
 | ------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The runner (a deployed RESTlet) | RESTlet behavior, repeatable and drift-checked                    | Sandbox only; RESTlet only                                                                                                                                                                            |
+| The runner (a deployed RESTlet) | RESTlet behavior                                                  | Sandbox only; RESTlet only                                                                                                                                                                            |
 | Browser console                 | Client scripts                                                    | Runs in the browser's engine, so it says nothing about server-only behavior                                                                                                                           |
 | Script debugger                 | Quick server checks (Customization > Scripting > Script Debugger) | Behaves differently from a deployed script in places; confirm a surprising result with a deployed script                                                                                              |
 | A deployed script               | The authoritative server result                                   | Upload a script, create the Script record and a Deployment (status Testing, audience yourself) and call it; other script types can behave differently from a RESTlet, so test the type you care about |
@@ -216,11 +216,10 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 1. Move the suspect probe out of the probes folder.
 2. Dry-run, then ask the person for a redeploy.
-3. Run the chain-proving probe to confirm the runner is back.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 
-The runner's role is minimal. Add the permission to your role only if the probe needs it, and say so in the probe's header (see [Probes](#probes)).
+The runner's role is minimal, so a probe that searches transactions or creates a record gets this error. It comes after type validation, which is often still evidence. See [Probes](#writing-probes-that-do-not-cost-a-deploy) for how to write around it.
 
 ### Every call fails with `401 INVALID_LOGIN_ATTEMPT`
 
@@ -242,15 +241,12 @@ On a headless machine, with `SUITECLOUD_CLI_ACCEPT_LICENSE` unset, the postinsta
 
 A user-wide `SUITECLOUD_CI_PASSKEY` stops browser login in your other SuiteCloud projects. Remove it from the environment and keep the passkey in `verification/.env.local`.
 
-### A drift report on a probe you did not change
-
-The output changed, or the probe is flaky. Run it again. If it still differs, the platform changed: update the expectation and the results page together, and note the NetSuite version.
-
 ## Adding a lesson
 
 A **lesson** is a short, generic account of a runner, deploy, probe or sandbox problem: what happened, what it cost and how to avoid it. Keep it concrete (the message, the cause, the fix), and never put an account number, id, token or real record id in it. Fix an entry that proves wrong instead of adding a second one that contradicts it.
 
-- **A generic problem with this package or its flow:** open an issue or pull request at [nemchik/suitescript-verify](https://github.com/nemchik/suitescript-verify). A maintainer adds it to the matching section above in the same pull request, so it ships with the next version.
+- **A generic problem with this package or its flow:** open an issue or pull request at [nemchik/suitescript-verify](https://github.com/nemchik/suitescript-verify). It is added in the same pull request to the matching section above (setup, deploy, probes or troubleshooting), so it ships with the next version.
+- **A release or toolchain problem in that repository:** it is added to the repository's `docs/maintaining.md` instead, which is not shipped because it does not apply to anyone using the package.
 - **A finding about NetSuite itself:** write a [results page](#documenting-a-verification) in your own project. It is not a lesson.
 
 ## Development
@@ -264,7 +260,7 @@ npm test                 # builds, then runs the CLI tests against a fake SuiteC
 npm run format           # type-checks, then applies Biome's fixes
 ```
 
-Git hooks (lefthook) run Biome on staged files before each commit. Lessons about releasing and maintaining this repository are kept in the repository, in `docs/maintaining.md`, because they do not apply to anyone using the package.
+Git hooks (lefthook) run Biome on staged files before each commit.
 
 ## License
 

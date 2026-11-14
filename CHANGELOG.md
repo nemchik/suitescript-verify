@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v1.0.0...suitescript-verify-v1.1.0) (2026-11-14)
+
+
+### Features
+
+* per-project runner id, nested layout, and Java/SDK/login doctor checks ([#23](https://github.com/nemchik/suitescript-verify/issues/23)) ([dc4e6a1](https://github.com/nemchik/suitescript-verify/commit/dc4e6a1ade5c2a5e31082a15f90e78262e2fa05f))
+
 ## [1.0.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v0.3.0...suitescript-verify-v1.0.0) (2026-11-14)
 
 

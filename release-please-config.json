@@ -3,7 +3,6 @@
   "packages": {
     ".": {
       "bump-minor-pre-major": true,
-      "release-as": "1.0.0",
       "release-type": "node"
     }
   }

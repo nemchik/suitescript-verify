@@ -25,23 +25,44 @@ const template = (name: string) =>
 
 const q = (value: string) => JSON.stringify(value);
 
-/**
- * The runner role's permissions: the minimum the runner needs to be called
- * with a token. A deploy writes exactly these, replacing any added by hand.
- */
-const rolePermissions: [permkey: string, level: string][] = [
+/** The minimum the runner needs to be called with a token. */
+const minimumPermissions: [permkey: string, level: string][] = [
   ["ADMI_LOGIN_OAUTH2", "FULL"],
   ["ADMI_RESTWEBSERVICES", "FULL"],
 ];
 
+/**
+ * The runner role's permissions: the minimum, then each permission the probes
+ * declare with `@permission`, once, sorted by key. A key the minimum already
+ * holds keeps the minimum's level. A deploy writes exactly these, replacing any
+ * added by hand.
+ */
+function rolePermissions(
+  probes: Pick<Probe, "permissions">[],
+): [permkey: string, level: string][] {
+  const held = new Set(minimumPermissions.map(([permkey]) => permkey));
+  const declared = new Map<string, string>();
+  for (const { level, permkey } of probes.flatMap((p) => p.permissions)) {
+    if (!held.has(permkey)) declared.set(permkey, level);
+  }
+  return [
+    ...minimumPermissions,
+    ...[...declared].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  ];
+}
+
 /** The generated role object; its name comes from the runner id and fits the platform's 40 characters. */
-const roleObject = (roleId: string, runnerId: string) =>
+const roleObject = (
+  roleId: string,
+  runnerId: string,
+  permissions: [permkey: string, level: string][],
+) =>
   template("sdf/role.xml")
     .replaceAll("%%ROLE_ID%%", roleId)
     .replaceAll("%%NAME%%", `ssv runner role ${runnerId}`)
     .replace(
       "%%PERMISSIONS%%",
-      rolePermissions
+      permissions
         .map(
           ([permkey, level]) =>
             `    <permission>\n      <permkey>${permkey}</permkey>\n      <permlevel>${level}</permlevel>\n    </permission>\n`,
@@ -151,7 +172,7 @@ export function buildSdfProject(
   writeFileSync(join(src, "manifest.xml"), template("sdf/manifest.xml"));
   writeFileSync(
     join(src, "Objects", `${roleId}.xml`),
-    roleObject(roleId, runnerId),
+    roleObject(roleId, runnerId, rolePermissions(probes)),
   );
   writeFileSync(
     join(src, "deploy.xml"),

@@ -136,7 +136,7 @@ Every step that creates a credential or accepts a license is the person's. `init
    Oracle allows one certificate per integration, role and entity, so the two pairs cannot be shared, and an EC key fails the SDF login (see [Troubleshooting](#setup-ci-fails-with-an-error-with-the-private-key)).
 5. **In the sandbox, in one visit, create the integration record, the runner's role and both certificate mappings.**
    - **The integration record** needs more than the machine-to-machine grant: also enable the token-based authentication flags and the RESTlets and REST Web Services scopes (see [Troubleshooting](#every-call-fails-with-401-invalid_login_attempt)).
-   - **The runner's role:** create it with only its name and id, and assign it to yourself. The id is `customrole_<runner id>` (`customrole_suitescript_verify` by default; `doctor` prints the one in use), and the name `ssv runner role <runner id>`. Leave its permissions empty: every deploy writes the role as an SDF object, so the first deploy takes it over and gives it exactly `ADMI_LOGIN_OAUTH2` (Log In Using OAuth 2.0 Access Tokens) and `ADMI_RESTWEBSERVICES` (REST Web Services), both at Full, on the Account center, with every other flag at its default. A permission added by hand does not survive the next deploy.
+   - **The runner's role:** create it with only its name and id, and assign it to yourself. The id is `customrole_<runner id>` (`customrole_suitescript_verify` by default; `doctor` prints the one in use), and the name `ssv runner role <runner id>`. Leave its permissions empty: every deploy writes the role as an SDF object, so the first deploy takes it over and gives it exactly `ADMI_LOGIN_OAUTH2` (Log In Using OAuth 2.0 Access Tokens) and `ADMI_RESTWEBSERVICES` (REST Web Services), both at Full, plus each permission a probe declares with `@permission` (see [Permissions](#permissions)), on the Account center, with every other flag at its default. A permission added by hand does not survive the next deploy.
    - **The SDF certificate** maps to a role that can deploy, never the runner's role, since a deploy that rewrote its own login role would strip the permissions the next deploy needs. In a sandbox that can be Administrator; otherwise use a deploy role with SuiteScript, Documents and Files, Allow JS/HTML Uploads and Bulk Manage Roles.
    - **The runner certificate** maps to the runner's role.
    - **Each project needs its own role.** A deploy rewrites the role, so two projects deploying one role would overwrite each other. The default id follows the runner id, so projects with their own runner id (see [Deploy](#deploy)) already have their own role. `SUITESCRIPT_VERIFY_ROLE_ID` sets another id and wins over the default; do not rely on changing an id later, since a custom role's id may be read-only after saving. The platform rejects a role id over 40 characters, `customrole_` included, so the id after the prefix is at most 29 characters; the package refuses a longer one before it reaches the sandbox.
@@ -218,6 +218,22 @@ Declare each parameter in the probe's leading JSDoc block, one tag per parameter
 - The generated runner checks them again (and the Suitelet host a third time, for a Suitelet probe) and hands the probe only declared strings in `run(params)`. A value goes in the JSON request body and is never evaluated or turned into code.
 - A bad `@param` tag (no pattern, an invalid pattern, a duplicate name) stops `run` and `deploy`.
 
+### Permissions
+
+A probe that needs a record permission declares it in its leading JSDoc block, one tag per permission: `@permission <permkey> VIEW`.
+
+```js
+/**
+ * @scriptType Restlet
+ * @permission LIST_CUSTJOB VIEW
+ */
+```
+
+- The key is an SDF permission key (`permkey`), such as `LIST_CUSTJOB` (Customers) or `TRAN_SALESORD` (Sales Order), exactly as Oracle's list of permission names and IDs gives it. The package keeps that list and refuses a key not on it, including a custom record's script id.
+- The level must be `VIEW`: probes do not write, so `CREATE`, `EDIT` and `FULL` are refused.
+- A malformed tag, an unknown key or level, a level above `VIEW` or a key declared twice in one probe stops `run` and `deploy`, naming the probe and the tag.
+- Every deploy adds each declared permission to the runner's role once, however many probes declare it, after the token-login and REST web services permissions. A permission takes effect only after a deploy, so a new declaration needs one before `run` can use it.
+
 ### Suitelet probes
 
 A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Suitelet deployed beside the runner. It exports `run(params)` like a RESTlet probe, and what it returns is reported as `result`, with `"scriptType": "Suitelet"`, and compared with its expected output the same way.
@@ -231,12 +247,12 @@ The runner stays the only entry point, because the machine-to-machine token reac
 
 ### Tags
 
-The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
+The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
 
 ### Writing probes that do not cost a deploy
 
 - **Keep module-scope code rare and tiny.** The runner loads every probe as a dependency of its own `define()`. A probe whose top-level code fails in a way its own `try/catch` cannot capture takes the whole runner down. If you need one, make it one governed call, run it last and one per deploy, so a failure points at one call. Do not keep a probe that is expected to take the runner down; its results page carries the code.
-- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions, and a deploy replaces any permission added by hand. A probe that searches transactions or creates a record gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence, but a probe that needs a record permission should say so in its header. Prefer objects that need no permission (`runtime`, `search.createColumn`).
+- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions plus what probes declare, and a deploy replaces any permission added by hand. A probe that searches or loads a record without the record's permission gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence. A probe that needs a record permission declares it with `@permission <permkey> VIEW` (see [Permissions](#permissions)); never add it to the role by hand. Prefer objects that need no permission (`runtime`, `search.createColumn`).
 - **Check how an API is chained before relying on it.** `crypto.createHash(...).update(...)` returns nothing, so chaining `.digest()` threw `Cannot read property 'digest' of undefined` and cost a deploy. Read the method page for the return type.
 - **Outbound calls rate-limit.** A public echo service answered four requests in a row and failed the fifth with a body that had no `headers`. Keep a probe to four requests or fewer and put the status code in the failure, not just a `TypeError`.
 - **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output.
@@ -281,7 +297,7 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 
-The runner's role holds only the token-login and REST web services permissions, and a deploy replaces any permission added by hand, so a probe that searches transactions or creates a record gets this error. It comes after type validation, which is often still evidence. See [Probes](#writing-probes-that-do-not-cost-a-deploy) for how to write around it.
+The runner's role holds only the token-login and REST web services permissions plus what probes declare with `@permission`, and a deploy replaces any permission added by hand, so a probe that reads a record its role cannot view gets this error. It comes after type validation, which is often still evidence. Declare the permission in the probe (see [Permissions](#permissions)) and redeploy; a probe that creates or edits a record cannot get the permission, since only `VIEW` is accepted.
 
 ### Every call fails with `401 INVALID_LOGIN_ATTEMPT`
 

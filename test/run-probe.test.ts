@@ -971,6 +971,87 @@ describe("extra probe tags", () => {
   });
 });
 
+describe("@permission", () => {
+  const withTags = (p: Project, slug: string, lines: string[]) =>
+    write(
+      p.dir,
+      `verification/probes/${slug}.js`,
+      probeSource(
+        (lines[0]?.startsWith("@scriptType") ? lines : [restlet, ...lines])
+          .map((l) => ` * ${l}`)
+          .join("\n"),
+      ),
+    );
+  const rolePermissions = (p: Project) =>
+    [
+      ...(
+        calls(p).objects.find((xml) => xml.startsWith("<role")) ?? ""
+      ).matchAll(
+        /<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>/g,
+      ),
+    ].map((match) => `${match[1]} ${match[2]}`);
+
+  it("adds each permission declared by RESTlet and Suitelet probes to the role once, after the minimum", () => {
+    const p = project();
+    withTags(p, "one", [
+      "@permission TRAN_SALESORD VIEW",
+      "@permission LIST_CUSTJOB VIEW",
+    ]);
+    withTags(p, "two", [
+      "@scriptType Suitelet",
+      "@permission LIST_CUSTJOB VIEW",
+      "@permission LIST_EMPLOYEE VIEW",
+      "@permission ADMI_RESTWEBSERVICES VIEW",
+    ]);
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 0, result.all);
+    assert.deepEqual(rolePermissions(p), [
+      "ADMI_LOGIN_OAUTH2 FULL",
+      "ADMI_RESTWEBSERVICES FULL",
+      "LIST_CUSTJOB VIEW",
+      "LIST_EMPLOYEE VIEW",
+      "TRAN_SALESORD VIEW",
+    ]);
+  });
+
+  it("lets a probe with a valid declaration run", () => {
+    const p = project();
+    withTags(p, "one", ["@permission LIST_CUSTJOB VIEW"]);
+    p.script(...ok({ probe: "one", result: { ok: true }, version: "1" }));
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 0, result.all);
+  });
+
+  it("refuses a malformed tag, an unknown key or level, or a level above VIEW, at run and deploy, before anything is sent", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const line of [
+      "@permission",
+      "@permission LIST_CUSTJOB",
+      "@permission LIST_CUSTJOB VIEW extra",
+      "@permission LIST_NOT_A_KEY VIEW",
+      "@permission list_custjob VIEW",
+      "@permission customrecord_thing VIEW",
+      "@permission LIST_CUSTJOB READ",
+      "@permission LIST_CUSTJOB view",
+      "@permission LIST_CUSTJOB CREATE",
+      "@permission LIST_CUSTJOB EDIT",
+      "@permission LIST_CUSTJOB FULL",
+    ]) {
+      withTags(p, "one", [line]);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, line);
+      assert.match(run.stderr, /one has invalid tags/, line);
+      assert.match(run.stderr, /@permission/, line);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, line);
+      assert.match(deploy.stderr, /- one: @permission/, line);
+    }
+    assert.deepEqual(p.requests(), []);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+});
+
 /** Loads a generated script with a stubbed `define`, handing its factory the given modules. */
 function load<T>(source: string, ...modules: unknown[]): T {
   let factory: ((...m: unknown[]) => T) | undefined;

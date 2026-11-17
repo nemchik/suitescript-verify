@@ -4,7 +4,7 @@ import type { Config } from "./config.ts";
 import { clientAssertion, restletUrl, scrub, tokenUrl } from "./netsuite.ts";
 import {
   anchored,
-  isRestlet,
+  isRunnable,
   isSlug,
   listProbes,
   matchesExpect,
@@ -110,9 +110,9 @@ export async function runProbe(
       `Unknown probe "${name}". Known: ${probes.map((p) => p.slug).join(", ") || "(none)"}`,
     );
   }
-  if (!isRestlet(probe)) {
+  if (!isRunnable(probe)) {
     throw new UsageError(
-      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand in a sandbox console.`,
+      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet and Suitelet probes (declare @scriptType Restlet or @scriptType Suitelet); ask the user to run it by hand in a sandbox console.`,
     );
   }
   if (probe.writes) {
@@ -200,7 +200,9 @@ export async function runProbe(
   } catch {
     throw new UsageError("The runner's answer was not JSON.");
   }
-  if (body.error) throw new UsageError(`The runner refused: ${body.error}`);
+  if (body.error) {
+    throw new UsageError(`The runner reported an error: ${body.error}`);
+  }
   console.log(JSON.stringify(body, null, 2));
 
   let status = 0;

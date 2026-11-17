@@ -36,8 +36,8 @@ Commands:
                                        Save a setting in .env.local
   setup-ci                             Register the SDF credentials (account:setup:ci)
   deploy [--approved]                  Dry-run the runner deployment; --approved deploys, from your own terminal
-  run <probe> [--param name=value ...] [--draft]              Run one RESTlet probe through the runner; --draft writes a results page
-  cleanup [--approved]                 Turn the runner's deployment off (dry run without --approved)
+  run <probe> [--param name=value ...] [--draft]              Run one RESTlet or Suitelet probe through the runner; --draft writes a results page
+  cleanup [--approved]                 Turn the runner's and Suitelet host's deployments off (dry run without --approved)
   help                                 Show this help
 
 Every command takes --dir <path> to move the verification folder (default verification).
@@ -126,8 +126,11 @@ async function deploy(args: string[]): Promise<number> {
   const project = process.cwd();
   const config = configure(args, true);
   requireSandbox(config);
-  const { files, slugs } = buildRunner(config, true);
+  const { files, slugs, suiteletSlugs } = buildRunner(config, true);
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
+  console.log(
+    `Probes in the Suitelet host: ${suiteletSlugs.join(", ") || "(none)"}`,
+  );
   console.log(`Files to upload: ${files.join(", ")}`);
   const approved = args.includes("--approved");
   if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
@@ -148,10 +151,13 @@ async function cleanup(args: string[]): Promise<number> {
   requireSandbox(config);
   const approved = args.includes("--approved");
   if (approved) {
-    await confirmWrite("CLEANUP", "This turns the runner's deployment off");
+    await confirmWrite(
+      "CLEANUP",
+      "This turns the runner's and the Suitelet host's deployments off",
+    );
   } else {
     console.log(
-      "Dry run only. This turns the runner's deployment off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
+      "Dry run only. This turns the runner's and the Suitelet host's deployments off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
     );
   }
   buildRunner(config, false);

@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import type { Probe } from "./probes.ts";
+import { isSuitelet, type Probe } from "./probes.ts";
 
 /** A draft results page: the test, the NetSuite version, the results, and empty explanation and decision sections for a person to fill in. */
 export function resultsDraft(options: {
@@ -20,7 +20,11 @@ export function resultsDraft(options: {
 - **NetSuite version:** ${options.version}
 - **Account type:** sandbox
 - **Date:** ${options.date}
-- **Method:** deployed RESTlet (the suitescript-verify runner)
+- **Method:** ${
+    isSuitelet(options.probe)
+      ? "deployed Suitelet (the suitescript-verify Suitelet host, called by the runner)"
+      : "deployed RESTlet (the suitescript-verify runner)"
+  }
 - **Probe:** [${options.probe.slug}](${link})
 
 ## Test

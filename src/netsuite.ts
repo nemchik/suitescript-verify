@@ -15,13 +15,28 @@ export const runnerNames = (runnerId: string) => ({
 });
 
 /**
+ * The names of the Suitelet host deployed beside a runner: `_sl` ids, the file
+ * `suitelet.js` in the runner's folder, and `ssv suitelet <id>` (at most 37
+ * characters).
+ */
+export const suiteletNames = (runnerId: string) => ({
+  deployId: `customdeploy_${runnerId}_sl`,
+  file: "suitelet.js",
+  folder: runnerId.replaceAll("_", "-"),
+  scriptId: `customscript_${runnerId}_sl`,
+  title: `ssv suitelet ${runnerId}`,
+});
+
+/**
  * The runner a generated object file belongs to, from its name: its id, and
- * whether 1.x wrote it (the `_runner` suffix). Undefined for any other file.
+ * whether 1.x wrote it (the `_runner` suffix). The runner's own object (`_rl`)
+ * and its Suitelet host's (`_sl`) both belong to it. Undefined for any other
+ * file.
  */
 export function runnerOfObjectFile(
   file: string,
 ): { id: string; legacy: boolean } | undefined {
-  const match = /^customscript_([a-z0-9_]+)_(rl|runner)\.xml$/.exec(file);
+  const match = /^customscript_([a-z0-9_]+)_(rl|sl|runner)\.xml$/.exec(file);
   return match?.[1] === undefined
     ? undefined
     : { id: match[1], legacy: match[2] === "runner" };

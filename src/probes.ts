@@ -70,7 +70,12 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
 }
 
 /** The permission levels SDF knows, lowest first. */
-const permissionLevels = ["VIEW", "CREATE", "EDIT", "FULL"];
+export const permissionLevels: readonly string[] = [
+  "VIEW",
+  "CREATE",
+  "EDIT",
+  "FULL",
+];
 
 /**
  * The highest level a probe may declare. Probes do not write (`@writes` is

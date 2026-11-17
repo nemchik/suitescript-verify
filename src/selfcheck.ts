@@ -2,17 +2,25 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { Check } from "./doctor.ts";
-import { runnerNames, scrub } from "./netsuite.ts";
-import { isRunnable, isSuitelet, listProbes } from "./probes.ts";
+import { scriptNames, scrub } from "./netsuite.ts";
+import {
+  isRunnable,
+  isSuitelet,
+  listProbes,
+  type Probe,
+  type ProbePermission,
+  permissionLevels,
+} from "./probes.ts";
 import { callRunner, knownIds } from "./run.ts";
-import { packageVersion, rolePermissions } from "./sdf.ts";
-import { requireSandbox } from "./shared.ts";
+import { rolePermissions } from "./sdf.ts";
+import { type Creds, requireSandbox } from "./shared.ts";
+import { packageVersion } from "./version.ts";
 
 const name =
   "The deployed runner passes its self-check (version, probes, Suitelet host and role)";
 
 /** Permission levels from least to most; anything else (an unreadable permission) ranks below NONE. */
-const levels = ["NONE", "VIEW", "CREATE", "EDIT", "FULL"];
+const levels = ["NONE", ...permissionLevels];
 const rank = (level: unknown) => levels.indexOf(String(level));
 
 const redeployHow =
@@ -45,7 +53,7 @@ function deployedHere(config: Config): boolean {
     config.sdfDir,
     "src",
     "Objects",
-    `${runnerNames(config.runnerId).scriptId}.xml`,
+    `${scriptNames(config.runnerId, "rl").scriptId}.xml`,
   );
   return (
     existsSync(file) &&
@@ -54,13 +62,14 @@ function deployedHere(config: Config): boolean {
 }
 
 /** Why the deployment differs from this project, each reason a short clause; empty when it matches. */
-function redeployReasons(config: Config, check: SelfCheck): string[] {
-  const probes = listProbes(config.probesDir, config.extraTags).filter(
-    isRunnable,
-  );
+function redeployReasons(
+  check: SelfCheck,
+  probes: Probe[],
+  wanted: ProbePermission[],
+): string[] {
   const slugs = probes.map((probe) => probe.slug);
   const suitelets = probes.filter(isSuitelet).map((probe) => probe.slug);
-  const permkeys = rolePermissions(probes).map(([permkey]) => permkey);
+  const permkeys = wanted.map(({ permkey }) => permkey);
   const reasons: string[] = [];
   if (check.packageVersion !== packageVersion) {
     reasons.push(
@@ -110,7 +119,7 @@ export async function selfCheckStep(config: Config): Promise<Check> {
   const before =
     "Fix the steps above first: the self-check needs the runner's settings and private key.";
   if (config.problems.length > 0) return fail(before);
-  let creds: ReturnType<typeof requireSandbox>;
+  let creds: Creds;
   try {
     creds = requireSandbox(config);
   } catch {
@@ -157,7 +166,11 @@ export async function selfCheckStep(config: Config): Promise<Check> {
       "The runner reports the account is not a sandbox. Verification never runs in production: check SUITESCRIPT_VERIFY_ACCOUNT and the deploy target.",
     );
   }
-  const reasons = redeployReasons(config, check);
+  const probes = listProbes(config.probesDir, config.extraTags).filter(
+    isRunnable,
+  );
+  const wanted = rolePermissions(probes);
+  const reasons = redeployReasons(check, probes, wanted);
   if (reasons.length > 0) {
     return fail(`Redeploy: ${reasons.join("; ")}. ${redeployHow}`);
   }
@@ -166,17 +179,14 @@ export async function selfCheckStep(config: Config): Promise<Check> {
       `The runner runs as ${check.role}, not ${config.roleId}. Map the runner certificate to ${config.roleId} in the sandbox (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).`,
     );
   }
-  const wanted = rolePermissions(
-    listProbes(config.probesDir, config.extraTags).filter(isRunnable),
-  );
   const lacking = wanted.filter(
-    ([permkey, level]) => rank(check.permissions?.[permkey]) < rank(level),
+    ({ level, permkey }) => rank(check.permissions?.[permkey]) < rank(level),
   );
   if (lacking.length > 0) {
     return fail(
       `Drift: the runner's role lacks ${lacking
         .map(
-          ([permkey, level]) =>
+          ({ level, permkey }) =>
             `${permkey} (wants ${level}, holds ${check.permissions?.[permkey]})`,
         )
         .join(

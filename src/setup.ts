@@ -4,6 +4,7 @@ import { certificate } from "./certificate.ts";
 import type { Config } from "./config.ts";
 import {
   type Check,
+  type CheckId,
   formatChecks,
   isSandboxAccount,
   names,
@@ -22,21 +23,25 @@ export interface SetupCommands {
   doctor(): Promise<number>;
 }
 
+/** The steps in order, each a key and its title. */
 const steps = [
-  "SuiteCloud CLI and Java",
-  "Certificate pairs",
-  "Sandbox checklist",
-  "Account, client id and certificate ids",
-  "Passkey",
-  "Register the SDF login (setup-ci)",
-  "First deploy",
-  "doctor",
+  ["tools", "SuiteCloud CLI and Java"],
+  ["certificates", "Certificate pairs"],
+  ["checklist", "Sandbox checklist"],
+  ["ids", "Account, client id and certificate ids"],
+  ["passkey", "Passkey"],
+  ["login", "Register the SDF login (setup-ci)"],
+  ["deploy", "First deploy"],
+  ["doctor", "doctor"],
 ] as const;
+type Step = (typeof steps)[number][0];
 
-const heading = (index: number) =>
-  `\nStep ${index + 1} of ${steps.length}: ${steps[index]}`;
-const skipped = (index: number) =>
-  console.log(`${heading(index)}: already passes, skipped.`);
+const heading = (step: Step) => {
+  const index = steps.findIndex(([key]) => key === step);
+  return `\nStep ${index + 1} of ${steps.length}: ${steps[index]?.[1]}`;
+};
+const skipped = (step: Step) =>
+  console.log(`${heading(step)}: already passes, skipped.`);
 
 const closed = () =>
   new UsageError(
@@ -133,7 +138,7 @@ export async function setup(
   }
   const checks = () => runChecks(project, config);
   /** Whether every check with each id is present and passes. */
-  const passes = (list: Check[], ...ids: string[]) =>
+  const passes = (list: Check[], ...ids: CheckId[]) =>
     ids.every((id) => {
       const matching = list.filter((c) => c.id === id);
       return matching.length > 0 && matching.every((c) => c.ok);
@@ -141,9 +146,9 @@ export async function setup(
 
   // 1. The CLI and Java are the person's to install; stop with the fix.
   const tools = checks().filter((c) => c.id === "cli" || c.id === "java");
-  if (tools.every((c) => c.ok)) skipped(0);
+  if (tools.every((c) => c.ok)) skipped("tools");
   else {
-    console.log(`${heading(0)}:`);
+    console.log(`${heading("tools")}:`);
     console.log(formatChecks(tools.filter((c) => !c.ok)));
     console.log(
       "Fix these yourself, then run suitescript-verify setup again. This package never installs the CLI or accepts Oracle's license.",
@@ -154,10 +159,10 @@ export async function setup(
   // 2. Certificate pairs, only the missing ones.
   const keys = checks();
   const runnerOk = passes(keys, "runner-key");
-  const sdfOk = passes(keys, "SDF-key");
-  if (runnerOk && sdfOk) skipped(1);
+  const sdfOk = passes(keys, "sdf-key");
+  if (runnerOk && sdfOk) skipped("certificates");
   else {
-    console.log(`${heading(1)}:`);
+    console.log(`${heading("certificates")}:`);
     const keysDir = flagValue(args, "--keys-dir");
     await certificate(project, config, [
       ...(runnerOk ? ["--only", "sdf"] : sdfOk ? ["--only", "runner"] : []),
@@ -167,9 +172,9 @@ export async function setup(
   }
 
   // 3. The one sandbox trip.
-  if (passes(checks(), "ids", "sandbox", "login")) skipped(2);
+  if (passes(checks(), "ids", "sandbox", "login")) skipped("checklist");
   else {
-    console.log(`${heading(2)}:`);
+    console.log(`${heading("checklist")}:`);
     console.log(checklist(config));
     if (
       (await ask("\nPress Enter when the sandbox steps are done. ")) === null
@@ -179,9 +184,9 @@ export async function setup(
   }
 
   // 4. The values from the sandbox, never echoed.
-  if (passes(checks(), "ids", "sandbox")) skipped(3);
+  if (passes(checks(), "ids", "sandbox")) skipped("ids");
   else {
-    console.log(`${heading(3)}:`);
+    console.log(`${heading("ids")}:`);
     const typed = await promptIds(config);
     if (Object.keys(typed).length > 0) {
       await saveEnv(config, ["--overwrite"], typed);
@@ -190,9 +195,9 @@ export async function setup(
   }
 
   // 5. The passkey.
-  if (passes(checks(), "passkey")) skipped(4);
+  if (passes(checks(), "passkey")) skipped("passkey");
   else {
-    console.log(`${heading(4)}:`);
+    console.log(`${heading("passkey")}:`);
     await saveEnv(config, [], {
       [names.passkey]: randomBytes(30).toString("hex"),
     });
@@ -200,9 +205,9 @@ export async function setup(
   }
 
   // 6. Register the SDF login.
-  if (passes(checks(), "files", "login")) skipped(5);
+  if (passes(checks(), "files", "login")) skipped("login");
   else {
-    console.log(`${heading(5)}:`);
+    console.log(`${heading("login")}:`);
     const status = commands.setupCi();
     if (status !== 0) {
       console.log(
@@ -213,9 +218,9 @@ export async function setup(
   }
 
   // 7. The first deploy is the person's, behind the typed DEPLOY.
-  if ((await selfCheckStep(config)).ok) skipped(6);
+  if ((await selfCheckStep(config)).ok) skipped("deploy");
   else {
-    console.log(`${heading(6)}:`);
+    console.log(`${heading("deploy")}:`);
     const answer = await ask(
       "\nThis deploys to the sandbox and takes over the runner's role. Type DEPLOY to deploy now, or press Enter to skip: ",
     );
@@ -236,6 +241,6 @@ export async function setup(
   }
 
   // 8. doctor, with the self-check.
-  console.log(`${heading(7)}:`);
+  console.log(`${heading("doctor")}:`);
   return commands.doctor();
 }

@@ -152,8 +152,18 @@ export function requireResultsDir(config: Config): string {
   return config.resultsDir;
 }
 
+/** The runner's and the SDF login's settings for a sandbox account. */
+export interface Creds {
+  account: string;
+  certificateId: string;
+  clientId: string;
+  privateKeyPath: string;
+  sdfCertificateId: string;
+  sdfPrivateKeyPath: string;
+}
+
 /** The runner credentials, or a refusal: every command that reaches the sandbox needs a sandbox account. */
-export function requireSandbox(config: Config) {
+export function requireSandbox(config: Config): Creds {
   const v = config.values;
   const missing = Object.values(names).filter(
     (name) => name !== names.passkey && !v[name],

@@ -1,30 +1,26 @@
 import { createPrivateKey, sign } from "node:crypto";
 
-/**
- * The names a runner takes from its id: the script and deployment ids (ending
- * in the script type, `_rl`), the File Cabinet folder, the script file and the
- * name shown in the account. Each fits the platform's 40 characters with an id
- * of up to 24.
- */
-export const runnerNames = (runnerId: string) => ({
-  deployId: `customdeploy_${runnerId}_rl`,
-  file: "restlet.js",
-  folder: runnerId.replaceAll("_", "-"),
-  scriptId: `customscript_${runnerId}_rl`,
-  title: `ssv runner ${runnerId}`,
-});
+/** The script types deployed for a runner id: the runner (`rl`) and the Suitelet host (`sl`). */
+export type ScriptType = "rl" | "sl";
+
+const scriptFiles = {
+  rl: { file: "restlet.js", title: "ssv runner" },
+  sl: { file: "suitelet.js", title: "ssv suitelet" },
+} as const;
 
 /**
- * The names of the Suitelet host deployed beside a runner: `_sl` ids, the file
- * `suitelet.js` in the runner's folder, and `ssv suitelet <id>` (at most 37
- * characters).
+ * The names a script of `type` takes from the runner id: the script and
+ * deployment ids (ending in the type), the File Cabinet folder the runner and
+ * its hosts share, the script file and the name shown in the account (at most
+ * 37 characters). Each fits the platform's 40 characters with an id of up to
+ * 24.
  */
-export const suiteletNames = (runnerId: string) => ({
-  deployId: `customdeploy_${runnerId}_sl`,
-  file: "suitelet.js",
+export const scriptNames = (runnerId: string, type: ScriptType) => ({
+  deployId: `customdeploy_${runnerId}_${type}`,
+  file: scriptFiles[type].file,
   folder: runnerId.replaceAll("_", "-"),
-  scriptId: `customscript_${runnerId}_sl`,
-  title: `ssv suitelet ${runnerId}`,
+  scriptId: `customscript_${runnerId}_${type}`,
+  title: `${scriptFiles[type].title} ${runnerId}`,
 });
 
 /**
@@ -49,7 +45,7 @@ export const tokenUrl = (account: string) =>
   `https://${host(account)}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token`;
 
 export const restletUrl = (account: string, runnerId: string) => {
-  const { deployId, scriptId } = runnerNames(runnerId);
+  const { deployId, scriptId } = scriptNames(runnerId, "rl");
   return `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${scriptId}&deploy=${deployId}`;
 };
 

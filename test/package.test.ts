@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 const root = new URL("..", import.meta.url);
@@ -18,6 +19,16 @@ function packedFiles(): string[] {
   const [pack] = Array.isArray(parsed) ? parsed : Object.values(parsed);
   assert.ok(pack, "npm pack reported no package");
   return pack.files.map((file) => file.path);
+}
+
+/** Every file this repository tracks. */
+function repositoryFiles(): string[] {
+  const result = spawnSync("git", ["ls-files"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.split("\n").filter(Boolean);
 }
 
 /** What a published version must hold; a build that is missing fails here instead of passing the stray check on an empty list. */
@@ -51,6 +62,28 @@ describe("the published package", () => {
     ];
     const stray = files.filter((file) => !allowed.some((a) => a.test(file)));
     assert.deepEqual(stray, []);
+  });
+
+  it("ships a README that names no file the package leaves out", () => {
+    const readme = readFileSync(new URL("README.md", root), "utf8");
+    // A link is checked against what ships; a URL points outside the package.
+    const links = [...readme.matchAll(/\]\(([^)#\s]+)[^)]*\)/g)]
+      .map((m) => m[1] as string)
+      .filter((target) => !/^[a-z]+:/i.test(target));
+    const brokenLinks = links.filter((target) => !files.includes(target));
+    // Text is checked for this repository's files that do not ship.
+    // `.gitignore` names the downstream project's own file.
+    const text = readme.replace(/[a-z]+:\/\/\S+/gi, "");
+    const unshipped = repositoryFiles().filter(
+      (file) => !files.includes(file) && file !== ".gitignore",
+    );
+    const named = unshipped.filter((file) =>
+      new RegExp(
+        `(^|[\\s\`("'\\[])${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s\`)"'\\],:;.])`,
+        "m",
+      ).test(text),
+    );
+    assert.deepEqual({ brokenLinks, named }, { brokenLinks: [], named: [] });
   });
 
   it("carries no verification results, credentials or the repository's own docs and tests", () => {

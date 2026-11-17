@@ -112,9 +112,11 @@ async function initCommand(args: string[]): Promise<number> {
  */
 function buildRunner(config: Config, deployed: boolean) {
   const built = buildSdfProject(config, { deployed });
-  for (const id of built.replacedRunners) {
+  for (const { id, legacy } of built.replacedRunners) {
     console.warn(
-      `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
+      legacy
+        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}.`
+        : `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
     );
   }
   return built;

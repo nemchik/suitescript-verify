@@ -51,12 +51,12 @@ const roleSetting: IdSetting = {
 export const runnerIdKey = "SUITESCRIPT_VERIFY_RUNNER_ID";
 export const defaultRunnerId = "suitescript_verify";
 const runnerSetting: IdSetting = {
-  // `customscript_` and `customdeploy_` are 13 characters and `_runner` is 7, so 20 more make 40.
+  // `customscript_` and `customdeploy_` are 13 characters and the script-type suffix (`_rl`, `_sl`) is 3, so 24 more make 40.
   expects:
-    "a runner id like my_project (a lowercase letter, then lowercase letters, digits and underscores, 20 characters at most)",
+    "a runner id like my_project (a lowercase letter, then lowercase letters, digits and underscores, 24 characters at most)",
   fallback: defaultRunnerId,
   key: runnerIdKey,
-  pattern: /^[a-z][a-z0-9_]{0,19}$/,
+  pattern: /^[a-z][a-z0-9_]{0,23}$/,
 };
 
 const idSettings = [roleSetting, runnerSetting];

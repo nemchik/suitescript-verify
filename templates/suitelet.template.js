@@ -18,7 +18,8 @@
  * - `wrapped`: the probe made no response calls (or threw), and its returned
  *   value (or `THROWS: …`) is written as JSON;
  * - `own`: the probe made response calls and returned nothing, and they are
- *   replayed in order;
+ *   replayed in order; a replayed call that fails switches the marker back to
+ *   `wrapped` and writes `THROWS: …`;
  * - both is refused, as wrapped JSON.
  *
  * @NApiVersion 2.1
@@ -173,17 +174,28 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
         });
       }
-      if (recorded.calls.length === 0) {
-        return answer(response, {
+      const wrapped = (value) =>
+        answer(response, {
           probe: name,
-          result,
+          result: value,
           scriptType: "Suitelet",
           version: String(runtime.version),
         });
-      }
+      if (recorded.calls.length === 0) return wrapped(result);
       response.setHeader({ name: MARKER, value: "own" });
-      for (const [method, options] of recorded.calls) {
-        response[method](options);
+      try {
+        for (const [method, options] of recorded.calls) {
+          response[method](options);
+        }
+      } catch (e) {
+        // A replayed call the real response refuses ends the replay. The host
+        // cannot take back what it already wrote, so it switches the marker to
+        // `wrapped` and appends the `THROWS` answer: with nothing written yet
+        // the runner reads a clean THROWS result, and after a write it reads
+        // the partial output plus the answer as a body that is not JSON, which
+        // it reports as an error, never as `own` output. Whether the platform
+        // still takes a header set after a write is not yet confirmed.
+        wrapped(`THROWS: ${e.name}: ${e.message}`);
       }
     },
   };

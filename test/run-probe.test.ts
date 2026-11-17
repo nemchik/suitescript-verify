@@ -1481,11 +1481,17 @@ describe("Suitelet probes", () => {
       host: Host,
       parameters: Record<string, string>,
       request: Record<string, unknown> = {},
+      fails?: string,
     ) => {
       const seen: [string, unknown][] = [];
       const record =
         (method: string) =>
         (arg: unknown): undefined => {
+          if (method === fails) {
+            throw Object.assign(new Error("cannot redirect now"), {
+              name: "SSS_INVALID_REDIRECT",
+            });
+          }
           seen.push([method, arg]);
         };
       host.onRequest({
@@ -1630,6 +1636,38 @@ describe("Suitelet probes", () => {
         );
         const { seen } = serve(host, { params, probe: "page" });
         assert.equal(/partial|X-Probe/.test(JSON.stringify(seen)), false);
+      }
+    });
+
+    it("answers THROWS behind the wrapped marker when the replay fails part-way, never as own output", () => {
+      for (const writeFirst of [false, true]) {
+        const p = project();
+        const host = hostFor(p, (_params, { response }) => {
+          response.setHeader({ name: "X-Probe", value: "1" });
+          if (writeFirst) response.write({ output: "partial" });
+          response.sendRedirect({ identifier: "x", type: "SUITELET" });
+        })(sandbox);
+        const { marker, seen } = serve(
+          host,
+          { params, probe: "page" },
+          {},
+          "sendRedirect",
+        );
+        assert.equal(marker.at(-1), "wrapped");
+        const writes = seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) => (o as { output: string }).output);
+        const answer = writes.at(-1) ?? "";
+        assert.deepEqual(JSON.parse(answer), {
+          probe: "page",
+          result: "THROWS: SSS_INVALID_REDIRECT: cannot redirect now",
+          scriptType: "Suitelet",
+          version: "2026.2",
+        });
+        // What was written before the failure cannot be taken back, so the
+        // runner reads partial output plus the answer as a body that is not
+        // JSON: an error, never a result or own output.
+        assert.equal(writes.join("").startsWith("partial"), writeFirst);
       }
     });
 

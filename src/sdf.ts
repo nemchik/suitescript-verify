@@ -25,6 +25,13 @@ const template = (name: string) =>
 
 const q = (value: string) => JSON.stringify(value);
 
+/** The version of the running package, baked into the scripts so the self-check can report it. */
+export const packageVersion = (
+  JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
+
 /** The minimum the runner needs to be called with a token. */
 const minimumPermissions: [permkey: string, level: string][] = [
   ["ADMI_LOGIN_OAUTH2", "FULL"],
@@ -37,7 +44,7 @@ const minimumPermissions: [permkey: string, level: string][] = [
  * holds keeps the minimum's level. A deploy writes exactly these, replacing any
  * added by hand.
  */
-function rolePermissions(
+export function rolePermissions(
   probes: Pick<Probe, "permissions">[],
 ): [permkey: string, level: string][] {
   const held = new Set(minimumPermissions.map(([permkey]) => permkey));
@@ -204,15 +211,30 @@ export function buildSdfProject(
   const restlets = probes.filter(isRestlet);
   const suitelets = probes.filter(isSuitelet);
   const files = [names.file, host.file];
+  const slugList = (list: Probe[]) =>
+    list
+      .map((probe) => probe.slug)
+      .sort()
+      .join(",");
   writeFileSync(
     join(folder, names.file),
     generateScript(restlets, template("runner.template.js"), suitelets)
       .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)
-      .replace("%%SUITELET_DEPLOY_ID%%", host.deployId),
+      .replace("%%SUITELET_DEPLOY_ID%%", host.deployId)
+      .replace("%%PACKAGE_VERSION%%", packageVersion)
+      .replace(
+        "%%PERMISSIONS%%",
+        rolePermissions(probes)
+          .map(([permkey]) => permkey)
+          .join(","),
+      )
+      .replace("%%PROBES%%", slugList(probes)),
   );
   writeFileSync(
     join(folder, host.file),
-    generateScript(suitelets, template("suitelet.template.js")),
+    generateScript(suitelets, template("suitelet.template.js"))
+      .replace("%%PACKAGE_VERSION%%", packageVersion)
+      .replace("%%PROBES%%", slugList(suitelets)),
   );
   for (const slug of probes.map((probe) => probe.slug)) {
     writeFileSync(

@@ -8,6 +8,8 @@
  * can run, generated from the probes folder into this file's dependency list
  * by `suitescript-verify deploy`. It refuses to run unless the account is a
  * sandbox, and checks the parameters again against each probe's declarations.
+ * A request with `selfCheck` (never a probe name) asks for its self-check,
+ * which only reads.
  *
  * @NApiVersion 2.1
  * @NScriptType Suitelet
@@ -52,8 +54,20 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     return { params };
   };
 
+  /** What the deploy baked in: the package version and this host's probes. */
+  const deployment = {
+    packageVersion: "%%PACKAGE_VERSION%%",
+    probes: "%%PROBES%%".split(",").filter(Boolean),
+  };
+
   return {
     onRequest({ request, response }) {
+      if (request.parameters?.selfCheck !== undefined) {
+        const sandbox = runtime.envType === runtime.EnvType.SANDBOX;
+        return answer(response, {
+          selfCheck: sandbox ? { ...deployment, sandbox } : { sandbox },
+        });
+      }
       if (runtime.envType !== runtime.EnvType.SANDBOX) {
         return answer(response, {
           error: "refused: the Suitelet host only runs in a sandbox",

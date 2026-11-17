@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -25,6 +26,8 @@ const bin = join(
   "bin",
   "suitescript-verify.js",
 );
+/** Preloaded into every run, so a doctor whose settings pass calls a fake NetSuite, never a network. */
+const fakeNetsuite = `--import=${pathToFileURL(join(import.meta.dirname, "fixtures", "fake-netsuite.mjs")).href}`;
 const temps: string[] = [];
 after(() => {
   for (const dir of temps) rmSync(dir, { force: true, recursive: true });
@@ -43,6 +46,9 @@ function cli(
     HOME: home,
     USERPROFILE: home,
     ...extraEnv,
+    NODE_OPTIONS: [fakeNetsuite, extraEnv.NODE_OPTIONS]
+      .filter(Boolean)
+      .join(" "),
   };
   delete env.SUITECLOUD_CLI_ACCEPT_LICENSE;
   for (const name of Object.keys(env)) {

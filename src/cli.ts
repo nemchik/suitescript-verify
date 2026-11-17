@@ -14,6 +14,7 @@ import { envNames } from "./envfile.ts";
 import { init } from "./init.ts";
 import { runProbe } from "./run.ts";
 import { buildSdfProject } from "./sdf.ts";
+import { selfCheckStep } from "./selfcheck.ts";
 import {
   confirmWrite,
   flagValue,
@@ -28,7 +29,7 @@ export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
   init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results)
-  doctor                               Check the setup; each failing step says who does it
+  doctor                               Check the setup, then the deployed runner's self-check (reads only); each failing step says who does it
   certificate [--only runner|sdf] [--keys-dir <path>] [--overwrite | --keep]
                                        Generate the key pairs outside the project
   passkey [--overwrite | --keep]       Generate the SuiteCloud passkey into .env.local
@@ -69,9 +70,12 @@ function reporting(args: string[]): Config {
   return config;
 }
 
-function doctor(args: string[]): number {
+async function doctor(args: string[]): Promise<number> {
   const config = reporting(args);
-  const checks = runChecks(process.cwd(), config);
+  const checks = [
+    ...runChecks(process.cwd(), config),
+    await selfCheckStep(config),
+  ];
   console.log(formatChecks(checks));
   return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
 }
@@ -254,7 +258,7 @@ export async function main(args: string[]): Promise<number> {
     }
     if (command === "env") return await envCommand(rest);
     if (command === "setup-ci") return setupCi(rest);
-    if (command === "doctor") return doctor(rest);
+    if (command === "doctor") return await doctor(rest);
     if (command === "init") return await initCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {

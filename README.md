@@ -36,7 +36,7 @@ Verify, or mark the claim **unverified**, whenever you depend on what the platfo
 
 ### For agents
 
-- If you can run the test yourself, do: a **probe** runs in a sandbox through the runner, RESTlet and Suitelet probes alike. Run `suitescript-verify doctor` first.
+- If you can run the test yourself, do: a **probe** runs in a sandbox through the runner, RESTlet and Suitelet probes alike. Run `suitescript-verify doctor` first, and again after every deploy: its last step asks the deployed runner for its self-check. It only reads, so it is always safe to run.
 - Setup is mostly the person's (browser login, role, certificate). When a check fails, relay its next step and wait.
 - Never run anything in production, never create credentials, and never run a real deploy or cleanup yourself: both need a person at a terminal.
 - Prompt the person to run a snippet by hand (the methods below) only when a probe cannot run: setup cannot pass, the claim depends on a script type the runner does not cover (anything but a RESTlet or a Suitelet), or the probe would write to the account. Give the exact snippet and say where to run it.
@@ -142,7 +142,7 @@ Every step that creates a credential or accepts a license is the person's. `init
    - **Each project needs its own role.** A deploy rewrites the role, so two projects deploying one role would overwrite each other. The default id follows the runner id, so projects with their own runner id (see [Deploy](#deploy)) already have their own role. `SUITESCRIPT_VERIFY_ROLE_ID` sets another id and wins over the default; do not rely on changing an id later, since a custom role's id may be read-only after saving. The platform rejects a role id over 40 characters, `customrole_` included, so the id after the prefix is at most 29 characters; the package refuses a longer one before it reaches the sandbox.
    - **In a OneWorld account** the role gets every subsidiary: the generated role names none, so it deploys in any account.
 6. **Save the settings.** `suitescript-verify passkey` generates the SuiteCloud passkey into `verification/.env.local`. `suitescript-verify env set NAME=value` saves any other key there (values are never printed; a different existing value is kept unless `--overwrite`). See [Settings](#settings) for the names.
-7. **Run `suitescript-verify doctor`** until every step passes. It checks the SuiteCloud CLI, Java 17 or 21, the SuiteCloud SDK jar and login, account, sandbox, certificates, passkey and project files, says which failing steps are the maintainer's own, and exits 1 while any fails.
+7. **Run `suitescript-verify doctor`** until every step passes. It checks the SuiteCloud CLI, Java 17 or 21, the SuiteCloud SDK jar and login, account, sandbox, certificates, passkey and project files, says which failing steps are the maintainer's own, and exits 1 while any fails. Its last step calls the deployed runner's self-check (see [Deploy](#deploy)), so before the first deploy it fails with "Deploy first"; every other step should pass by then.
 8. **`suitescript-verify setup-ci`** (for a pipeline) registers the SDF credentials (auth id `suitescript-verify`) with your project's SuiteCloud CLI, passing the passkey through the environment, never an argument. On success it prints the `SUITESCRIPT_VERIFY_` names the pipeline must supply as its own secrets, never a value. It writes no file, no credential variable and no license variable. Accepting Oracle's license in the pipeline is yours.
 
 **Note:** projects on one machine that register the same SDF auth id (this package always uses `suitescript-verify`) share one stored credential entry. That is harmless while their certificate and passkey values match; when they differ, the later `setup-ci` replaces the earlier entry.
@@ -178,7 +178,7 @@ suitescript-verify cleanup --approved  # turns the runner's and Suitelet host's 
 
 - **Projects that share a sandbox need their own runner id.** A deploy replaces the runner's probe list, so two projects with the same runner id overwrite each other: whichever deployed last decides which probes exist, and the other's answer `unknown probe` until it deploys again. Set a different `SUITESCRIPT_VERIFY_RUNNER_ID` in each project's committed `.env` (for example `my_project`). The runner, its deployment, its name and its File Cabinet folder are named from it (`customscript_my_project_rl`, `ssv runner my_project`, `my-project`), and so is the runner's role (`customrole_my_project`), which needs its own token mapping. The id is at most 24 characters because the platform rejects a script or deployment id over 40 characters, prefix included (`The script ID must not exceed 40 characters.`): `customscript_` and `customdeploy_` take 13 and the type suffix (`_rl`, `_sl`) takes 3. The platform also caps a script's name at 40 characters (`The name field contains more than the maximum number (40) of characters allowed.`), and `ssv suitelet ` takes 13, so a 24-character id fits there too. Changing a project's id leaves its old runner deployed in the sandbox, because the SuiteCloud CLI cannot delete a script. The next `deploy` or `cleanup` removes the old runner and its Suitelet host from the generated SDF folder (so it is not deployed again) and warns with the old id; to turn the old runner off, run `cleanup --approved` once with `SUITESCRIPT_VERIFY_RUNNER_ID` set to the old id, then switch back. A runner generated by 1.x (`customscript_<id>_runner`) is removed and warned about the same way, whatever its id, because 2.0 names it differently and cannot turn it off; run `cleanup --approved` with 1.x and that id to turn it off. The warning only sees runners generated in this folder.
 - **Every probe change needs a deploy.** The runner's probe list is generated into its dependency list, so a new, renamed or edited probe only exists in the sandbox after a deploy. Write and review **all** the probes of a batch first, dry-run once, and ask for one deploy. A deploy is the person's, in their own terminal, so a wasted one costs a person's time.
-- **After every deploy, run the chain-proving probe first** (a trivial probe, for example `probe-zero`, that only proves the runner loads). If it fails, the runner is broken and no other result means anything (see [Troubleshooting](#every-probe-returns-http-400-and-names-no-probe)).
+- **After every deploy, run `suitescript-verify doctor`.** Its last step gets a token the way `run` does and sends the runner a reserved self-check request (a `selfCheck` field, never a probe name, so it cannot clash with a probe). The runner answers without running a probe: whether the account is a sandbox, the role it runs as, the level it holds of each permission the deploy wrote to the role (read with `runtime.getCurrentUser().getPermission`), the package version and probe list baked in at deploy, and the Suitelet host's answer to its own self-check through `requestSuitelet`. `doctor` compares that with the project and passes, or says "Deploy first", "Redeploy" or "Drift" (see [Troubleshooting](#troubleshooting)). It prints no identifier and refuses to print an answer that looks like one. A project no longer needs a probe of its own that only proves the runner loads: if the self-check fails, no probe result means anything.
 - **A sandbox refresh clears the token mappings and, presumably, the deployed runner.** After one, redo the role, mapping and deploy steps.
 
 ## Probes
@@ -284,12 +284,31 @@ Every setting is a `SUITESCRIPT_VERIFY_` key. They layer from the committed `ver
 
 ## Troubleshooting
 
+### `doctor` says "Deploy first"
+
+The self-check got no answer and this project's generated SDF folder holds no deployed runner: nothing is deployed yet, or the runner is deployed from another checkout (a fresh git worktree has no generated `src/`). Before the first deploy the token request itself fails, since the role holds no permission until a deploy writes them. Dry-run `deploy`, then the person runs `deploy --approved`, and run `doctor` again. If the runner was deployed elsewhere, the reason in parentheses says why it did not answer.
+
+### `doctor` says "Redeploy"
+
+The deployed runner differs from the project: another package version, another probe list or role permission list (a probe was added, removed or given a new `@permission` since the last deploy), a Suitelet host that does not answer its self-check or holds other probes, or a runner too old to have a self-check. The message names each difference. Dry-run `deploy`, then ask the person for a redeploy. A host that still does not answer after a redeploy is covered under [the Suitelet host call failed](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed). If the runner did not answer at all after a deploy from this folder, `cleanup` may have switched it off, or the deploy failed.
+
+### `doctor` says "Drift"
+
+The runner's role holds less than the deploy wrote: someone changed the role in the account by hand. The message names each permission with the level the deploy wrote and the level the role holds. A redeploy writes the role again; add a permission a probe needs with `@permission` instead (see [Permissions](#permissions)). A level reported as `UNREADABLE` means `getPermission` could not read that key.
+
+### `doctor` says the runner runs as another role
+
+The runner certificate is mapped to a role other than `SUITESCRIPT_VERIFY_ROLE_ID` (`doctor` prints the one in use). Map it to the runner's role in the sandbox (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).
+
 ### Every probe returns HTTP 400 and names no probe
 
 The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAdapter@...`. One probe's top-level code failed in a way its own `try/catch` cannot capture, so the runner never loaded.
 
+`doctor`'s self-check fails the same way, since the runner cannot load to answer it.
+
 1. Move the suspect probe out of the probes folder.
 2. Dry-run, then ask the person for a redeploy.
+3. Run `doctor` until its self-check passes.
 
 ### A Suitelet probe reports that the Suitelet host call failed
 

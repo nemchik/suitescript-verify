@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
+import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
 const bin = join(
@@ -260,6 +261,49 @@ describe("init", () => {
     cli(["init", "--dir", "elsewhere", ...suggested], project);
     assert.ok(existsSync(join(project, "elsewhere", ".env")));
     assert.ok(existsSync(join(project, "elsewhere", "sdf")));
+  });
+
+  it("asks at a terminal where results live and saves the answer", () => {
+    const project = empty();
+    const result = cli(["init"], project, fakeTerminal(["notes/checks"]));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /Where should results pages live in this project\? \[docs\/verification\/results\]/,
+    );
+    assert.match(
+      readFileSync(join(project, "verification", ".env"), "utf8"),
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=notes\/checks$/m,
+    );
+    assert.ok(existsSync(join(project, "notes", "checks")));
+    assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("takes the suggested results folder when the person just presses Enter", () => {
+    const project = empty();
+    const result = cli(["init"], project, fakeTerminal([""]));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      readFileSync(join(project, "verification", ".env"), "utf8"),
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=docs\/verification\/results$/m,
+    );
+    assert.ok(existsSync(join(project, "docs", "verification", "results")));
+  });
+
+  it("does not ask at a terminal when the flag or the .env already chose", () => {
+    const flagged = empty();
+    const result = cli(
+      ["init", "--results-dir", "notes/checks"],
+      flagged,
+      fakeTerminal([]),
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /Where should results pages live/);
+    const set = empty();
+    write(set, "verification/.env", "SUITESCRIPT_VERIFY_RESULTS_DIR=kept\n");
+    const kept = cli(["init"], set, fakeTerminal([]));
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.doesNotMatch(kept.stdout, /Where should results pages live/);
   });
 });
 

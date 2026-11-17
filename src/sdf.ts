@@ -36,8 +36,8 @@ const minimumPermissions: ProbePermission[] = [
 /**
  * The runner role's permissions: the minimum, then each permission the probes
  * declare with `@permission`, once, sorted by key. A key the minimum already
- * holds keeps the minimum's level. A deploy writes exactly these, replacing any
- * added by hand.
+ * holds keeps the minimum's level. A deploy writes these to the role object;
+ * whether it also removes permissions not listed is unconfirmed (#44).
  */
 export function rolePermissions(
   probes: Pick<Probe, "permissions">[],

@@ -6,11 +6,18 @@
 
 Run probes in a NetSuite **sandbox** to verify what SuiteScript modules do, from a CLI that is safe to hand to an agent: sandbox only, a person approves every write at a terminal, and output is scrubbed of identifiers.
 
-> This package never accepts Oracle's SuiteCloud license. Install `@oracle/suitecloud-cli` in your project and accept the license yourself.
+**Note:** this package never accepts Oracle's SuiteCloud license. Install `@oracle/suitecloud-cli` in your project and accept the license yourself.
 
 ```sh
 npm install --save-dev suitescript-verify @oracle/suitecloud-cli
 npx suitescript-verify help
+```
+
+Quick start, at your own terminal: `init` scaffolds the folders and offers to continue into the guided `setup`, which ends with the first deploy and `doctor`. Then write a probe and run it.
+
+```sh
+npx suitescript-verify init
+npx suitescript-verify run <probe>
 ```
 
 This README is the whole guide and ships with each published version. Read the copy installed with the package, which matches the version you use: `suitescript-verify init` prints its path (it is in `node_modules/suitescript-verify/` under npm and pnpm).
@@ -22,6 +29,7 @@ This README is the whole guide and ships with each published version. Read the c
 - [Deploy](#deploy): put the runner in the sandbox
 - [Probes](#probes): write and run them
 - [Settings](#settings): every `SUITESCRIPT_VERIFY_` key
+- [Upgrading from 1.x](#upgrading-from-1x): turn the old runner off first, then the role
 - [Troubleshooting](#troubleshooting): by symptom
 - [Adding a lesson](#adding-a-lesson)
 - [Development](#development)
@@ -161,6 +169,8 @@ Install the SuiteCloud CLI and gitignore `verification/.env.local` first (steps 
    - **The runner certificate** maps to the runner's role.
    - **Each project needs its own role.** A deploy rewrites the role, so two projects deploying one role would overwrite each other. The default id follows the runner id, so projects with their own runner id (see [Deploy](#deploy)) already have their own role. `SUITESCRIPT_VERIFY_ROLE_ID` sets another id and wins over the default; do not rely on changing an id later, since a custom role's id may be read-only after saving. The platform rejects a role id over 40 characters, `customrole_` included, so the id after the prefix is at most 29 characters; the package refuses a longer one before it reaches the sandbox.
    - **In a OneWorld account** the role gets every subsidiary: the generated role names none, so it deploys in any account.
+
+   **Note:** that a deploy takes over a role created by hand with the same id is not yet confirmed in a real sandbox. If the first deploy fails on the role, report it as a lesson (see [Adding a lesson](#adding-a-lesson)).
 6. **Save the settings.** `suitescript-verify passkey` generates the SuiteCloud passkey into `verification/.env.local`. `suitescript-verify env set NAME=value` saves any other key there (values are never printed; a different existing value is kept unless `--overwrite`). See [Settings](#settings) for the names.
 7. **Run `suitescript-verify doctor`** until every step passes. It checks the SuiteCloud CLI, Java 17 or 21, the SuiteCloud SDK jar and login, account, sandbox, certificates, passkey and project files, says which failing steps are the maintainer's own, and exits 1 while any fails. Its last step calls the deployed runner's self-check (see [Deploy](#deploy)), so before the first deploy it fails with "Deploy first"; every other step should pass by then.
 8. **`suitescript-verify setup-ci`** (for a pipeline) registers the SDF credentials (auth id `suitescript-verify`) with your project's SuiteCloud CLI, passing the passkey through the environment, never an argument. On success it prints the `SUITESCRIPT_VERIFY_` names the pipeline must supply as its own secrets, never a value. It writes no file, no credential variable and no license variable. Accepting Oracle's license in the pipeline is yours.
@@ -196,7 +206,7 @@ suitescript-verify cleanup --approved  # turns the runner's and Suitelet host's 
 
 `deploy` generates the runner and an SDF project into `verification/sdf` (the generated `src/` there is yours to gitignore) from the RESTlet and Suitelet probes in `verification/probes`, then dry-runs it through your project's SuiteCloud CLI. `cleanup` does the same with the deployments switched off, and without `--approved` it is a dry run. Both write the runner's role (see [Setup](#setup)); `cleanup` leaves it unchanged, since switching it off would break its token mapping. Every script is named by its type, with Oracle's suggested abbreviation as the suffix: the runner (a RESTlet) has the script id `customscript_suitescript_verify_rl`, the deployment id `customdeploy_suitescript_verify_rl`, the file `restlet.js` and the name `ssv runner suitescript_verify`, all from the runner id (`SUITESCRIPT_VERIFY_RUNNER_ID`, default `suitescript_verify`). The [Suitelet host](#suitelet-probes) beside it has the script id `customscript_suitescript_verify_sl`, the deployment id `customdeploy_suitescript_verify_sl`, the file `suitelet.js` in the same folder and the name `ssv suitelet suitescript_verify`. Every deploy generates both, even with no Suitelet probes, and `cleanup` switches both deployments off.
 
-- **Projects that share a sandbox need their own runner id.** A deploy replaces the runner's probe list, so two projects with the same runner id overwrite each other: whichever deployed last decides which probes exist, and the other's answer `unknown probe` until it deploys again. Set a different `SUITESCRIPT_VERIFY_RUNNER_ID` in each project's committed `.env` (for example `my_project`). The runner, its deployment, its name and its File Cabinet folder are named from it (`customscript_my_project_rl`, `ssv runner my_project`, `my-project`), and so is the runner's role (`customrole_my_project`), which needs its own token mapping. The id is at most 24 characters because the platform rejects a script or deployment id over 40 characters, prefix included (`The script ID must not exceed 40 characters.`): `customscript_` and `customdeploy_` take 13 and the type suffix (`_rl`, `_sl`) takes 3. The platform also caps a script's name at 40 characters (`The name field contains more than the maximum number (40) of characters allowed.`), and `ssv suitelet ` takes 13, so a 24-character id fits there too. Changing a project's id leaves its old runner deployed in the sandbox, because the SuiteCloud CLI cannot delete a script. The next `deploy` or `cleanup` removes the old runner and its Suitelet host from the generated SDF folder (so it is not deployed again) and warns with the old id; to turn the old runner off, run `cleanup --approved` once with `SUITESCRIPT_VERIFY_RUNNER_ID` set to the old id, then switch back. A runner generated by 1.x (`customscript_<id>_runner`) is removed and warned about the same way, whatever its id, because 2.0 names it differently and cannot turn it off; run `cleanup --approved` with 1.x and that id to turn it off. The warning only sees runners generated in this folder.
+- **Projects that share a sandbox need their own runner id.** A deploy replaces the runner's probe list, so two projects with the same runner id overwrite each other: whichever deployed last decides which probes exist, and the other's answer `unknown probe` until it deploys again. Set a different `SUITESCRIPT_VERIFY_RUNNER_ID` in each project's committed `.env` (for example `my_project`). The runner, its deployment, its name and its File Cabinet folder are named from it (`customscript_my_project_rl`, `ssv runner my_project`, `my-project`), and so is the runner's role (`customrole_my_project`), which needs its own token mapping. The id is at most 24 characters because the platform rejects a script or deployment id over 40 characters, prefix included (`The script ID must not exceed 40 characters.`): `customscript_` and `customdeploy_` take 13 and the type suffix (`_rl`, `_sl`) takes 3. The platform also caps a script's name at 40 characters (`The name field contains more than the maximum number (40) of characters allowed.`), and `ssv suitelet ` takes 13, so a 24-character id fits there too. Changing a project's id leaves its old runner deployed in the sandbox, because the SuiteCloud CLI cannot delete a script. The next `deploy` or `cleanup` removes the old runner and its Suitelet host from the generated SDF folder (so it is not deployed again) and warns with the old id; to turn the old runner off, run `cleanup --approved` once with `SUITESCRIPT_VERIFY_RUNNER_ID` set to the old id, then switch back. A runner generated by 1.x (`customscript_<id>_runner`) is removed and warned about the same way, whatever its id, because 2.0 names it differently and cannot turn it off; turn it off with 1.x before upgrading (see [Upgrading from 1.x](#upgrading-from-1x)). The warning only sees runners generated in this folder.
 - **Every probe change needs a deploy.** The runner's probe list is generated into its dependency list, so a new, renamed or edited probe only exists in the sandbox after a deploy. Write and review **all** the probes of a batch first, dry-run once, and ask for one deploy. A deploy is the person's, in their own terminal, so a wasted one costs a person's time.
 - **After every deploy, run `suitescript-verify doctor`.** Its last step gets a token the way `run` does and sends the runner a reserved self-check request (a `selfCheck` field, never a probe name, so it cannot clash with a probe). The runner answers without running a probe: whether the account is a sandbox, the role it runs as, the level it holds of each permission the deploy wrote to the role (read with `runtime.getCurrentUser().getPermission`), the package version and probe list baked in at deploy, and the Suitelet host's answer to its own self-check through `requestSuitelet`. `doctor` compares that with the project and passes, or says "Deploy first", "Redeploy" or "Drift" (see [Troubleshooting](#troubleshooting)). It prints no identifier and refuses to print an answer that looks like one. A project no longer needs a probe of its own that only proves the runner loads: if the self-check fails, no probe result means anything.
 - **A sandbox refresh clears the token mappings and, presumably, the deployed runner.** After one, redo the role, mapping and deploy steps.
@@ -293,7 +303,7 @@ For an `own` response, the runner reports every header but the marker, with thes
 - **The body is cut at 64 KB** (65,536 characters), and the response then carries `"truncated": true`.
 - **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a redirect whose `Location` names the account's host is refused, not printed.
 
-The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out headers that change on every call: `Date`.
+The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out the `Date` header, which changes on every call.
 
 The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe, the runner checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet`:
 
@@ -338,6 +348,17 @@ Every setting is a `SUITESCRIPT_VERIFY_` key. They layer from the committed `ver
 | `SUITESCRIPT_VERIFY_DOMAIN`               | local     | Optional NetSuite domain passed to the SuiteCloud CLI                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 "Local" keys go in `.env.local` or the process environment (a pipeline's secrets), never in the committed file.
+
+## Upgrading from 1.x
+
+2.0 renames the runner by script type, adds the Suitelet host and makes every deploy write the runner's role. Upgrade in this order:
+
+1. **Turn the 1.x runner off before upgrading.** With 1.x still installed, dry-run `cleanup`, then the person runs `cleanup --approved` (once per runner id the project used). 2.0 names the runner `customscript_<id>_rl` instead of `customscript_<id>_runner`, and the SuiteCloud CLI cannot delete a script, so 2.0 cannot turn the old one off: its first `deploy` or `cleanup` only removes the old object from the generated SDF folder and warns with its id.
+2. **Upgrade the package** (`npm install --save-dev suitescript-verify@2`). The generated runner file is now `restlet.js`, beside the host's `suitelet.js`, and the runner id may be up to 24 characters.
+3. **Declare the permissions your probes need.** The first 2.0 deploy replaces every permission added to the role by hand: the role keeps only `ADMI_LOGIN_OAUTH2` and `ADMI_RESTWEBSERVICES` at Full plus what probes declare, and is renamed `ssv runner role <runner id>`. Add `@permission <permkey> VIEW` to each probe that relied on a hand-added permission (see [Permissions](#permissions)).
+4. **Check the role id.** It now defaults to `customrole_<runner id>` instead of `customrole_suitescript_verify`. A project with the default runner id, or an explicit `SUITESCRIPT_VERIFY_ROLE_ID`, keeps its role. A project with its own runner id and no explicit role id gets a new default role, so create that role and map the runner certificate to it (step 5 of [Doing it by hand](#doing-it-by-hand)), or set `SUITESCRIPT_VERIFY_ROLE_ID` to the old id if no other project deploys it. Projects that shared one role in 1.x each need their own now.
+5. **Map the SDF certificate to a role that can deploy**, never the runner's role (see step 5 of [Doing it by hand](#doing-it-by-hand)), since a deploy rewrites the runner's role.
+6. **Deploy, then run `doctor`.** Dry-run `deploy`, then the person runs `deploy --approved`. `doctor` now exits 1 until the deployed runner passes its self-check, which replaces a probe that only proved the runner loads; delete such a probe.
 
 ## Troubleshooting
 

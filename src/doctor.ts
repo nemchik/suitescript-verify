@@ -14,6 +14,8 @@ import {
 export type Owner = "maintainer" | "agent";
 
 export interface Check {
+  /** A stable handle for the checks `setup` skips on; the name is for people. */
+  id?: string;
   name: string;
   ok: boolean;
   next?: string;
@@ -97,8 +99,13 @@ export function runChecks(
   env: NodeJS.ProcessEnv = process.env,
 ): Check[] {
   const checks: Check[] = [];
-  const add = (name: string, ok: boolean, owner: Owner, next: string) =>
-    checks.push({ name, next, ok, owner });
+  const add = (
+    name: string,
+    ok: boolean,
+    owner: Owner,
+    next: string,
+    id?: string,
+  ) => checks.push({ id, name, next, ok, owner });
   const v = config.values;
 
   add(
@@ -115,6 +122,7 @@ export function runChecks(
     ),
     "maintainer",
     "Run npm install --save-dev @oracle/suitecloud-cli, read Oracle's license and accept it yourself. This package never accepts it.",
+    "cli",
   );
 
   const javaVersion = installedJavaVersion();
@@ -124,6 +132,7 @@ export function runChecks(
     javaVersions.includes(javaVersion.split(".")[0] ?? ""),
     "maintainer",
     `Install Java ${javaVersions.join(" or ")} and make sure \`java -version\` works: the SuiteCloud SDK runs on no other version.`,
+    "java",
   );
 
   const sdkRoot = join(homedir(), sdkFolder);
@@ -140,6 +149,7 @@ export function runChecks(
     loginFiles.some((file) => existsSync(join(sdkRoot, file))),
     "maintainer",
     "With SUITECLOUD_CI_PASSKEY unset, run the project's SuiteCloud CLI account:setup from the SDF folder, log in to the sandbox and choose a role. This one-time browser login installs Oracle's SuiteCloud Development Integration in the account.",
+    "login",
   );
 
   const missing = [
@@ -153,6 +163,7 @@ export function runChecks(
     missing.length === 0,
     "maintainer",
     `Missing: ${missing.join(", ")}. Create the integration record and mapping in your sandbox, then save the values in .env.local (never the committed .env).`,
+    "ids",
   );
 
   add(
@@ -160,6 +171,7 @@ export function runChecks(
     isSandboxAccount(v[names.account] ?? ""),
     "maintainer",
     `${names.account} must look like digits_SBn. Verification never runs in production.`,
+    "sandbox",
   );
 
   for (const [label, key, expected, accepts] of [
@@ -183,6 +195,7 @@ export function runChecks(
       exists,
       "maintainer",
       `Generate the key pair outside the repository and set ${key} in .env.local.`,
+      `${label}-key`,
     );
     if (exists) {
       add(
@@ -190,6 +203,7 @@ export function runChecks(
         accepts(keyType(path)),
         "maintainer",
         "Generate a key of that type and upload its new public certificate in a new mapping.",
+        `${label}-key`,
       );
     }
   }
@@ -200,6 +214,7 @@ export function runChecks(
     /^[A-Za-z0-9]{32,100}$/.test(passkey),
     "maintainer",
     `Generate a random passkey and save it as ${names.passkey} in .env.local. Keep a copy somewhere safe: it encrypts the stored credentials. Never set it user-wide.`,
+    "passkey",
   );
   add(
     "SUITECLOUD_FALLBACK_PASSKEY is not set",
@@ -240,6 +255,7 @@ export function runChecks(
     absent.length > 0
       ? "Run suitescript-verify init to create the missing folders."
       : "Run account:setup:ci from the SDF folder once the steps above pass, so project.json gets a default auth id.",
+    "files",
   );
 
   add(`Runner role id: ${config.roleId}`, true, "agent", "");

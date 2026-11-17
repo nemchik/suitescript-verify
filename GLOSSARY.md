@@ -9,8 +9,15 @@ A version-controlled module that exercises one platform behavior and returns the
 _Avoid_: Test (a probe verifies the platform, not your code)
 
 **Runner**:
-The one RESTlet deployed to a sandbox that runs a probe by name from a fixed list and never runs code from a request.
+The one RESTlet deployed to a sandbox: the entry point for every probe, which runs a probe by name from a fixed list and never runs code from a request.
 _Avoid_: Harness
+
+**Script host**:
+A script of another type, deployed beside the runner, that runs that type's probes when the runner asks for one and is never reachable without a login.
+_Avoid_: Second runner, probe Suitelet
+
+**Suitelet host**:
+The script host for Suitelet probes.
 
 **Results page**:
 The document in a downstream project that records one verification: the test, the NetSuite version, the output, the explanation and the decision.

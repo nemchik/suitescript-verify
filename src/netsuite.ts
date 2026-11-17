@@ -91,11 +91,11 @@ export function clientAssertion(options: {
 const identifierPatterns: Array<[string, RegExp]> = [
   ["an account number", /\b\d{5,8}[_-](?:SB|RP|TSTDRV)\w*\b/i],
   ["an account number", /\bTSTDRV\d+\b/i],
-  ["a NetSuite host", /[a-z0-9-]+\.[a-z0-9.-]*netsuite\.com/i],
+  ["a NetSuite host", /(?<![a-z0-9.-])[a-z0-9-]+\.[a-z0-9.-]*netsuite\.com/i],
   ["a JWT", /\beyJ[\w-]{10,}\.[\w-]{10,}\./],
   ["a long hex token", /\b[a-f0-9]{40,}\b/i],
   ["a PEM block", /-----BEGIN [A-Z ]+-----/],
-  ["an email address", /[\w.+-]+@[\w-]+\.[\w.-]+/],
+  ["an email address", /(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.-]+/],
 ];
 
 export interface KnownIds {

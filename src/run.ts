@@ -13,6 +13,7 @@ import {
   readExpect,
   tagProblems,
 } from "./probes.ts";
+import { matchesExpectedResponse, ownResponse } from "./response.ts";
 import { resultsDraft } from "./results.ts";
 import {
   positionals,
@@ -194,7 +195,12 @@ export async function runProbe(
       `Refusing to print or record the output: ${scrubbed.problems.join("; ")}. Review it by hand.`,
     );
   }
-  let body: { error?: string; result?: unknown; version?: string };
+  let body: {
+    error?: string;
+    response?: unknown;
+    result?: unknown;
+    version?: string;
+  };
   try {
     body = JSON.parse(scrubbed.text);
   } catch {
@@ -203,12 +209,19 @@ export async function runProbe(
   if (body.error) {
     throw new UsageError(`The runner reported an error: ${body.error}`);
   }
+  // A Suitelet probe that wrote its own response is reported as that response, not a result.
+  const own = "response" in body ? ownResponse(body.response) : undefined;
+  if (own) body.response = own;
   console.log(JSON.stringify(body, null, 2));
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
   if (expected !== undefined) {
-    if (matchesExpect(body.result, expected)) {
+    if (
+      own
+        ? matchesExpectedResponse(own, expected)
+        : matchesExpect(body.result, expected)
+    ) {
       console.log("\nMatches the expected output.");
     } else {
       status = 2;
@@ -228,7 +241,7 @@ export async function runProbe(
       const draft = scrub(
         resultsDraft({
           date: new Date().toISOString().slice(0, 10),
-          output: body.result,
+          output: own ?? body.result,
           probe,
           probeFile,
           resultsDir,

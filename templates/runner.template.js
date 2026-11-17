@@ -7,6 +7,9 @@
  * A Suitelet probe runs in the Suitelet host deployed beside the runner, which
  * the runner calls from inside the account with `N/https.requestSuitelet`. The
  * runner knows each Suitelet probe's name and parameters, never its code.
+ * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
+ * holding the probe's result, or the probe's `own` response, reported as its
+ * status, headers (cookies redacted but `sv_*`) and body (cut at 64 KB).
  *
  * It refuses to run unless the account is a sandbox.
  *
@@ -28,6 +31,42 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     scriptId: "%%SUITELET_SCRIPT_ID%%",
   };
   const cut = (text) => String(text).slice(0, 500);
+  /** The host's header naming how to read its answer: `wrapped` JSON, or the probe's `own` response. */
+  const MARKER = "x-ssv-mode";
+  const BODY_LIMIT = 64 * 1024;
+
+  /** One Set-Cookie value with its value and attributes redacted, unless the cookie is the probe's own (`sv_*`). */
+  const redactCookie = (cookie) => {
+    const text = String(cookie);
+    const name = text.split("=")[0].trim();
+    return name.startsWith("sv_") ? text : `${name}=<redacted>`;
+  };
+  /** Redacts a Set-Cookie header, given as a list or as cookies joined with commas (a comma inside Expires is not a join). */
+  const redactSetCookie = (value) =>
+    Array.isArray(value)
+      ? value.map(redactCookie)
+      : String(value)
+          .split(/,(?=\s*[^;,=\s]+=)/)
+          .map((cookie) => redactCookie(cookie.trim()))
+          .join(", ");
+
+  /** The probe's own response as the runner reports it: no marker, cookies redacted, the body cut at 64 KB. */
+  const ownResponse = (status, headers, text) => {
+    const shown = {};
+    for (const key of Object.keys(headers)) {
+      const lower = key.toLowerCase();
+      if (lower === MARKER) continue;
+      shown[key] =
+        lower === "set-cookie" ? redactSetCookie(headers[key]) : headers[key];
+    }
+    const response = {
+      body: text.slice(0, BODY_LIMIT),
+      headers: shown,
+      status,
+    };
+    if (text.length > BODY_LIMIT) response.truncated = true;
+    return response;
+  };
 
   /** The declared parameters from the body, or an error. Parameters are data, never evaluated. */
   const checkParams = (body, declared) => {
@@ -69,6 +108,28 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     }
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
+    const headers = reply?.headers || {};
+    const markerKey = Object.keys(headers).find(
+      (key) => key.toLowerCase() === MARKER,
+    );
+    const marker =
+      markerKey === undefined ? undefined : [].concat(headers[markerKey])[0];
+    if (marker === "own") {
+      return {
+        probe: name,
+        response: ownResponse(status, headers, text),
+        scriptType: "Suitelet",
+        version: String(runtime.version),
+      };
+    }
+    if (marker !== "wrapped") {
+      return {
+        error:
+          status === 200
+            ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header: ${cut(text)}`
+            : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      };
+    }
     if (status !== 200) {
       return {
         error: `the Suitelet host answered HTTP ${status}: ${cut(text)}`,

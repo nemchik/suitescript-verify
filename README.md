@@ -203,7 +203,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
-- A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift. The expectation is the `result` object, sorted and indented, not the whole output. Write it from a real run's output, never a guess, so a new probe has none until it has run once. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none.
+- A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift. The expectation is the `result` object (or, for a Suitelet probe that writes its own response, the `response` object), sorted and indented, not the whole output. Write it from a real run's output, never a guess, so a new probe has none until it has run once. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none.
 - The output says which script type ran the probe: `"scriptType": "RESTlet"` or `"scriptType": "Suitelet"`.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
@@ -215,7 +215,7 @@ Declare each parameter in the probe's leading JSDoc block, one tag per parameter
 - The pattern is a JavaScript regular expression (Unicode mode) that the whole value must match, so `[a-z_]+` cannot match `a;b`.
 - Pass each value with `run <probe> --param name=value`. Every declared parameter is required and its value is always a string.
 - The runner validates the parameters against the declarations before any request, rejecting an invalid, undeclared, missing or repeated one. A probe that declares none takes none.
-- The generated runner checks them again (and the Suitelet host a third time, for a Suitelet probe) and hands the probe only declared strings in `run(params)`. A value goes in the JSON request body and is never evaluated or turned into code.
+- The generated runner checks them again (and the Suitelet host a third time, for a Suitelet probe) and hands the probe only declared strings in `run(params)` (`run(params, context)` for a Suitelet probe). A value goes in the JSON request body and is never evaluated or turned into code.
 - A bad `@param` tag (no pattern, an invalid pattern, a duplicate name) stops `run` and `deploy`.
 
 ### Permissions
@@ -236,14 +236,51 @@ A probe that needs a record permission declares it in its leading JSDoc block, o
 
 ### Suitelet probes
 
-A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Suitelet deployed beside the runner. It exports `run(params)` like a RESTlet probe, and what it returns is reported as `result`, with `"scriptType": "Suitelet"`, and compared with its expected output the same way.
+A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Suitelet deployed beside the runner. It exports `run(params, context)`, with the same declared parameters as a RESTlet probe:
+
+- `context.request` holds only `method` and `parameters` (the declared parameters). The request's headers, cookies and body are never shown, so a probe cannot return them.
+- `context.response` records every write, page, file, redirect and header call (`write`, `writeLine`, `writePage`, `writeFile`, `renderPdf`, `sendRedirect`, `setCdnCacheable`, `setHeader`, `addHeader`). Nothing reaches the real response until the probe returns. `getHeader` and `headers` answer from what it recorded.
+
+When the probe returns, the host answers in one of two modes:
+
+| The probe                                   | Mode      | What `run` reports                                                                                            |
+| ------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
+| Returns a value and makes no response calls | `wrapped` | `result`, like a RESTlet probe, compared with its expected output the same way                                |
+| Makes response calls and returns nothing    | `own`     | `response`: `{ status, headers, body }` of the HTTP response the runner saw, with the calls replayed in order |
+| Does both                                   | error     | `the probe both wrote a response and returned a value`                                                        |
+| Throws, before or after writing             | `wrapped` | `result` is `THROWS: <name>: <message>`; nothing it wrote is replayed                                         |
+
+```js
+/**
+ * @scriptType Suitelet
+ */
+define([], () => ({
+    run: (params, { response }) => {
+        response.addHeader({
+            name: "Set-Cookie",
+            value: "sv_flavor=sweet; Path=/",
+        });
+        response.write({ output: "<p>hello</p>" });
+    },
+}));
+```
+
+The host names the mode in an `X-SSV-Mode` header, and the runner reads the body as JSON only when it says `wrapped`. A probe cannot set that header: `setHeader` or `addHeader` with its name, in any case, throws `SSV_RESERVED_HEADER`. An answer without it is reported as an error, never read.
+
+For an `own` response, the runner reports every header but the marker, with these limits (the CLI applies them again):
+
+- **Cookies are redacted.** Each `Set-Cookie` cookie becomes `<name>=<redacted>`, unless its name starts with `sv_`. Name a cookie a probe sets `sv_<something>` to see it whole; the platform's session cookies are never shown.
+- **The body is cut at 64 KB** (65,536 characters), and the response then carries `"truncated": true`.
+- **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a redirect whose `Location` names the account's host is refused, not printed.
+
+The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out headers that change on every call: `Date`.
 
 The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe, the runner checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet`:
 
 - The options are `scriptId` and `deploymentId` (the host's `_sl` ids) and `urlParams`, which carries the probe name (`probe`) and the parameters as one JSON string (`params`). `requestSuitelet` rejects a `params` option (`UNKNOWN_PARAM`) and `external: true`, gives only a generic `UNEXPECTED_ERROR` for a script that does not exist, and costs 10 governance units.
 - The host's deployment is never available without login (`isonline` F), its audience is only the runner's role (`allroles` F), and its status is released. Oracle says `requestSuitelet` works only for authenticated users in trusted contexts, so no anonymous URL is needed.
 - Like the runner, the host refuses outside a sandbox, runs only the Suitelet probes generated into its own fixed list, checks the parameters again against the declarations, and reports a throw as `THROWS: <name>: <message>`.
-- A failed or unexpected answer from the host is reported, never thrown: `run` stops with `The runner reported an error:` and what the runner saw (the error the call threw, the HTTP status and the start of the body, a body that is not JSON, or the host's own refusal). See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).
+- A failed or unexpected answer from the host is reported, never thrown: `run` stops with `The runner reported an error:` and what the runner saw (the error the call threw, the HTTP status and the start of the body, an answer without the `X-SSV-Mode` header, a `wrapped` body that is not JSON, or the host's own refusal). See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).
 
 ### Tags
 
@@ -293,7 +330,7 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### A Suitelet probe reports that the Suitelet host call failed
 
-`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, or a body that is not JSON, means the host did not run the probe, and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
+`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 

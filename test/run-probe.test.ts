@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
+import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
 const bin = join(root, "dist", "bin", "suitescript-verify.js");
@@ -204,6 +205,45 @@ describe("deploy builds the runner from the probes", () => {
     assert.match(result.stderr, /needs the user at a terminal/);
     assert.equal(existsSync(join(p.dir, "calls.json")), false);
   });
+
+  it("deploys for real once the person types DEPLOY at the terminal", () => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    const result = cli(
+      p,
+      ["deploy", "--approved"],
+      fakeTerminal(["DEPLOY"], p.env),
+    );
+    assert.equal(result.status, 0, result.all);
+    assert.match(
+      result.stdout,
+      /This deploys to the sandbox\. Type DEPLOY to continue: /,
+    );
+    const call = calls(p);
+    assert.deepEqual(call.args, ["project:deploy"]);
+    assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
+  });
+
+  for (const typed of ["deploy", "yes", "CLEANUP", ""]) {
+    it(`deploys nothing when the person types ${JSON.stringify(typed)} instead of DEPLOY`, () => {
+      const p = project();
+      const result = cli(
+        p,
+        ["deploy", "--approved"],
+        fakeTerminal([typed], p.env),
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Not confirmed\. Nothing was changed\./);
+      assert.equal(existsSync(join(p.dir, "calls.json")), false);
+    });
+  }
+
+  it("deploys nothing when the terminal closes before an answer", () => {
+    const p = project();
+    const result = cli(p, ["deploy", "--approved"], fakeTerminal([], p.env));
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
 });
 
 describe("cleanup", () => {
@@ -223,6 +263,37 @@ describe("cleanup", () => {
     assert.match(result.stderr, /needs the user at a terminal/);
     assert.equal(existsSync(join(p.dir, "calls.json")), false);
   });
+
+  it("turns the deployment off for real once the person types CLEANUP at the terminal", () => {
+    const p = project();
+    const result = cli(
+      p,
+      ["cleanup", "--approved"],
+      fakeTerminal(["CLEANUP"], p.env),
+    );
+    assert.equal(result.status, 0, result.all);
+    assert.match(
+      result.stdout,
+      /This turns the runner's deployment off\. Type CLEANUP to continue: /,
+    );
+    const call = calls(p);
+    assert.deepEqual(call.args, ["project:deploy"]);
+    assert.match(call.objects.join(""), /<isdeployed>F<\/isdeployed>/);
+  });
+
+  for (const typed of ["cleanup", "yes", "DEPLOY", ""]) {
+    it(`changes nothing when the person types ${JSON.stringify(typed)} instead of CLEANUP`, () => {
+      const p = project();
+      const result = cli(
+        p,
+        ["cleanup", "--approved"],
+        fakeTerminal([typed], p.env),
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Not confirmed\. Nothing was changed\./);
+      assert.equal(existsSync(join(p.dir, "calls.json")), false);
+    });
+  }
 });
 
 describe("sandbox only", () => {

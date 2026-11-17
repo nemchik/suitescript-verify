@@ -475,6 +475,12 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
       false,
     );
     assert.ok(existsSync(src(project, "Objects/customscript_new_one_rl.xml")));
+    assert.equal(
+      existsSync(src(project, "Objects/customscript_old_one_sl.xml")),
+      false,
+    );
+    assert.ok(existsSync(src(project, "Objects/customscript_new_one_sl.xml")));
+    assert.equal(second.stderr.match(/still be deployed/g)?.length, 1);
     assert.match(second.stderr, /old_one/);
     assert.match(second.stderr, /still be deployed/);
     assert.match(second.stderr, /cleanup/);
@@ -544,6 +550,20 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
       "ssv runner aaaaaaaaaaaaaaaaaaaaaaaa",
     ]);
     for (const value of values) assert.ok(value.length <= 40, value);
+    const host = read(
+      project,
+      "Objects/customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl.xml",
+    );
+    const hostValues = [
+      ...host.matchAll(/scriptid="([^"]+)"|<(?:name|title)>([^<]+)</g),
+    ].map((m) => m[1] ?? m[2] ?? "");
+    assert.deepEqual(hostValues.sort(), [
+      "customdeploy_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
+      "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
+      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
+      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+    for (const value of hostValues) assert.ok(value.length <= 40, value);
   });
 
   for (const bad of ["Nope", "has-dash", "x".repeat(25), "1abc"]) {

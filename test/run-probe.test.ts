@@ -64,6 +64,9 @@ fs.writeFileSync(${JSON.stringify(join(dir, "calls.json"))}, JSON.stringify({
   runner: list(cabinet)
     .filter((f) => f.endsWith("restlet.js"))
     .map((f) => fs.readFileSync(path.join(cabinet, f), "utf8")),
+  suitelet: list(cabinet)
+    .filter((f) => f.endsWith("suitelet.js"))
+    .map((f) => fs.readFileSync(path.join(cabinet, f), "utf8")),
 }));`;
 
 /**
@@ -151,6 +154,7 @@ const calls = (p: Project) =>
     license: string | null;
     objects: string[];
     runner: string[];
+    suitelet: string[];
   };
 
 const ok = (restletBody: unknown): [Answer, Answer] => [
@@ -181,6 +185,7 @@ describe("deploy builds the runner from the probes", () => {
       "SuiteScripts/suitescript-verify/probes",
       "SuiteScripts/suitescript-verify/probes/one.js",
       "SuiteScripts/suitescript-verify/restlet.js",
+      "SuiteScripts/suitescript-verify/suitelet.js",
     ]);
     assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
     const runner = call.runner.join("");
@@ -274,7 +279,7 @@ describe("cleanup", () => {
     assert.equal(result.status, 0, result.all);
     assert.match(
       result.stdout,
-      /This turns the runner's deployment off\. Type CLEANUP to continue: /,
+      /This turns the runner's and the Suitelet host's deployments off\. Type CLEANUP to continue: /,
     );
     const call = calls(p);
     assert.deepEqual(call.args, ["project:deploy"]);
@@ -594,7 +599,7 @@ describe("run", () => {
     withProbe(p, `${restlet}\n * @writes`, "writer");
     p.script(...ok({ result: {}, version: "1" }));
     const client = cli(p, ["run", "client"]).stderr;
-    assert.match(client, /RESTlet probes/);
+    assert.match(client, /RESTlet and Suitelet probes/);
     assert.doesNotMatch(client, /docs\/verification/);
     assert.match(cli(p, ["run", "undeclared"]).stderr, /undeclared/);
     assert.match(cli(p, ["run", "writer"]).stderr, /@writes/);
@@ -655,7 +660,7 @@ describe("run", () => {
     p.script(...ok({ error: "refused: the runner only runs in a sandbox" }));
     const result = cli(p, ["run", "one"]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /The runner refused/);
+    assert.match(result.stderr, /The runner reported an error: refused/);
   });
 
   describe("drift against expect.json", () => {
@@ -874,12 +879,16 @@ describe("probe parameters", () => {
       envType: "SANDBOX",
       version: "1",
     };
-    const runner = factory(runtime, {
-      run: (params: unknown) => {
-        seen.push(params);
-        return "done";
+    const runner = factory(
+      runtime,
+      {},
+      {
+        run: (params: unknown) => {
+          seen.push(params);
+          return "done";
+        },
       },
-    });
+    );
     assert.equal(
       runner.post({ params: { id: "42" }, probe: "one" }).result,
       "done",
@@ -959,5 +968,331 @@ describe("extra probe tags", () => {
       assert.match(result.all, /SUITESCRIPT_VERIFY_EXTRA_TAGS/);
       assert.equal(result.all.includes(value), false);
     }
+  });
+});
+
+/** Loads a generated script with a stubbed `define`, handing its factory the given modules. */
+function load<T>(source: string, ...modules: unknown[]): T {
+  let factory: ((...m: unknown[]) => T) | undefined;
+  new Function("define", source)((_deps: string[], f: typeof factory) => {
+    factory = f;
+  });
+  if (!factory) throw new Error("no define");
+  return factory(...modules);
+}
+
+const sandbox = {
+  EnvType: { PRODUCTION: "PRODUCTION", SANDBOX: "SANDBOX" },
+  envType: "SANDBOX",
+  version: "2026.2",
+};
+
+describe("Suitelet probes", () => {
+  const suitelet = "@scriptType Suitelet";
+  const withProbe = (p: Project, tags: string, slug: string) =>
+    write(p.dir, `verification/probes/${slug}.js`, probeSource(tags));
+  const hostObject = (p: Project) =>
+    calls(p).objects.find((o) => o.startsWith("<suitelet")) ?? "";
+
+  it("deploys the Suitelet host beside the runner, with only Suitelet probes in its list", () => {
+    const p = project();
+    withProbe(p, restlet, "one");
+    withProbe(p, suitelet, "page");
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /Probes in the runner: one\n/);
+    assert.match(result.stdout, /Probes in the Suitelet host: page\n/);
+    const call = calls(p);
+    assert.deepEqual(
+      call.files
+        .map((f) => f.replaceAll("\\", "/"))
+        .filter((f) => f.endsWith(".js"))
+        .sort(),
+      [
+        "SuiteScripts/suitescript-verify/probes/one.js",
+        "SuiteScripts/suitescript-verify/probes/page.js",
+        "SuiteScripts/suitescript-verify/restlet.js",
+        "SuiteScripts/suitescript-verify/suitelet.js",
+      ],
+    );
+    const host = call.suitelet.join("");
+    assert.match(host, /"\.\/probes\/page"/);
+    assert.doesNotMatch(host, /"\.\/probes\/one"/);
+    assert.match(host, /@NScriptType Suitelet/);
+    assert.match(host, /EnvType\.SANDBOX/);
+    assert.doesNotMatch(host, /\beval\b|new Function|require\(/);
+    assert.doesNotMatch(call.runner.join(""), /"\.\/probes\/page"/);
+  });
+
+  it("gives the host a deployment never available without login, for the runner's role only, released", () => {
+    const p = project();
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const host = hostObject(p);
+    assert.match(
+      host,
+      /<suitelet scriptid="customscript_suitescript_verify_sl">/,
+    );
+    assert.match(host, /scriptid="customdeploy_suitescript_verify_sl"/);
+    assert.match(host, /<name>ssv suitelet suitescript_verify<\/name>/);
+    assert.match(host, /<title>ssv suitelet suitescript_verify<\/title>/);
+    assert.match(
+      host,
+      /<description>[^<]*suitescript-verify[^<]*<\/description>/,
+    );
+    assert.match(host, /\[\/SuiteScripts\/suitescript-verify\/suitelet\.js\]/);
+    assert.match(host, /<isonline>F<\/isonline>/);
+    assert.match(host, /<allroles>F<\/allroles>/);
+    assert.match(host, /<audslctrole>\[customrole_[a-z0-9_]+\]<\/audslctrole>/);
+    assert.doesNotMatch(host, /<allemployees>T|<allpartners>T/);
+    assert.match(host, /<status>RELEASED<\/status>/);
+    assert.match(host, /<isdeployed>T<\/isdeployed>/);
+    assert.match(calls(p).suitelet.join(""), /new Map\(\[\s*\]\)/);
+  });
+
+  it("switches the host off in cleanup, with the runner", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    assert.equal(cli(p, ["cleanup"]).status, 0);
+    const objects = calls(p).objects.join("");
+    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 2);
+    assert.doesNotMatch(objects, /<isdeployed>T/);
+  });
+
+  it("refuses a bad tag on a Suitelet probe at deploy", () => {
+    const p = project();
+    withProbe(p, `${suitelet}\n * @param 1bad x`, "page");
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /page: @param/);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+
+  it("runs a Suitelet probe through the runner and reports its result and script type", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(
+      ...ok({
+        probe: "page",
+        result: { ok: true },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      }),
+    );
+    const result = cli(p, ["run", "page"]);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /"scriptType": "Suitelet"/);
+    assert.match(result.stdout, /"ok": true/);
+    const [, call] = p.requests();
+    assert.match(call?.url ?? "", /script=customscript_suitescript_verify_rl&/);
+    assert.equal(call?.body, JSON.stringify({ probe: "page" }));
+  });
+
+  it("compares a Suitelet probe's result with its expected output", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    write(p.dir, "verification/probes/page.expect.json", '{"ok": true}');
+    const answer = { probe: "page", scriptType: "Suitelet", version: "1" };
+    p.script(...ok({ ...answer, result: { ok: true } }));
+    assert.match(cli(p, ["run", "page"]).stdout, /Matches the expected output/);
+    p.script(...ok({ ...answer, result: { ok: false } }));
+    const drift = cli(p, ["run", "page"]);
+    assert.equal(drift.status, 2);
+    assert.match(drift.stdout, /DRIFT/);
+  });
+
+  it("drafts a results page that names the method as a deployed Suitelet called by the runner", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(...ok({ result: 1, scriptType: "Suitelet", version: "2026.2" }));
+    assert.equal(cli(p, ["run", "page", "--draft"]).status, 0);
+    const text = readFileSync(
+      join(p.dir, "docs", "verification", "results", "page.md"),
+      "utf8",
+    );
+    assert.match(
+      text,
+      /\*\*Method:\*\* deployed Suitelet \(the suitescript-verify Suitelet host, called by the runner\)/,
+    );
+  });
+
+  it("reports a failed host call the runner saw, without crashing", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(
+      ...ok({ error: "the Suitelet host answered HTTP 500: Internal error" }),
+    );
+    const result = cli(p, ["run", "page"]);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: the Suitelet host answered HTTP 500: Internal error/,
+    );
+  });
+
+  describe("the generated runner", () => {
+    type Runner = {
+      post: (b: unknown) => {
+        error?: string;
+        probe?: string;
+        result?: unknown;
+        scriptType?: string;
+        version?: string;
+      };
+    };
+    const runnerFor = (
+      p: Project,
+      requestSuitelet: (options: unknown) => unknown,
+    ) => {
+      withProbe(p, restlet, "one");
+      withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      return load<Runner>(
+        calls(p).runner.join(""),
+        sandbox,
+        { requestSuitelet },
+        { run: () => "restlet" },
+      );
+    };
+
+    it("calls the host with requestSuitelet, the host's ids and the probe and parameters as urlParams", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      const runner = runnerFor(p, (options) => {
+        seen.push(options);
+        return {
+          body: JSON.stringify({ probe: "page", result: { ok: 1 } }),
+          code: 200,
+          headers: {},
+        };
+      });
+      assert.deepEqual(runner.post({ params: { id: "42" }, probe: "page" }), {
+        probe: "page",
+        result: { ok: 1 },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      assert.deepEqual(seen, [
+        {
+          deploymentId: "customdeploy_suitescript_verify_sl",
+          scriptId: "customscript_suitescript_verify_sl",
+          urlParams: { params: JSON.stringify({ id: "42" }), probe: "page" },
+        },
+      ]);
+      assert.equal(runner.post({ probe: "one" }).scriptType, "RESTlet");
+    });
+
+    it("checks a Suitelet probe's parameters before calling the host", () => {
+      const p = project();
+      let count = 0;
+      const runner = runnerFor(p, () => {
+        count++;
+        return { body: "{}", code: 200 };
+      });
+      for (const params of [{ id: "x" }, { extra: "1", id: "1" }, {}]) {
+        assert.match(
+          runner.post({ params, probe: "page" }).error ?? "",
+          /param/,
+        );
+      }
+      assert.equal(count, 0);
+      assert.equal(runner.post({ probe: "nope" }).error, "unknown probe");
+    });
+
+    it("reports a thrown error, a non-200 status and a non-JSON body, never throwing", () => {
+      const p = project();
+      const answers: (() => unknown)[] = [
+        () => {
+          const e = new Error("An unexpected SuiteScript error has occurred");
+          e.name = "UNEXPECTED_ERROR";
+          throw e;
+        },
+        () => ({ body: "Internal error", code: 500 }),
+        () => ({ body: "<html>login</html>", code: 200 }),
+        () => ({ body: JSON.stringify({ error: "unknown probe" }), code: 200 }),
+      ];
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]?.());
+      const errors = answers.map(
+        () => runner.post({ params: { id: "1" }, probe: "page" }).error,
+      );
+      assert.deepEqual(errors, [
+        "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected SuiteScript error has occurred",
+        "the Suitelet host answered HTTP 500: Internal error",
+        "the Suitelet host's answer was not JSON: <html>login</html>",
+        "the Suitelet host refused: unknown probe",
+      ]);
+    });
+  });
+
+  describe("the generated Suitelet host", () => {
+    type Host = { onRequest: (context: unknown) => void };
+    const hostFor = (p: Project, run: (params: unknown) => unknown) => {
+      withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      return (runtime: unknown) =>
+        load<Host>(calls(p).suitelet.join(""), runtime, { run });
+    };
+    const call = (host: Host, parameters: Record<string, string>) => {
+      const written: string[] = [];
+      host.onRequest({
+        request: { method: "GET", parameters },
+        response: {
+          setHeader: () => undefined,
+          write: (o: { output: string } | string) =>
+            written.push(typeof o === "string" ? o : o.output),
+        },
+      });
+      return JSON.parse(written.join(""));
+    };
+
+    it("returns the probe's value, or THROWS, for a known probe with valid parameters", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      let fail = false;
+      const host = hostFor(p, (params) => {
+        seen.push(params);
+        if (fail) {
+          throw Object.assign(new Error("boom"), { name: "TypeError" });
+        }
+        return { got: params };
+      })(sandbox);
+      const params = JSON.stringify({ id: "7" });
+      assert.deepEqual(call(host, { params, probe: "page" }), {
+        probe: "page",
+        result: { got: { id: "7" } },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      fail = true;
+      assert.equal(
+        call(host, { params, probe: "page" }).result,
+        "THROWS: TypeError: boom",
+      );
+      assert.deepEqual(seen, [{ id: "7" }, { id: "7" }]);
+    });
+
+    it("refuses outside a sandbox, an unknown probe and invalid parameters, without running the probe", () => {
+      const p = project();
+      let ran = 0;
+      const make = hostFor(p, () => ran++);
+      const prod = make({ ...sandbox, envType: "PRODUCTION" });
+      assert.match(
+        call(prod, { params: '{"id":"1"}', probe: "page" }).error,
+        /sandbox/,
+      );
+      const host = make(sandbox);
+      assert.equal(call(host, { probe: "nope" }).error, "unknown probe");
+      for (const params of [
+        '{"id":"x"}',
+        '{"id":"1","extra":"2"}',
+        "{}",
+        '{"id":1}',
+        "not json",
+        "[]",
+      ]) {
+        assert.match(call(host, { params, probe: "page" }).error, /param/);
+      }
+      assert.equal(ran, 0);
+    });
   });
 });

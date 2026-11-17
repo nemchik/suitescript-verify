@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { permissionKeys } from "./permissions.ts";
 
 export const read = (path: string) =>
   readFileSync(path, "utf8").replace(/\r\n/g, "\n");
@@ -11,10 +12,19 @@ export interface ProbeParam {
   pattern: string;
 }
 
+/** A role permission a probe declares with `@permission <permkey> <level>`. */
+export interface ProbePermission {
+  level: string;
+  permkey: string;
+}
+
 export interface Probe {
   /** What is wrong with the probe's `@param` tags, if anything. */
   paramProblems: string[];
   params: ProbeParam[];
+  /** What is wrong with the probe's `@permission` tags, if anything. */
+  permissionProblems: string[];
+  permissions: ProbePermission[];
   scriptType: string;
   slug: string;
   /** Tags in the block that neither the package nor the project registered. */
@@ -59,12 +69,62 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
   return { paramProblems, params };
 }
 
+/** The permission levels SDF knows, lowest first. */
+const permissionLevels = ["VIEW", "CREATE", "EDIT", "FULL"];
+
+/**
+ * The highest level a probe may declare. Probes do not write (`@writes` is
+ * refused), so VIEW is the cap.
+ */
+const maxPermissionLevel = "VIEW";
+
+function parsePermissions(
+  block: string,
+): Pick<Probe, "permissionProblems" | "permissions"> {
+  const permissions: ProbePermission[] = [];
+  const permissionProblems: string[] = [];
+  for (const match of block.matchAll(
+    /^[ \t]*\*?[ \t]*@permission\b[ \t]*(.*)$/gm,
+  )) {
+    const line = (match[1] ?? "").trim();
+    const [permkey = "", level = "", ...rest] = line.split(/\s+/);
+    if (permkey === "" || level === "" || rest.length > 0) {
+      permissionProblems.push(
+        `@permission "${line}" needs a key and a level: @permission <permkey> VIEW`,
+      );
+    } else if (!permissionKeys.has(permkey)) {
+      permissionProblems.push(
+        `@permission ${permkey} is not a permission key the package knows (an SDF permkey such as LIST_CUSTJOB)`,
+      );
+    } else if (!permissionLevels.includes(level)) {
+      permissionProblems.push(
+        `@permission ${permkey} ${level}: ${level} is not a permission level; use ${maxPermissionLevel}`,
+      );
+    } else if (
+      permissionLevels.indexOf(level) >
+      permissionLevels.indexOf(maxPermissionLevel)
+    ) {
+      permissionProblems.push(
+        `@permission ${permkey} ${level}: probes do not write, so the level must be ${maxPermissionLevel}`,
+      );
+    } else if (permissions.some((p) => p.permkey === permkey)) {
+      permissionProblems.push(
+        `@permission ${permkey} is declared more than once`,
+      );
+    } else {
+      permissions.push({ level, permkey });
+    }
+  }
+  return { permissionProblems, permissions };
+}
+
 /** The tags the package gives meaning to, and the ordinary NetSuite and JSDoc ones it lets through. */
 const builtinTags = new Set(
   [
     "scriptType",
     "writes",
     "param",
+    "permission",
     "NApiVersion",
     "NScriptType",
     "NModuleScope",
@@ -105,6 +165,7 @@ export function parseProbe(
   );
   return {
     ...parseParams(block),
+    ...parsePermissions(block),
     scriptType: tags("scriptType")[0] ?? "",
     slug,
     unknownTags,
@@ -148,6 +209,7 @@ export const matchesExpect = (result: unknown, expected: unknown) =>
 /** What is wrong with a probe's tags, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [
   ...probe.paramProblems,
+  ...probe.permissionProblems,
   ...probe.unknownTags.map(
     (name) =>
       `@${name} is not a tag the package knows; register it with SUITESCRIPT_VERIFY_EXTRA_TAGS=${name}`,

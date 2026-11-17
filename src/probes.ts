@@ -128,6 +128,14 @@ export function listProbes(
 export const isRestlet = (probe: Probe) =>
   probe.scriptType.toLowerCase() === "restlet";
 
+/** A Suitelet probe runs in the Suitelet host, which the runner calls. */
+export const isSuitelet = (probe: Probe) =>
+  probe.scriptType.toLowerCase() === "suitelet";
+
+/** A probe the runner can run, itself or through a script host. */
+export const isRunnable = (probe: Probe) =>
+  isRestlet(probe) || isSuitelet(probe);
+
 /** The output a probe produced when it was verified, if it declared one. */
 export function readExpect(slug: string, dir: string): unknown {
   const path = join(dir, `${slug}.expect.json`);

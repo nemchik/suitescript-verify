@@ -32,7 +32,7 @@ Oracle's skills, type definitions and documentation disagree with each other and
 
 ### When to verify
 
-Verify, or mark the claim **unverified**, whenever you depend on what the platform accepts, rejects or returns, research how a module, method or script type behaves, or find a source that contradicts itself or another. An unverified claim stays marked unverified until a results page settles it. Do not mark a claim verified from a paraphrase of documentation: verified means a test ran.
+Verify, or mark the claim **unverified**, whenever you depend on what the platform accepts, rejects or returns, research how a module, method or script type behaves, or find a source that contradicts itself or another. An unverified claim stays marked unverified until a results page settles it. Do not guess a result, and do not mark a claim verified from a paraphrase of documentation: verified means a test ran.
 
 ### For agents
 
@@ -49,8 +49,8 @@ Record the method, the NetSuite version (for example `2026.2`; Help > About), an
 | Method                          | Use it for                                                        | Limits                                                                                                                                                                                                |
 | ------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The runner (a deployed RESTlet) | RESTlet behavior                                                  | Sandbox only; RESTlet only                                                                                                                                                                            |
-| Browser console                 | Client scripts                                                    | Runs in the browser's engine, so it says nothing about server-only behavior                                                                                                                           |
-| Script debugger                 | Quick server checks (Customization > Scripting > Script Debugger) | Behaves differently from a deployed script in places; confirm a surprising result with a deployed script                                                                                              |
+| Browser console                 | Client scripts                                                    | Runs in the browser's engine, so it says nothing about server-only behavior (`typeof performance` differs between the two)                                                                            |
+| Script debugger                 | Quick server checks (Customization > Scripting > Script Debugger) | Behaves differently from a deployed script in places (`util.nanoTime` throws there); confirm a surprising result with a deployed script                                                               |
 | A deployed script               | The authoritative server result                                   | Upload a script, create the Script record and a Deployment (status Testing, audience yourself) and call it; other script types can behave differently from a RESTlet, so test the type you care about |
 
 In the browser console, open any record page, open the developer tools, load modules with `require` and print the results:
@@ -59,6 +59,29 @@ In the browser console, open any record page, open the developer tools, load mod
 require(["N/util"], function (u) {
     console.log(JSON.stringify({ isArray: u.isArray([]) }));
 });
+```
+
+For a deployed script, record each check's result or error so one throw does not hide the rest. A minimal Suitelet, opened from its deployment URL:
+
+```js
+/**
+ * @NApiVersion 2.1
+ * @NScriptType Suitelet
+ */
+define([], () => ({
+    onRequest({ response }) {
+        const r = {};
+        const t = (k, f) => {
+            try {
+                r[k] = f();
+            } catch (e) {
+                r[k] = "THROWS: " + e.name + ": " + e.message;
+            }
+        };
+        t("example", () => typeof util.isArray);
+        response.write(JSON.stringify(r, null, 1));
+    },
+}));
 ```
 
 **Note:** do not put the account number in a verification, nor an account URL, user, token or the internal id of a real record. They identify a company's account, they are not needed to reproduce a result, and they are a security risk in a public repository. Replace ids with placeholders.
@@ -177,7 +200,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
-- A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift. The expectation is the `result` object, sorted and indented, not the whole output. Commit it only once the output is stable: a flaky probe reports drift.
+- A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift. The expectation is the `result` object, sorted and indented, not the whole output. Write it from a real run's output, never a guess, so a new probe has none until it has run once. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
 ### Parameters
@@ -201,6 +224,7 @@ The package validates the tags in a probe's leading JSDoc block: `@scriptType`, 
 - **The role is minimal.** A probe that searches transactions or creates a record gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence, but a probe that needs a record permission should say so in its header. Prefer objects that need no permission (`runtime`, `search.createColumn`).
 - **Check how an API is chained before relying on it.** `crypto.createHash(...).update(...)` returns nothing, so chaining `.digest()` threw `Cannot read property 'digest' of undefined` and cost a deploy. Read the method page for the return type.
 - **Outbound calls rate-limit.** A public echo service answered four requests in a row and failed the fifth with a body that had no `headers`. Keep a probe to four requests or fewer and put the status code in the failure, not just a `TypeError`.
+- **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output.
 - **Write probes with your editor or file tools, not a shell heredoc.** Backticks, `${}` and quotes in a probe broke a shell heredoc on Windows.
 - **An agent's tool can refuse the deploy command.** An auto-mode classifier blocked a deploy dry run chained in one shell line with other commands. Run the dry run alone and say so if it is still refused; the real deploy is the person's anyway.
 
@@ -256,6 +280,10 @@ A refresh clears the token mappings and, presumably, the deployed runner. Redo t
 
 On a headless machine, with `SUITECLOUD_CLI_ACCEPT_LICENSE` unset, the postinstall opens the license with `start`, `open` or `xdg-open`, which fails without a desktop. A desktop install is fine. A headless job needs the maintainer to accept the license, or an install with `--ignore-scripts`.
 
+### `doctor`, `deploy` and `run` fail in a git worktree but pass in the main checkout
+
+`verification/.env.local` is gitignored, so a fresh git worktree does not have it, and every command that needs a credential fails there. Run those commands from the main checkout (merge the probes into the branch checked out there first), or copy `.env.local` into the worktree yourself. A probe added after the last deploy still needs a new deploy before `run` finds it.
+
 ### SuiteCloud browser login stopped working in another project
 
 A user-wide `SUITECLOUD_CI_PASSKEY` stops browser login in your other SuiteCloud projects. Remove it from the environment and keep the passkey in `verification/.env.local`.
@@ -265,12 +293,11 @@ A user-wide `SUITECLOUD_CI_PASSKEY` stops browser login in your other SuiteCloud
 A **lesson** is a short, generic account of a runner, deploy, probe or sandbox problem: what happened, what it cost and how to avoid it. Keep it concrete (the message, the cause, the fix), and never put an account number, id, token or real record id in it. Fix an entry that proves wrong instead of adding a second one that contradicts it.
 
 - **A generic problem with this package or its flow:** open an issue or pull request at [nemchik/suitescript-verify](https://github.com/nemchik/suitescript-verify). It is added in the same pull request to the matching section above (setup, deploy, probes or troubleshooting), so it ships with the next version.
-- **A release or toolchain problem in that repository:** it is added to the repository's `docs/maintaining.md` instead, which is not shipped because it does not apply to anyone using the package.
 - **A finding about NetSuite itself:** write a [results page](#documenting-a-verification) in your own project. It is not a lesson.
 
 ## Development
 
-You need the Node.js and npm versions in `package.json` `devEngines` (mirrored in `.nvmrc`). `npm pack` and `npm test` refuse any other Node version.
+You need the Node.js and npm versions in `package.json` `devEngines`. `npm pack` and `npm test` refuse any other Node version.
 
 ```sh
 npm install

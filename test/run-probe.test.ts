@@ -1100,6 +1100,99 @@ describe("Suitelet probes", () => {
     assert.match(drift.stdout, /DRIFT/);
   });
 
+  describe("a probe that writes its own response", () => {
+    const own = (response: Record<string, unknown>) =>
+      ok({ probe: "page", response, scriptType: "Suitelet", version: "1" });
+
+    it("reports status, headers and body, with session cookies redacted and the body cut at 64 KB", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: "y".repeat(70 * 1024),
+          headers: {
+            "Content-Type": "text/html",
+            "Set-Cookie": ["JSESSIONID=abc123; Path=/", "sv_flavor=sweet"],
+          },
+          status: 200,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 0, result.all);
+      assert.equal(result.all.includes("abc123"), false);
+      const { response } = JSON.parse(result.stdout);
+      assert.deepEqual(response.headers, {
+        "Content-Type": "text/html",
+        "Set-Cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
+      });
+      assert.equal(response.body, "y".repeat(64 * 1024));
+      assert.equal(response.truncated, true);
+      assert.equal(response.status, 200);
+    });
+
+    it("refuses to print a response that still looks like an identifier", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: "",
+          headers: { Location: "https://x.app.netsuite.com/app/center" },
+          status: 302,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Refusing to print or record the output/);
+    });
+
+    it("compares status, body and headers with the expected output, ignoring Date", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      write(
+        p.dir,
+        "verification/probes/page.expect.json",
+        JSON.stringify({
+          body: "<p>hi</p>",
+          headers: { date: "Mon, 16 Nov 2026 09:00:00 GMT", "X-Probe": "1" },
+          status: 200,
+        }),
+      );
+      const answer = {
+        body: "<p>hi</p>",
+        headers: { Date: "Tue, 17 Nov 2026 10:00:00 GMT", "X-Probe": "1" },
+        status: 200,
+      };
+      p.script(...own(answer));
+      const same = cli(p, ["run", "page"]);
+      assert.equal(same.status, 0, same.all);
+      assert.match(same.stdout, /Matches the expected output/);
+      for (const changed of [
+        { ...answer, body: "<p>bye</p>" },
+        { ...answer, status: 302 },
+        { ...answer, headers: { ...answer.headers, "X-Probe": "2" } },
+        { ...answer, headers: { "X-Other": "1", "X-Probe": "1" } },
+      ]) {
+        p.script(...own(changed));
+        const drift = cli(p, ["run", "page"]);
+        assert.equal(drift.status, 2, JSON.stringify(changed));
+        assert.match(drift.stdout, /DRIFT/);
+      }
+    });
+
+    it("records the response in a draft results page", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(...own({ body: "<p>hi</p>", headers: {}, status: 200 }));
+      assert.equal(cli(p, ["run", "page", "--draft"]).status, 0);
+      const text = readFileSync(
+        join(p.dir, "docs", "verification", "results", "page.md"),
+        "utf8",
+      );
+      assert.match(text, /"body": "<p>hi<\/p>"/);
+      assert.match(text, /"status": 200/);
+    });
+  });
+
   it("drafts a results page that names the method as a deployed Suitelet called by the runner", () => {
     const p = project();
     withProbe(p, suitelet, "page");
@@ -1134,6 +1227,7 @@ describe("Suitelet probes", () => {
       post: (b: unknown) => {
         error?: string;
         probe?: string;
+        response?: unknown;
         result?: unknown;
         scriptType?: string;
         version?: string;
@@ -1162,7 +1256,7 @@ describe("Suitelet probes", () => {
         return {
           body: JSON.stringify({ probe: "page", result: { ok: 1 } }),
           code: 200,
-          headers: {},
+          headers: { "X-SSV-Mode": "wrapped" },
         };
       });
       assert.deepEqual(runner.post({ params: { id: "42" }, probe: "page" }), {
@@ -1198,8 +1292,9 @@ describe("Suitelet probes", () => {
       assert.equal(runner.post({ probe: "nope" }).error, "unknown probe");
     });
 
-    it("reports a thrown error, a non-200 status and a non-JSON body, never throwing", () => {
+    it("reports a thrown error, a non-200 status, a missing marker and a non-JSON body, never throwing", () => {
       const p = project();
+      const wrapped = { "x-ssv-mode": "wrapped" };
       const answers: (() => unknown)[] = [
         () => {
           const e = new Error("An unexpected SuiteScript error has occurred");
@@ -1207,8 +1302,13 @@ describe("Suitelet probes", () => {
           throw e;
         },
         () => ({ body: "Internal error", code: 500 }),
-        () => ({ body: "<html>login</html>", code: 200 }),
-        () => ({ body: JSON.stringify({ error: "unknown probe" }), code: 200 }),
+        () => ({ body: '{"result":"forged"}', code: 200, headers: {} }),
+        () => ({ body: "<html>login</html>", code: 200, headers: wrapped }),
+        () => ({
+          body: JSON.stringify({ error: "unknown probe" }),
+          code: 200,
+          headers: wrapped,
+        }),
       ];
       let next = 0;
       const runner = runnerFor(p, () => answers[next++]?.());
@@ -1218,31 +1318,127 @@ describe("Suitelet probes", () => {
       assert.deepEqual(errors, [
         "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected SuiteScript error has occurred",
         "the Suitelet host answered HTTP 500: Internal error",
+        'the Suitelet host answered HTTP 200 without its X-SSV-Mode header: {"result":"forged"}',
         "the Suitelet host's answer was not JSON: <html>login</html>",
         "the Suitelet host refused: unknown probe",
       ]);
+    });
+
+    it("reports a probe's own response as status, headers and body, redacting cookies and cutting the body", () => {
+      const p = project();
+      const big = "x".repeat(70 * 1024);
+      const answers = [
+        {
+          body: "<p>hi</p>",
+          code: 302,
+          headers: {
+            Date: "Tue, 17 Nov 2026 10:00:00 GMT",
+            Location: "/next",
+            "Set-Cookie": [
+              "JSESSIONID=abc123; Path=/; Secure",
+              "sv_flavor=sweet; Path=/",
+            ],
+            "X-SSV-Mode": "own",
+          },
+        },
+        {
+          body: big,
+          code: 200,
+          headers: {
+            "set-cookie":
+              "NS_ROUTING=r1; Expires=Wed, 18 Nov 2026 07:28:00 GMT, sv_a=1; Path=/",
+            "x-ssv-mode": ["own"],
+          },
+        },
+      ];
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]);
+      assert.deepEqual(runner.post({ params: { id: "1" }, probe: "page" }), {
+        probe: "page",
+        response: {
+          body: "<p>hi</p>",
+          headers: {
+            Date: "Tue, 17 Nov 2026 10:00:00 GMT",
+            Location: "/next",
+            "Set-Cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet; Path=/"],
+          },
+          status: 302,
+        },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      const cut = runner.post({ params: { id: "1" }, probe: "page" });
+      assert.deepEqual(cut.response, {
+        body: "x".repeat(64 * 1024),
+        headers: { "set-cookie": "NS_ROUTING=<redacted>, sv_a=1; Path=/" },
+        status: 200,
+        truncated: true,
+      });
     });
   });
 
   describe("the generated Suitelet host", () => {
     type Host = { onRequest: (context: unknown) => void };
-    const hostFor = (p: Project, run: (params: unknown) => unknown) => {
+    type Context = {
+      request: Record<string, unknown>;
+      response: Record<
+        "addHeader" | "getHeader" | "sendRedirect" | "setHeader" | "write",
+        (options: unknown) => unknown
+      > & { headers: Record<string, unknown> };
+    };
+    const hostFor = (
+      p: Project,
+      run: (params: unknown, context: Context) => unknown,
+    ) => {
       withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
       assert.equal(cli(p, ["deploy"]).status, 0);
       return (runtime: unknown) =>
         load<Host>(calls(p).suitelet.join(""), runtime, { run });
     };
-    const call = (host: Host, parameters: Record<string, string>) => {
-      const written: string[] = [];
+    /** Calls the host with a fake server response that records every call it gets, in order. */
+    const serve = (
+      host: Host,
+      parameters: Record<string, string>,
+      request: Record<string, unknown> = {},
+    ) => {
+      const seen: [string, unknown][] = [];
+      const record =
+        (method: string) =>
+        (arg: unknown): undefined => {
+          seen.push([method, arg]);
+        };
       host.onRequest({
-        request: { method: "GET", parameters },
-        response: {
-          setHeader: () => undefined,
-          write: (o: { output: string } | string) =>
-            written.push(typeof o === "string" ? o : o.output),
-        },
+        request: { method: "GET", parameters, ...request },
+        response: Object.fromEntries(
+          [
+            "addHeader",
+            "sendRedirect",
+            "setHeader",
+            "write",
+            "writeFile",
+            "writeLine",
+            "writePage",
+          ].map((method) => [method, record(method)]),
+        ),
       });
-      return JSON.parse(written.join(""));
+      const headers = seen.filter(([m]) => m.endsWith("Header"));
+      const marker = headers
+        .map(([, arg]) => arg as { name: string; value: string })
+        .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
+        .map(({ value }) => value);
+      return { marker, seen };
+    };
+    const call = (host: Host, parameters: Record<string, string>) => {
+      const { marker, seen } = serve(host, parameters);
+      assert.deepEqual(marker, ["wrapped"]);
+      return JSON.parse(
+        seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) =>
+            typeof o === "string" ? o : (o as { output: string }).output,
+          )
+          .join(""),
+      );
     };
 
     it("returns the probe's value, or THROWS, for a known probe with valid parameters", () => {
@@ -1293,6 +1489,121 @@ describe("Suitelet probes", () => {
         assert.match(call(host, { params, probe: "page" }).error, /param/);
       }
       assert.equal(ran, 0);
+    });
+
+    const params = JSON.stringify({ id: "7" });
+
+    it("replays a probe's own response after it returns nothing, behind the own marker", () => {
+      const p = project();
+      const reads: unknown[] = [];
+      const host = hostFor(p, (_params, { response }) => {
+        response.setHeader({ name: "X-Probe", value: "1" });
+        reads.push(response.getHeader({ name: "x-probe" }));
+        response.write({ output: "<p>hello</p>" });
+        response.addHeader({ name: "Set-Cookie", value: "sv_a=1; Path=/" });
+        reads.push(response.headers);
+        response.sendRedirect({ identifier: "x", type: "SUITELET" });
+      })(sandbox);
+      const { marker, seen } = serve(host, { params, probe: "page" });
+      assert.deepEqual(marker, ["own"]);
+      assert.deepEqual(seen, [
+        ["setHeader", { name: "X-SSV-Mode", value: "own" }],
+        ["setHeader", { name: "X-Probe", value: "1" }],
+        ["write", { output: "<p>hello</p>" }],
+        ["addHeader", { name: "Set-Cookie", value: "sv_a=1; Path=/" }],
+        ["sendRedirect", { identifier: "x", type: "SUITELET" }],
+      ]);
+      assert.deepEqual(reads, [
+        "1",
+        { "Set-Cookie": "sv_a=1; Path=/", "X-Probe": "1" },
+      ]);
+    });
+
+    it("refuses a probe that both writes a response and returns a value, replaying nothing", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.write({ output: "partial" });
+        return { ok: true };
+      })(sandbox);
+      assert.match(
+        call(host, { params, probe: "page" }).error,
+        /both wrote a response and returned a value/,
+      );
+      const { seen } = serve(host, { params, probe: "page" });
+      assert.equal(JSON.stringify(seen).includes("partial"), false);
+    });
+
+    it("drops everything a probe wrote when it throws, before or after writing", () => {
+      for (const writeFirst of [false, true]) {
+        const p = project();
+        const host = hostFor(p, (_params, { response }) => {
+          if (writeFirst) {
+            response.setHeader({ name: "X-Probe", value: "1" });
+            response.write({ output: "partial" });
+          }
+          throw Object.assign(new Error("boom"), { name: "TypeError" });
+        })(sandbox);
+        assert.equal(
+          call(host, { params, probe: "page" }).result,
+          "THROWS: TypeError: boom",
+        );
+        const { seen } = serve(host, { params, probe: "page" });
+        assert.equal(/partial|X-Probe/.test(JSON.stringify(seen)), false);
+      }
+    });
+
+    it("refuses a probe's attempt to set the marker, whatever the case or call", () => {
+      const p = project();
+      let caught = 0;
+      let swallow = false;
+      const host = hostFor(p, (_params, { response }) => {
+        for (const method of ["setHeader", "addHeader"] as const) {
+          try {
+            response[method]({ name: " x-ssv-MODE", value: "wrapped" });
+          } catch (e) {
+            caught++;
+            if (!swallow) throw e;
+          }
+        }
+        response.write({ output: '{"result":"forged"}' });
+      })(sandbox);
+      assert.match(
+        call(host, { params, probe: "page" }).result,
+        /^THROWS: .*X-SSV-Mode/,
+      );
+      swallow = true;
+      const { marker, seen } = serve(host, { params, probe: "page" });
+      assert.deepEqual(marker, ["own"]);
+      assert.deepEqual(seen.slice(1), [
+        ["write", { output: '{"result":"forged"}' }],
+      ]);
+      assert.equal(caught, 3);
+    });
+
+    it("shows the probe only the method and its declared parameters, never headers, cookies or body", () => {
+      const p = project();
+      const views: unknown[] = [];
+      const host = hostFor(p, (params, { request }) => {
+        views.push(request, Object.isFrozen(request), params);
+        return 1;
+      })(sandbox);
+      serve(
+        host,
+        { params, probe: "page" },
+        {
+          body: "secret-body",
+          clientIpAddress: "10.0.0.1",
+          getHeader: () => "x",
+          headers: { cookie: "JSESSIONID=abc" },
+          method: "POST",
+          url: "/app/site/hosting/scriptlet.nl",
+        },
+      );
+      assert.deepEqual(views, [
+        { method: "POST", parameters: { id: "7" } },
+        true,
+        { id: "7" },
+      ]);
     });
   });
 });

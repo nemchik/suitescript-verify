@@ -3,7 +3,7 @@
   <isinactive>F</isinactive>
   <name>%%TITLE%%</name>
   <notifyowner>F</notifyowner>
-  <scriptfile>[/SuiteScripts/%%FOLDER%%/runner.js]</scriptfile>
+  <scriptfile>[/SuiteScripts/%%FOLDER%%/%%FILE%%]</scriptfile>
   <scriptdeployments>
     <scriptdeployment scriptid="%%DEPLOY_ID%%">
       <allroles>F</allroles>

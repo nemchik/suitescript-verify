@@ -1,21 +1,31 @@
 import { createPrivateKey, sign } from "node:crypto";
-import { defaultRunnerId } from "./config.ts";
 
-/** The names a runner takes from its id: the script, the deployment, the File Cabinet folder and the title shown in the account. */
+/**
+ * The names a runner takes from its id: the script and deployment ids (ending
+ * in the script type, `_rl`), the File Cabinet folder, the script file and the
+ * name shown in the account. Each fits the platform's 40 characters with an id
+ * of up to 24.
+ */
 export const runnerNames = (runnerId: string) => ({
-  deployId: `customdeploy_${runnerId}_runner`,
+  deployId: `customdeploy_${runnerId}_rl`,
+  file: "restlet.js",
   folder: runnerId.replaceAll("_", "-"),
-  scriptId: `customscript_${runnerId}_runner`,
-  // A runner of another id says so, so two runners in one account can be told apart.
-  title:
-    runnerId === defaultRunnerId
-      ? "suitescript-verify runner"
-      : `suitescript-verify runner (${runnerId})`,
+  scriptId: `customscript_${runnerId}_rl`,
+  title: `ssv runner ${runnerId}`,
 });
 
-/** The id of the runner that wrote an object file, from its name; undefined for any other file. */
-export const runnerIdOfObjectFile = (file: string) =>
-  /^customscript_([a-z0-9_]+)_runner.xml$/.exec(file)?.[1];
+/**
+ * The runner a generated object file belongs to, from its name: its id, and
+ * whether 1.x wrote it (the `_runner` suffix). Undefined for any other file.
+ */
+export function runnerOfObjectFile(
+  file: string,
+): { id: string; legacy: boolean } | undefined {
+  const match = /^customscript_([a-z0-9_]+)_(rl|runner)\.xml$/.exec(file);
+  return match?.[1] === undefined
+    ? undefined
+    : { id: match[1], legacy: match[2] === "runner" };
+}
 
 const host = (account: string) =>
   account.trim().toLowerCase().replace(/_/g, "-");

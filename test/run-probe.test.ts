@@ -62,7 +62,7 @@ fs.writeFileSync(${JSON.stringify(join(dir, "calls.json"))}, JSON.stringify({
   license: process.env.SUITECLOUD_CLI_ACCEPT_LICENSE ?? null,
   objects: list(objects).map((f) => fs.readFileSync(path.join(objects, f), "utf8")),
   runner: list(cabinet)
-    .filter((f) => f.endsWith("runner.js"))
+    .filter((f) => f.endsWith("restlet.js"))
     .map((f) => fs.readFileSync(path.join(cabinet, f), "utf8")),
 }));`;
 
@@ -180,7 +180,7 @@ describe("deploy builds the runner from the probes", () => {
       "SuiteScripts/suitescript-verify",
       "SuiteScripts/suitescript-verify/probes",
       "SuiteScripts/suitescript-verify/probes/one.js",
-      "SuiteScripts/suitescript-verify/runner.js",
+      "SuiteScripts/suitescript-verify/restlet.js",
     ]);
     assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
     const runner = call.runner.join("");
@@ -543,7 +543,7 @@ describe("run", () => {
     assert.equal(cli(p, ["run", "one"]).status, 0);
     assert.match(
       p.requests()[1]?.url ?? "",
-      /script=customscript_suitescript_verify_runner&deploy=customdeploy_suitescript_verify_runner$/,
+      /script=customscript_suitescript_verify_rl&deploy=customdeploy_suitescript_verify_rl$/,
     );
     write(
       p.dir,
@@ -554,7 +554,7 @@ describe("run", () => {
     assert.equal(cli(p, ["run", "one"]).status, 0);
     assert.match(
       p.requests().at(-1)?.url ?? "",
-      /script=customscript_my_project_runner&deploy=customdeploy_my_project_runner$/,
+      /script=customscript_my_project_rl&deploy=customdeploy_my_project_rl$/,
     );
   });
 

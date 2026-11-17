@@ -47,6 +47,7 @@ Verify, or mark the claim **unverified**, whenever you depend on what the platfo
 - If you can run the test yourself, do: a **probe** runs in a sandbox through the runner, RESTlet and Suitelet probes alike. Run `suitescript-verify doctor` first, and again after every deploy: its last step asks the deployed runner for its self-check. It only reads, so it is always safe to run.
 - Setup is mostly the person's (browser login, role, certificate). Ask the person to run `suitescript-verify setup` in their own terminal: it refuses to run without one, so you never handle a credential or a typed confirmation. When a `doctor` check fails, relay its next step and wait.
 - Never run anything in production, never create credentials, and never run a real deploy or cleanup yourself: both need a person at a terminal.
+- Never tell the person to remap or reuse a certificate mapping: a machine-to-machine mapping cannot be changed, and a certificate cannot be used again. Any role change needs new key pairs and new mappings (see [Changing a certificate's role](#changing-a-certificates-role)).
 - Prompt the person to run a snippet by hand (the methods below) only when a probe cannot run: setup cannot pass, the claim depends on a script type the runner does not cover (anything but a RESTlet or a Suitelet), or the probe would write to the account. Give the exact snippet and say where to run it.
 - Before you write a batch of probes, read [Probes](#probes) and [Troubleshooting](#troubleshooting): each probe change costs a deploy, and one bad probe can take the whole runner down.
 
@@ -137,8 +138,8 @@ Install the SuiteCloud CLI and gitignore `verification/.env.local` first (steps 
 
 1. **SuiteCloud CLI and Java.** If `doctor`'s CLI or Java check fails, `setup` prints the fix and stops. Installing the CLI and accepting Oracle's license stay yours.
 2. **Certificate pairs.** It generates the missing pairs as `certificate` does and saves their key paths (`setup --keys-dir <path>` moves them).
-3. **The sandbox checklist.** It prints the one-trip checklist (the integration record's flags and scopes, the role's name and id to assign to yourself, which public certificate file goes to which mapping, with its path, and the one-time browser login) and waits for Enter. Step 5 under [Doing it by hand](#doing-it-by-hand) explains each item.
-4. **Account, client id and certificate ids.** It asks for each without echoing it (the terminal is in raw mode, so nothing typed appears on screen or in a terminal log) and writes it to `verification/.env.local` only, never printing it. Press Enter to keep a value that is already set, or type a new one to replace it. An account that is not a sandbox (`digits_SBn`) is asked again.
+3. **The sandbox checklist.** It prints the one-trip checklist (the integration record's flags and scopes, the role's name and id to assign to yourself, which public certificate file goes to which mapping, with its path, and the one-time browser login) and waits for Enter. Step 5 under [Doing it by hand](#doing-it-by-hand) explains each item. It is not skipped when step 2 generated a pair, since a new pair needs a new mapping.
+4. **Account, client id and certificate ids.** It asks for each without echoing it (the terminal is in raw mode, so nothing typed appears on screen or in a terminal log) and writes it to `verification/.env.local` only, never printing it. Press Enter to keep a value that is already set, or type a new one to replace it. When step 2 generated a pair, this step is not skipped and asks for that pair's new certificate id, with no value to keep. An account that is not a sandbox (`digits_SBn`) is asked again.
 5. **Passkey**, as `passkey` does.
 6. **`setup-ci`**, which registers the SDF login.
 7. **The first deploy.** Type `DEPLOY` to deploy now, which also takes over the runner's role; press Enter to skip it and deploy later with `deploy --approved`. It is skipped when the runner already passes its self-check.
@@ -164,22 +165,30 @@ Install the SuiteCloud CLI and gitignore `verification/.env.local` first (steps 
    Oracle allows one certificate per integration, role and entity, so the two pairs cannot be shared, and an EC key fails the SDF login (see [Troubleshooting](#setup-ci-fails-with-an-error-with-the-private-key)).
 5. **In the sandbox, in one visit, create the integration record, the runner's role and both certificate mappings.**
    - **The integration record** needs more than the machine-to-machine grant: also enable the token-based authentication flags and the RESTlets and REST Web Services scopes (see [Troubleshooting](#every-call-fails-with-401-invalid_login_attempt)).
-   - **The runner's role:** create it with only its name and id, and assign it to yourself. The id is `customrole_<runner id>` (`customrole_suitescript_verify` by default; `doctor` prints the one in use), and the name `ssv runner role <runner id>`. Leave its permissions empty: every deploy writes the role as an SDF object, so the first deploy takes it over and gives it exactly `ADMI_LOGIN_OAUTH2` (Log In Using OAuth 2.0 Access Tokens) and `ADMI_RESTWEBSERVICES` (REST Web Services), both at Full, plus each permission a probe declares with `@permission` (see [Permissions](#permissions)), on the Account center, with every other flag at its default. A permission added by hand does not survive the next deploy.
-   - **The SDF certificate** maps to a role that can deploy, never the runner's role, since a deploy that rewrote its own login role would strip the permissions the next deploy needs. In a sandbox Administrator is the expected choice, though mapping it for the SDF login is not yet confirmed in a real sandbox; otherwise use a deploy role with SuiteScript, Documents and Files, Allow JS/HTML Uploads and Bulk Manage Roles.
-   - **The runner certificate** maps to the runner's role.
+   - **The runner's role:** create it with its name, its id and only the permission _Log in using OAuth 2.0 Access Tokens_ (Full), and assign it to yourself. A role without that permission is not in the mapping's role list. The id is `customrole_<runner id>` (`customrole_suitescript_verify` by default; `doctor` prints the one in use), and the name `ssv runner role <runner id>`. Every deploy writes the role as an SDF object, so the first deploy takes it over and gives it `ADMI_LOGIN_OAUTH2` (Log In Using OAuth 2.0 Access Tokens) and `ADMI_RESTWEBSERVICES` (REST Web Services), both at Full, plus each permission a probe declares with `@permission` (see [Permissions](#permissions)), on the Account center, with every other flag at its default. A permission added by hand does not survive the next deploy, but NetSuite may add one of its own that a deploy does not remove (one was seen), and `doctor`'s drift check sees only missing permissions, not extra ones.
+   - **The SDF certificate** maps to a role that can deploy, never the runner's role, since a deploy that rewrote its own login role would strip the permissions the next deploy needs. In a sandbox map it to Administrator; otherwise use a deploy role with SuiteScript, Documents and Files, Allow JS/HTML Uploads and Bulk Manage Roles. Deploying the runner's role needs Bulk Manage Roles, which Administrator has.
+   - **The runner certificate** maps to the runner's role. A mapping cannot be changed later: to move a certificate to another role, see [Changing a certificate's role](#changing-a-certificates-role).
    - **Each project needs its own role.** A deploy rewrites the role, so two projects deploying one role would overwrite each other. The default id follows the runner id, so projects with their own runner id (see [Deploy](#deploy)) already have their own role. `SUITESCRIPT_VERIFY_ROLE_ID` sets another id and wins over the default; do not rely on changing an id later, since a custom role's id may be read-only after saving. The platform rejects a role id over 40 characters, `customrole_` included, so the id after the prefix is at most 29 characters; the package refuses a longer one before it reaches the sandbox.
    - **In a OneWorld account** the role gets every subsidiary: the generated role names none, so it deploys in any account.
-
-   **Note:** that a deploy takes over a role created by hand with the same id is not yet confirmed in a real sandbox. If the first deploy fails on the role, report it as a lesson (see [Adding a lesson](#adding-a-lesson)).
 6. **Save the settings.** `suitescript-verify passkey` generates the SuiteCloud passkey into `verification/.env.local`. `suitescript-verify env set NAME=value` saves any other key there (values are never printed; a different existing value is kept unless `--overwrite`). See [Settings](#settings) for the names.
 7. **Run `suitescript-verify doctor`** until every step passes. It checks the SuiteCloud CLI, Java 17 or 21, the SuiteCloud SDK jar and login, account, sandbox, certificates, passkey and project files, says which failing steps are the maintainer's own, and exits 1 while any fails. Its last step calls the deployed runner's self-check (see [Deploy](#deploy)), so before the first deploy it fails with "Deploy first"; every other step should pass by then.
 8. **`suitescript-verify setup-ci`** (for a pipeline) registers the SDF credentials (auth id `suitescript-verify`) with your project's SuiteCloud CLI, passing the passkey through the environment, never an argument. On success it prints the `SUITESCRIPT_VERIFY_` names the pipeline must supply as its own secrets, never a value. It writes no file, no credential variable and no license variable. Accepting Oracle's license in the pipeline is yours.
 
-**Note:** projects on one machine that register the same SDF auth id (this package always uses `suitescript-verify`) share one stored credential entry. That is harmless while their certificate and passkey values match; when they differ, the later `setup-ci` replaces the earlier entry.
+**Note:** projects on one machine that register the same SDF auth id (this package always uses `suitescript-verify`) share one stored credential entry. That is harmless while their values match. `setup-ci` for another role does not replace the entry: it is refused (see [Troubleshooting](#setup-ci-fails-with-this-authentication-id-is-already-in-use)).
 
 **Note:** never put `SUITECLOUD_CI_PASSKEY` in your user-wide environment. It stops browser login in your other SuiteCloud projects. Keep the passkey in `.env.local`, where the package hands it to the CLI for its own child process only.
 
 Every command that reaches the sandbox refuses an account that is not a sandbox (`digits_SBn`).
+
+### Changing a certificate's role
+
+A machine-to-machine mapping cannot be changed after it is created, only revoked, and a certificate that is active or revoked cannot be used for another entity, role or application. So any role change needs a new key pair and a new mapping: moving the runner to its own role, moving the SDF login to Administrator or a deploy role, or a 1.x project whose two certificates shared one role (both pairs).
+
+1. **Generate the new pairs into a new folder**: `certificate --keys-dir <new folder>` (with `--only runner|sdf` for one). Keep the old keys until their mappings are revoked.
+2. **Map each new public certificate** to its role, as in step 5 of [Doing it by hand](#doing-it-by-hand).
+3. **Save the new certificate ids**: `env set SUITESCRIPT_VERIFY_CERTIFICATE_ID=<id> --overwrite` (and `SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID`). `setup` asks for them only when it generated the pair itself.
+4. **For a new SDF role, register it again**: remove the old auth id first (see [Troubleshooting](#setup-ci-fails-with-this-authentication-id-is-already-in-use)), then run `setup-ci`.
+5. **Revoke the old mappings** once `doctor` passes.
 
 ### Keeping the tooling in a subfolder
 
@@ -269,7 +278,9 @@ A probe that needs a record permission declares it in its leading JSDoc block, o
 A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Suitelet deployed beside the runner. It exports `run(params, context)`, with the same declared parameters as a RESTlet probe:
 
 - `context.request` holds only `method` and `parameters` (the declared parameters). The request's headers, cookies and body are never shown, so a probe cannot return them.
-- `context.response` records every write, page, file, redirect and header call (`write`, `writeLine`, `writePage`, `writeFile`, `renderPdf`, `sendRedirect`, `setCdnCacheable`, `setHeader`, `addHeader`). Nothing reaches the real response until the probe returns. `getHeader` and `headers` answer from what it recorded.
+- `context.response` records every write, page, file and header call (`write`, `writeLine`, `writePage`, `writeFile`, `renderPdf`, `setCdnCacheable`, `setHeader`, `addHeader`). Nothing reaches the real response until the probe returns. `getHeader` and `headers` answer from what it recorded. A header set after a write still arrives.
+- `sendRedirect` is refused: `requestSuitelet` follows a redirect, so the runner would see the page it leads to (often the login page), never the redirect. A redirect cannot be probed this way.
+- The host runs in the `SUITELET` execution context with the runner role's permissions, so `@permission` applies to Suitelet probes too.
 
 When the probe returns, the host answers in one of two modes:
 
@@ -301,6 +312,7 @@ The host names the mode in an `X-SSV-Mode` header, and the runner reads the body
 | Error                                                  | Raised by                            | Cause and fix                                                                                                                                                                              |
 | ------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `SSV_RESERVED_HEADER`                                  | The probe's `setHeader`, `addHeader` | The probe set `X-SSV-Mode` (in any case). Only the host sets it; reported as `THROWS`.                                                                                                     |
+| `SSV_REDIRECT_REFUSED`                                 | The probe's `sendRedirect`           | `requestSuitelet` follows redirects, so a redirect cannot be probed; reported as `THROWS`.                                                                                                 |
 | `the probe both wrote a response and returned a value` | The host                             | A Suitelet probe writes its own response or returns a value, never both. Drop the return value or the response calls.                                                                      |
 | `THROWS` from a replayed call                          | The real response, during replay     | A recorded call the real response refused. Replayed output cannot be taken back, so when some came first, `run` reports a `wrapped` body that is not JSON instead: an error, not a result. |
 | `UNKNOWN_PARAM`                                        | `requestSuitelet`                    | Its answer to a `params` option. The runner never passes one: it sends the parameters in `urlParams`.                                                                                      |
@@ -308,11 +320,13 @@ The host names the mode in an `X-SSV-Mode` header, and the runner reads the body
 
 For an `own` response, the runner reports every header but the marker, with these limits (the CLI applies them again):
 
-- **Cookies are redacted.** Each `Set-Cookie` cookie becomes `<name>=<redacted>`, unless its name starts with `sv_`. Name a cookie a probe sets `sv_<something>` to see it whole; the platform's session cookies are never shown.
+- **One lower-cased key per header.** `requestSuitelet` returns several casings of each name; values that differ are kept as a list.
+- **Cookies are redacted.** Each `Set-Cookie` cookie becomes `<name>=<redacted>`, unless its name starts with `sv_`; the platform's session cookies are never shown. Whether a probe's own cookie reaches the runner at all is unconfirmed: in one sandbox run it did not, and only the platform's session cookie (redacted) came back.
+- **NetSuite's HTML trailer is dropped.** NetSuite appends comments to a `text/html` page that name the host, the account and the user's email. The trailing `<!-- … -->` comments of a `text/html` body are removed before the cut.
 - **The body is cut at 64 KB** (65,536 characters), and the response then carries `"truncated": true`.
-- **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a redirect whose `Location` names the account's host is refused, not printed.
+- **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a header or body that names the account is refused, not printed.
 
-The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out headers that change on every call. That list holds only `Date` for now, and grows as the platform's per-call headers are confirmed.
+The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out the headers that change on every call: `Date`, `Akamai-GRN`, `X-N-OperationId`, `X-Cache` and `Via`.
 
 The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe, the runner checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet`:
 
@@ -328,10 +342,10 @@ The package validates the tags in a probe's leading JSDoc block: `@scriptType`, 
 ### Writing probes that do not cost a deploy
 
 - **Keep module-scope code rare and tiny.** The runner loads every probe as a dependency of its own `define()`. A probe whose top-level code fails in a way its own `try/catch` cannot capture takes the whole runner down. If you need one, make it one governed call, run it last and one per deploy, so a failure points at one call. Do not keep a probe that is expected to take the runner down; its results page carries the code.
-- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions plus what probes declare, and a deploy replaces any permission added by hand. A probe that searches or loads a record without the record's permission gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence. A probe that needs a record permission declares it with `@permission <permkey> VIEW` (see [Permissions](#permissions)); never add it to the role by hand. Prefer objects that need no permission (`runtime`, `search.createColumn`).
+- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions plus what probes declare, and a deploy replaces any permission added by hand. A probe that searches or loads a record without the record's permission gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence. A probe that needs a record permission declares it with `@permission <permkey> VIEW` (see [Permissions](#permissions)); never add it to the role by hand. A transaction search also needs Find Transaction (`@permission TRAN_FIND VIEW`). Prefer objects that need no permission (`runtime`, `search.createColumn`).
 - **Check how an API is chained before relying on it.** `crypto.createHash(...).update(...)` returns nothing, so chaining `.digest()` threw `Cannot read property 'digest' of undefined` and cost a deploy. Read the method page for the return type.
 - **Outbound calls rate-limit.** A public echo service answered four requests in a row and failed the fifth with a body that had no `headers`. Keep a probe to four requests or fewer and put the status code in the failure, not just a `TypeError`.
-- **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output.
+- **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output. Under the runner's minimal role the query can fail with `Record 'scriptnote' was not found.`: a missing permission worded as a missing table (which permission is not yet identified).
 - **Write probes with your editor or file tools, not a shell heredoc.** Backticks, `${}` and quotes in a probe broke a shell heredoc on Windows.
 - **An agent's tool can refuse the deploy command.** An auto-mode classifier blocked a deploy dry run chained in one shell line with other commands. Run the dry run alone and say so if it is still refused; the real deploy is the person's anyway.
 
@@ -362,11 +376,11 @@ Every setting is a `SUITESCRIPT_VERIFY_` key. They layer from the committed `ver
 
 2.0 renames the runner by script type, adds the Suitelet host and makes every deploy write the runner's role. Upgrade in this order:
 
-1. **Turn the 1.x runner off before upgrading.** With 1.x still installed, dry-run `cleanup`, then the person runs `cleanup --approved` (once per runner id the project used). 2.0 names the runner `customscript_<id>_rl` instead of `customscript_<id>_runner`, and the SuiteCloud CLI cannot delete a script, so 2.0 cannot turn the old one off: its first `deploy` or `cleanup` only removes the old object from the generated SDF folder and warns with its id.
+1. **Turn the 1.x runner off before upgrading.** With 1.x still installed, dry-run `cleanup`, then the person runs `cleanup --approved` (once per runner id the project used). 2.0 names the runner `customscript_<id>_rl` instead of `customscript_<id>_runner`, and the SuiteCloud CLI cannot delete a script, so 2.0 cannot turn the old one off: its first `deploy` or `cleanup` only removes the old object from the generated SDF folder and warns with its id. If you upgraded first, reinstall 1.x and delete `customrole_*.xml`, `customscript_*_rl.xml` and `customscript_*_sl.xml` from the generated `Objects` folder before its `cleanup`, or 1.x fails with `The file reference … restlet.js is missing`. 1.x `cleanup` then sets the old deployment's audience to 2.0's default role id when the project relies on the default.
 2. **Upgrade the package** (`npm install --save-dev suitescript-verify@2`). The generated runner file is now `restlet.js`, beside the host's `suitelet.js`, and the runner id may be up to 24 characters.
 3. **Declare the permissions your probes need.** The first 2.0 deploy replaces every permission added to the role by hand: the role keeps only `ADMI_LOGIN_OAUTH2` and `ADMI_RESTWEBSERVICES` at Full plus what probes declare, and is renamed `ssv runner role <runner id>`. Add `@permission <permkey> VIEW` to each probe that relied on a hand-added permission (see [Permissions](#permissions)).
-4. **Check the role id.** It now defaults to `customrole_<runner id>` instead of `customrole_suitescript_verify`. A project with the default runner id, or an explicit `SUITESCRIPT_VERIFY_ROLE_ID`, keeps its role. A project with its own runner id and no explicit role id gets a new default role, so create that role and map the runner certificate to it (step 5 of [Doing it by hand](#doing-it-by-hand)), or set `SUITESCRIPT_VERIFY_ROLE_ID` to the old id if no other project deploys it. Projects that shared one role in 1.x each need their own now.
-5. **Map the SDF certificate to a role that can deploy**, never the runner's role (see step 5 of [Doing it by hand](#doing-it-by-hand)), since a deploy rewrites the runner's role.
+4. **Check the role id.** It now defaults to `customrole_<runner id>` instead of `customrole_suitescript_verify`. A project with the default runner id, or an explicit `SUITESCRIPT_VERIFY_ROLE_ID`, keeps its role. A project with its own runner id and no explicit role id gets a new default role, so create that role and map a new runner certificate to it (see [Changing a certificate's role](#changing-a-certificates-role)), or set `SUITESCRIPT_VERIFY_ROLE_ID` to the old id if no other project deploys it. Projects that shared one role in 1.x each need their own now.
+5. **Give the SDF login a role that can deploy the runner's role**, never the runner's role itself, since a deploy rewrites it. It needs Bulk Manage Roles: Administrator has it, and a 1.x SDF role usually lacks it. A mapping cannot move to another role, so this takes a new SDF pair, a new mapping and `setup-ci` again (see [Changing a certificate's role](#changing-a-certificates-role)); a 1.x project whose two certificates shared one role regenerates both pairs.
 6. **Deploy, then run `doctor`.** Dry-run `deploy`, then the person runs `deploy --approved`. `doctor` now exits 1 until the deployed runner passes its self-check, which replaces a probe that only proved the runner loads; delete such a probe.
 
 ## Troubleshooting
@@ -399,7 +413,7 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### A Suitelet probe reports that the Suitelet host call failed
 
-`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
+`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page, which a redirect followed by `requestSuitelet` also gives), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 
@@ -412,6 +426,22 @@ With the machine-to-machine grant alone, the token endpoint issues a token but e
 ### `setup-ci` fails with "an error with the private key"
 
 The full message is "There was an error with the private key used to authenticate". The SDF pair is not RSA. Oracle's SDK signs the SDF login with PS256 and only parses an RSA key. Use an RSA-4096 key with an RSA-PSS certificate for the SDF pair, and an EC P-256 pair for the runner. They cannot share a pair (see [Setup](#setup)).
+
+### `setup-ci` fails with "This authentication ID is already in use"
+
+The SuiteCloud CLI already holds the auth id `suitescript-verify` for another role, typically the old SDF role after a role change, and `setup-ci` does not replace it. The person removes it, with `SUITECLOUD_CI_PASSKEY` set to the project's passkey: `npx suitecloud account:manageauth --remove suitescript-verify`. Then run `setup-ci` (or `setup`) again.
+
+### `deploy` fails with "You need the 'Bulk Manage Roles' permission"
+
+The full message is `PermissionViolationError: Permission Violation: You need the 'Bulk Manage Roles' permission to access this page.`, on the role object. The SDF login's role cannot deploy a role: give it Bulk Manage Roles, or use Administrator. The deploy runs as the role behind the auth id `setup-ci` registered, so after moving the SDF login to a new role (with a new pair, see [Changing a certificate's role](#changing-a-certificates-role)), run `setup-ci` again.
+
+### `doctor` fails with `Token request failed: HTTP 400 invalid_grant` after new certificates
+
+The saved certificate ids still name the old mappings. Save the new ids with `env set … --overwrite` (step 3 of [Changing a certificate's role](#changing-a-certificates-role)).
+
+### The runner's role is not in the mapping's role list
+
+A role without _Log in using OAuth 2.0 Access Tokens_ does not appear in the machine-to-machine mapping's role list. Give the role that permission at Full; the first deploy takes the role over.
 
 ### An authentication or "not found" error after a sandbox refresh
 

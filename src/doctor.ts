@@ -13,9 +13,21 @@ import {
 /** Who does the next step. The maintainer's own steps are never an agent's. */
 export type Owner = "maintainer" | "agent";
 
+/** The stable handles of the checks `setup` skips on. */
+export type CheckId =
+  | "cli"
+  | "java"
+  | "login"
+  | "ids"
+  | "sandbox"
+  | "runner-key"
+  | "sdf-key"
+  | "passkey"
+  | "files";
+
 export interface Check {
   /** A stable handle for the checks `setup` skips on; the name is for people. */
-  id?: string;
+  id?: CheckId;
   name: string;
   ok: boolean;
   next?: string;
@@ -104,7 +116,7 @@ export function runChecks(
     ok: boolean,
     owner: Owner,
     next: string,
-    id?: string,
+    id?: CheckId,
   ) => checks.push({ id, name, next, ok, owner });
   const v = config.values;
 
@@ -174,15 +186,17 @@ export function runChecks(
     "sandbox",
   );
 
-  for (const [label, key, expected, accepts] of [
+  for (const [label, id, key, expected, accepts] of [
     [
       "runner",
+      "runner-key",
       names.privateKeyPath,
       "an EC P-256 key",
       (t: string) => t === "ec:prime256v1",
     ],
     [
       "SDF",
+      "sdf-key",
       names.sdfPrivateKeyPath,
       "an RSA key of 3072 or 4096 bits",
       (t: string) => t === "rsa:3072" || t === "rsa:4096",
@@ -195,7 +209,7 @@ export function runChecks(
       exists,
       "maintainer",
       `Generate the key pair outside the repository and set ${key} in .env.local.`,
-      `${label}-key`,
+      id,
     );
     if (exists) {
       add(
@@ -203,7 +217,7 @@ export function runChecks(
         accepts(keyType(path)),
         "maintainer",
         "Generate a key of that type and upload its new public certificate in a new mapping.",
-        `${label}-key`,
+        id,
       );
     }
   }

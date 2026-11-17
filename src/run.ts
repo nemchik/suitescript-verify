@@ -22,6 +22,7 @@ import {
 import { matchesExpectedResponse, ownResponse } from "./response.ts";
 import { resultsDraft } from "./results.ts";
 import {
+  type Creds,
   positionals,
   requireResultsDir,
   requireSandbox,
@@ -91,8 +92,6 @@ function validateParams(probe: Probe, args: string[]): Record<string, string> {
     probe.params.map(({ name }) => [name, values.get(name) ?? ""]),
   );
 }
-
-type Creds = ReturnType<typeof requireSandbox>;
 
 /** The configured ids the scrubber replaces with placeholders. */
 export const knownIds = (creds: Creds): KnownIds => ({

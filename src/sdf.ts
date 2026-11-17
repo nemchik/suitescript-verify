@@ -7,17 +7,19 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
-import { runnerNames, runnerOfObjectFile, suiteletNames } from "./netsuite.ts";
+import { runnerOfObjectFile, scriptNames } from "./netsuite.ts";
 import {
   isRestlet,
   isRunnable,
   isSuitelet,
   listProbes,
   type Probe,
+  type ProbePermission,
   read,
   tagProblems,
 } from "./probes.ts";
 import { UsageError } from "./shared.ts";
+import { packageVersion } from "./version.ts";
 
 const templates = new URL("../templates/", import.meta.url);
 const template = (name: string) =>
@@ -25,17 +27,10 @@ const template = (name: string) =>
 
 const q = (value: string) => JSON.stringify(value);
 
-/** The version of the running package, baked into the scripts so the self-check can report it. */
-export const packageVersion = (
-  JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version: string }
-).version;
-
 /** The minimum the runner needs to be called with a token. */
-const minimumPermissions: [permkey: string, level: string][] = [
-  ["ADMI_LOGIN_OAUTH2", "FULL"],
-  ["ADMI_RESTWEBSERVICES", "FULL"],
+const minimumPermissions: ProbePermission[] = [
+  { level: "FULL", permkey: "ADMI_LOGIN_OAUTH2" },
+  { level: "FULL", permkey: "ADMI_RESTWEBSERVICES" },
 ];
 
 /**
@@ -46,15 +41,17 @@ const minimumPermissions: [permkey: string, level: string][] = [
  */
 export function rolePermissions(
   probes: Pick<Probe, "permissions">[],
-): [permkey: string, level: string][] {
-  const held = new Set(minimumPermissions.map(([permkey]) => permkey));
+): ProbePermission[] {
+  const held = new Set(minimumPermissions.map(({ permkey }) => permkey));
   const declared = new Map<string, string>();
   for (const { level, permkey } of probes.flatMap((p) => p.permissions)) {
     if (!held.has(permkey)) declared.set(permkey, level);
   }
   return [
     ...minimumPermissions,
-    ...[...declared].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    ...[...declared]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([permkey, level]) => ({ level, permkey })),
   ];
 }
 
@@ -62,7 +59,7 @@ export function rolePermissions(
 const roleObject = (
   roleId: string,
   runnerId: string,
-  permissions: [permkey: string, level: string][],
+  permissions: ProbePermission[],
 ) =>
   template("sdf/role.xml")
     .replaceAll("%%ROLE_ID%%", roleId)
@@ -71,7 +68,7 @@ const roleObject = (
       "%%PERMISSIONS%%",
       permissions
         .map(
-          ([permkey, level]) =>
+          ({ level, permkey }) =>
             `    <permission>\n      <permkey>${permkey}</permkey>\n      <permlevel>${level}</permlevel>\n    </permission>\n`,
         )
         .join(""),
@@ -79,13 +76,11 @@ const roleObject = (
 
 /**
  * A script's source (the runner or a script host) with its dependency list
- * generated from the probe slugs. `declared` lists probes the script hands to
- * a host: their names and parameters only, never their code.
+ * generated from the probe slugs.
  */
-export function generateScript(
+function generateScript(
   probes: Pick<Probe, "params" | "slug">[],
   source: string,
-  declared: Pick<Probe, "params" | "slug">[] = [],
 ): string {
   const slugs = probes.map((probe) => probe.slug);
   const names = slugs.map((_, i) => `probe${i}`);
@@ -105,14 +100,33 @@ export function generateScript(
             `[${q(slug)}, [${names[i]}, ${JSON.stringify(probes[i]?.params ?? [])}]],`,
         )
         .join(" "),
-    )
-    .replace(
-      "/*SUITELET_ENTRIES*/",
-      declared
-        .map((probe) => `[${q(probe.slug)}, ${JSON.stringify(probe.params)}],`)
-        .join(" "),
     );
 }
+
+/**
+ * The runner's list of probes it hands to the Suitelet host: their names and
+ * parameters only, never their code.
+ */
+const hostedEntries = (hosted: Pick<Probe, "params" | "slug">[]) =>
+  hosted
+    .map((probe) => `[${q(probe.slug)}, ${JSON.stringify(probe.params)}],`)
+    .join(" ");
+
+/** A script's SDF object: its ids, file, name and role, and whether it is deployed. */
+const scriptObject = (
+  name: string,
+  names: ReturnType<typeof scriptNames>,
+  roleId: string,
+  deployed: boolean,
+) =>
+  template(name)
+    .replaceAll("%%SCRIPT_ID%%", names.scriptId)
+    .replaceAll("%%DEPLOY_ID%%", names.deployId)
+    .replaceAll("%%FOLDER%%", names.folder)
+    .replaceAll("%%FILE%%", names.file)
+    .replaceAll("%%TITLE%%", names.title)
+    .replace("%%DEPLOYED%%", deployed ? "T" : "F")
+    .replaceAll("%%ROLE_ID%%", roleId);
 
 /**
  * Writes the generated runner, the probe copies and the SDF project files into
@@ -150,7 +164,7 @@ export function buildSdfProject(
     );
   }
   const src = join(sdfDir, "src");
-  const names = runnerNames(runnerId);
+  const names = scriptNames(runnerId, "rl");
   const folder = join(src, "FileCabinet", "SuiteScripts", names.folder);
   rmSync(join(src, "FileCabinet"), { force: true, recursive: true });
   mkdirSync(join(folder, "probes"), { recursive: true });
@@ -187,30 +201,16 @@ export function buildSdfProject(
   );
   writeFileSync(
     join(src, "Objects", `${names.scriptId}.xml`),
-    template("sdf/runner.xml")
-      .replaceAll("%%SCRIPT_ID%%", names.scriptId)
-      .replaceAll("%%DEPLOY_ID%%", names.deployId)
-      .replaceAll("%%FOLDER%%", names.folder)
-      .replaceAll("%%FILE%%", names.file)
-      .replaceAll("%%TITLE%%", names.title)
-      .replace("%%DEPLOYED%%", deployed ? "T" : "F")
-      .replaceAll("%%ROLE_ID%%", roleId),
+    scriptObject("sdf/runner.xml", names, roleId, deployed),
   );
-  const host = suiteletNames(runnerId);
+  const host = scriptNames(runnerId, "sl");
   writeFileSync(
     join(src, "Objects", `${host.scriptId}.xml`),
-    template("sdf/suitelet.xml")
-      .replaceAll("%%SCRIPT_ID%%", host.scriptId)
-      .replaceAll("%%DEPLOY_ID%%", host.deployId)
-      .replaceAll("%%FOLDER%%", host.folder)
-      .replaceAll("%%FILE%%", host.file)
-      .replaceAll("%%TITLE%%", host.title)
-      .replace("%%DEPLOYED%%", deployed ? "T" : "F")
-      .replaceAll("%%ROLE_ID%%", roleId),
+    scriptObject("sdf/suitelet.xml", host, roleId, deployed),
   );
   const restlets = probes.filter(isRestlet);
   const suitelets = probes.filter(isSuitelet);
-  const files = [names.file, host.file];
+  const files: string[] = [names.file, host.file];
   const slugList = (list: Probe[]) =>
     list
       .map((probe) => probe.slug)
@@ -218,14 +218,15 @@ export function buildSdfProject(
       .join(",");
   writeFileSync(
     join(folder, names.file),
-    generateScript(restlets, template("runner.template.js"), suitelets)
+    generateScript(restlets, template("runner.template.js"))
+      .replace("/*SUITELET_ENTRIES*/", hostedEntries(suitelets))
       .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)
       .replace("%%SUITELET_DEPLOY_ID%%", host.deployId)
       .replace("%%PACKAGE_VERSION%%", packageVersion)
       .replace(
         "%%PERMISSIONS%%",
         rolePermissions(probes)
-          .map(([permkey]) => permkey)
+          .map(({ permkey }) => permkey)
           .join(","),
       )
       .replace("%%PROBES%%", slugList(probes)),

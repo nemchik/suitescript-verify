@@ -307,41 +307,141 @@ describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
     readFileSync(join(project, "verification", "sdf", "src", file), "utf8");
   const runner = "Objects/customscript_suitescript_verify_rl.xml";
 
-  it("defaults to customrole_suitescript_verify in the manifest and the runner", () => {
+  const role = (project: string, id: string) =>
+    sdfFile(project, `Objects/${id}.xml`);
+  const permissions = (xml: string) =>
+    [
+      ...xml.matchAll(
+        /<permission>\s*<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>\s*<\/permission>/g,
+      ),
+    ].map((match) => `${match[1]} ${match[2]}`);
+
+  it("writes the role as an SDF object with only the token-login and REST permissions, at FULL", () => {
     const project = fakeProject();
     assert.equal(cli(["deploy"], project).status, 0);
+    const xml = role(project, "customrole_suitescript_verify");
+    assert.match(xml, /^<role scriptid="customrole_suitescript_verify">/);
+    assert.match(xml, /<centertype>ACCOUNTCENTER<\/centertype>/);
+    assert.match(xml, /<name>ssv runner role suitescript_verify<\/name>/);
+    assert.match(xml, /<iswebserviceonlyrole>F<\/iswebserviceonlyrole>/);
+    assert.equal(xml.includes("subsidiaryoption"), false);
+    assert.deepEqual(permissions(xml), [
+      "ADMI_LOGIN_OAUTH2 FULL",
+      "ADMI_RESTWEBSERVICES FULL",
+    ]);
+    assert.equal((xml.match(/<permission>/g) ?? []).length, 2);
+  });
+
+  it("leaves the role out of the manifest's dependencies, since the project holds it", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    const manifest = sdfFile(project, "manifest.xml");
+    assert.equal(manifest.includes("customrole_"), false);
+    assert.equal(manifest.includes("<objects>"), false);
     assert.match(
-      sdfFile(project, "manifest.xml"),
-      /<object>customrole_suitescript_verify<\/object>/,
-    );
-    assert.match(
-      sdfFile(project, runner),
-      /<audslctrole>\[customrole_suitescript_verify\]<\/audslctrole>/,
+      manifest,
+      /<feature required="true">SERVERSIDESCRIPTING<\/feature>/,
     );
   });
 
-  it("is overridden from the committed .env and used in both files", () => {
+  it("defaults to customrole_<runner id>, in the role object and the runner's audience", () => {
     const project = fakeProject();
-    write(project, "verification/.env", `${roleKey}=customrole_my_runner\n`);
+    write(
+      project,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_RUNNER_ID=my_project\n",
+    );
     assert.equal(cli(["deploy"], project).status, 0);
     assert.match(
-      sdfFile(project, "manifest.xml"),
-      /<object>customrole_my_runner<\/object>/,
+      role(project, "customrole_my_project"),
+      /<role scriptid="customrole_my_project">/,
     );
     assert.match(
-      sdfFile(project, runner),
+      sdfFile(project, "Objects/customscript_my_project_rl.xml"),
+      /<audslctrole>\[customrole_my_project\]<\/audslctrole>/,
+    );
+    const out = cli(["doctor"], project).stdout;
+    assert.match(out, /customrole_my_project/);
+  });
+
+  it("follows a 24-character runner id and stays within the platform's 40 characters", () => {
+    const project = fakeProject();
+    const id = `r${"a".repeat(23)}`;
+    write(project, "verification/.env", `SUITESCRIPT_VERIFY_RUNNER_ID=${id}\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const xml = role(project, `customrole_${id}`);
+    const scriptId = /<role scriptid="([^"]+)">/.exec(xml)?.[1] ?? "";
+    assert.equal(scriptId, `customrole_${id}`);
+    assert.ok(scriptId.length <= 40);
+    const name = /<name>([^<]+)<\/name>/.exec(xml)?.[1] ?? "";
+    assert.ok(name.length <= 40, name);
+  });
+
+  it("is overridden from the committed .env, in the role object and the runner", () => {
+    const project = fakeProject();
+    write(
+      project,
+      "verification/.env",
+      `${roleKey}=customrole_my_runner\nSUITESCRIPT_VERIFY_RUNNER_ID=other\n`,
+    );
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      role(project, "customrole_my_runner"),
+      /<role scriptid="customrole_my_runner">/,
+    );
+    assert.equal(
+      existsSync(
+        join(project, "verification/sdf/src/Objects/customrole_other.xml"),
+      ),
+      false,
+    );
+    assert.match(
+      sdfFile(project, "Objects/customscript_other_rl.xml"),
       /<audslctrole>\[customrole_my_runner\]<\/audslctrole>/,
     );
   });
 
-  it("layers: the process environment wins over .env", () => {
+  it("layers: .env.local and then the process environment win over .env", () => {
     const project = fakeProject();
     write(project, "verification/.env", `${roleKey}=customrole_from_file\n`);
+    write(
+      project,
+      "verification/.env.local",
+      `${roleKey}=customrole_from_local\n`,
+    );
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      role(project, "customrole_from_local"),
+      /scriptid="customrole_from_local"/,
+    );
     assert.equal(
       cli(["deploy"], project, { [roleKey]: "customrole_from_env" }).status,
       0,
     );
-    assert.match(sdfFile(project, "manifest.xml"), /customrole_from_env/);
+    assert.match(
+      role(project, "customrole_from_env"),
+      /scriptid="customrole_from_env"/,
+    );
+  });
+
+  it("removes a role object generated under another id, so it is not deployed again", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${roleKey}=customrole_old_role\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    write(project, "verification/.env", `${roleKey}=customrole_new_role\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const objects = join(project, "verification/sdf/src/Objects");
+    assert.equal(existsSync(join(objects, "customrole_old_role.xml")), false);
+    assert.ok(existsSync(join(objects, "customrole_new_role.xml")));
+  });
+
+  it("cleanup leaves the role as deploy wrote it and only switches the runner off", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    const deployed = role(project, "customrole_suitescript_verify");
+    assert.equal(cli(["cleanup"], project).status, 0);
+    assert.equal(role(project, "customrole_suitescript_verify"), deployed);
+    assert.match(sdfFile(project, runner), /<isdeployed>F<\/isdeployed>/);
   });
 
   for (const value of [

@@ -5,8 +5,5 @@
     <features>
       <feature required="true">SERVERSIDESCRIPTING</feature>
     </features>
-    <objects>
-      <object>%%ROLE_ID%%</object>
-    </objects>
   </dependencies>
 </manifest>

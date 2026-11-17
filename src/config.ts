@@ -29,20 +29,25 @@ export const extraTagsKey = "SUITESCRIPT_VERIFY_EXTRA_TAGS";
  */
 interface IdSetting {
   key: string;
-  fallback: string;
+  /** The value when no layer sets one, from the other layered values. */
+  fallback: (values: Record<string, string>) => string;
   pattern: RegExp;
   /** What the value should be, for the message: "is not <expects>". */
   expects: string;
 }
 
-/** The committed `.env` may name the runner role: a NetSuite custom role id. */
+/**
+ * The committed `.env` may name the runner role: a NetSuite custom role id.
+ * By default each project has its own role, named from its runner id, since a
+ * deploy rewrites the role and two projects deploying one would overwrite each
+ * other (ADR 0004).
+ */
 export const roleIdKey = "SUITESCRIPT_VERIFY_ROLE_ID";
-export const defaultRoleId = "customrole_suitescript_verify";
 const roleSetting: IdSetting = {
-  // `customrole_` is 11 characters, so 29 more make 40.
+  // `customrole_` is 11 characters, so 29 more make 40; a 24-character runner id makes 35.
   expects:
-    "a NetSuite custom role id like customrole_suitescript_verify (lowercase letters, digits and underscores after customrole_, 40 characters at most in all)",
-  fallback: defaultRoleId,
+    "a NetSuite custom role id like customrole_my_project (lowercase letters, digits and underscores after customrole_, 40 characters at most in all)",
+  fallback: (values) => `customrole_${idValueOf(runnerSetting, values)}`,
   key: roleIdKey,
   pattern: /^customrole_[a-z0-9_]{1,29}$/,
 };
@@ -54,12 +59,15 @@ const runnerSetting: IdSetting = {
   // `customscript_` and `customdeploy_` are 13 characters and the script-type suffix (`_rl`, `_sl`) is 3, so 24 more make 40.
   expects:
     "a runner id like my_project (a lowercase letter, then lowercase letters, digits and underscores, 24 characters at most)",
-  fallback: defaultRunnerId,
+  fallback: () => defaultRunnerId,
   key: runnerIdKey,
   pattern: /^[a-z][a-z0-9_]{0,23}$/,
 };
 
 const idSettings = [roleSetting, runnerSetting];
+
+const idValueOf = (setting: IdSetting, values: Record<string, string>) =>
+  values[setting.key] || setting.fallback(values);
 
 const tagName = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
@@ -82,7 +90,7 @@ export interface Config {
   /** Where results pages go, from SUITESCRIPT_VERIFY_RESULTS_DIR. No default: the project chooses. */
   resultsDir: string | undefined;
   sdfDir: string;
-  /** The runner's role id, from SUITESCRIPT_VERIFY_ROLE_ID (default `customrole_suitescript_verify`). */
+  /** The runner's role id, from SUITESCRIPT_VERIFY_ROLE_ID (default `customrole_<runner id>`). */
   roleId: string;
   /** The runner's name stem, from SUITESCRIPT_VERIFY_RUNNER_ID (default `suitescript_verify`). */
   runnerId: string;
@@ -227,12 +235,13 @@ export function loadConfig(
   }
   const path = (key: string, fallback: string) =>
     resolve(project, values[key] || fallback);
-  const idValue = (setting: IdSetting) =>
-    values[setting.key] || setting.fallback;
-  // The committed file reports its own bad value; this covers .env.local and the environment.
+  const idValue = (setting: IdSetting) => idValueOf(setting, values);
+  // The committed file reports its own bad value; this covers .env.local and the
+  // environment. A default is not checked: a bad runner id is reported once, as itself.
   const idProblems = idSettings.flatMap((setting) => {
     const committedValue = committed.get(setting.key);
-    return setting.pattern.test(idValue(setting)) ||
+    return !values[setting.key] ||
+      setting.pattern.test(idValue(setting)) ||
       (committedValue !== undefined && !setting.pattern.test(committedValue))
       ? []
       : [idProblem(setting, ".env.local or the environment")];

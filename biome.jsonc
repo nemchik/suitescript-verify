@@ -13,7 +13,8 @@
     "ignoreUnknown": true,
     "includes": [
       "**",
-      "!.agents",
+      "!!**/.claude",
+      "!!**/.agents",
       "!skills-lock.json",
       "!CHANGELOG.md",
       "!dist",

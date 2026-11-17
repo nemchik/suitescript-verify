@@ -178,3 +178,54 @@ export function requireSandbox(config: Config) {
     sdfPrivateKeyPath: v[names.sdfPrivateKeyPath] ?? "",
   };
 }
+
+/**
+ * Asks one question at the terminal; null when the terminal closes first, so
+ * a caller can stop instead of waiting forever.
+ */
+export async function ask(question: string): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise<string | null>((resolve) => {
+      rl.once("close", () => resolve(null));
+      rl.question(question).then(resolve, () => resolve(null));
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Asks for a secret at the terminal without echoing it: raw mode, so nothing
+ * typed appears on screen or in a terminal log. Null when the terminal closes
+ * or the person presses Ctrl+C.
+ */
+export function askHidden(question: string): Promise<string | null> {
+  const input = process.stdin;
+  process.stdout.write(question);
+  return new Promise((resolve) => {
+    let value = "";
+    const wasRaw = input.isRaw;
+    const done = (result: string | null) => {
+      input.off("data", onData);
+      input.off("end", onEnd);
+      input.setRawMode?.(wasRaw);
+      input.pause();
+      process.stdout.write("\n");
+      resolve(result);
+    };
+    const onData = (chunk: Buffer | string) => {
+      for (const char of String(chunk)) {
+        if (char === "\r" || char === "\n") return done(value);
+        if (char === "\u0003" || char === "\u0004") return done(null);
+        if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
+        else if (char >= " ") value += char;
+      }
+    };
+    const onEnd = () => done(null);
+    input.setRawMode?.(true);
+    input.on("data", onData);
+    input.once("end", onEnd);
+    input.resume();
+  });
+}

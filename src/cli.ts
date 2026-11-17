@@ -15,7 +15,9 @@ import { init } from "./init.ts";
 import { runProbe } from "./run.ts";
 import { buildSdfProject } from "./sdf.ts";
 import { selfCheckStep } from "./selfcheck.ts";
+import { setup } from "./setup.ts";
 import {
+  ask,
   confirmWrite,
   flagValue,
   positionals,
@@ -28,7 +30,8 @@ import {
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
-  init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results)
+  init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results). At a terminal it offers to continue into setup
+  setup [--keys-dir <path>]            Walk through the whole setup at your own terminal, skipping each step doctor already passes
   doctor                               Check the setup, then the deployed runner's self-check (reads only); each failing step says who does it
   certificate [--only runner|sdf] [--keys-dir <path>] [--overwrite | --keep]
                                        Generate the key pairs outside the project
@@ -106,7 +109,23 @@ async function initCommand(args: string[]): Promise<number> {
   console.log(
     init(process.cwd(), config, await chooseResultsDir(config, args)),
   );
-  return 0;
+  if (!process.stdin.isTTY) return 0;
+  const answer = await ask(
+    "\nContinue into guided setup now (suitescript-verify setup)? [y/N] ",
+  );
+  return /^y(es)?$/i.test(answer?.trim() ?? "") ? setupCommand(args) : 0;
+}
+
+function setupCommand(args: string[]): Promise<number> {
+  return setup(process.cwd(), args, {
+    configure: () => configure(args, true),
+    deploy: (config) => {
+      prepareDeploy(config);
+      return suitecloud(process.cwd(), config, ["project:deploy"]);
+    },
+    doctor: () => doctor(args),
+    setupCi: () => setupCi(args),
+  });
 }
 
 /**
@@ -126,9 +145,8 @@ function buildRunner(config: Config, deployed: boolean) {
   return built;
 }
 
-async function deploy(args: string[]): Promise<number> {
-  const project = process.cwd();
-  const config = configure(args, true);
+/** Generates the runner with its deployments on and says what a deploy uploads. Sends nothing. */
+function prepareDeploy(config: Config) {
   requireSandbox(config);
   const { files, slugs, suiteletSlugs } = buildRunner(config, true);
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
@@ -136,6 +154,12 @@ async function deploy(args: string[]): Promise<number> {
     `Probes in the Suitelet host: ${suiteletSlugs.join(", ") || "(none)"}`,
   );
   console.log(`Files to upload: ${files.join(", ")}`);
+}
+
+async function deploy(args: string[]): Promise<number> {
+  const project = process.cwd();
+  const config = configure(args, true);
+  prepareDeploy(config);
   const approved = args.includes("--approved");
   if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
   else {
@@ -260,6 +284,7 @@ export async function main(args: string[]): Promise<number> {
     if (command === "setup-ci") return setupCi(rest);
     if (command === "doctor") return await doctor(rest);
     if (command === "init") return await initCommand(rest);
+    if (command === "setup") return await setupCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {
     if (error instanceof UsageError) {

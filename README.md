@@ -18,7 +18,7 @@ This README is the whole guide and ships with each published version. Read the c
 ## Contents
 
 - [Verification method](#verification-method): when to verify, how, and how to record it
-- [Setup](#setup): `init`, credentials, the role and `doctor`
+- [Setup](#setup): `init`, then the guided `setup`, or each step by hand
 - [Deploy](#deploy): put the runner in the sandbox
 - [Probes](#probes): write and run them
 - [Settings](#settings): every `SUITESCRIPT_VERIFY_` key
@@ -37,7 +37,7 @@ Verify, or mark the claim **unverified**, whenever you depend on what the platfo
 ### For agents
 
 - If you can run the test yourself, do: a **probe** runs in a sandbox through the runner, RESTlet and Suitelet probes alike. Run `suitescript-verify doctor` first, and again after every deploy: its last step asks the deployed runner for its self-check. It only reads, so it is always safe to run.
-- Setup is mostly the person's (browser login, role, certificate). When a check fails, relay its next step and wait.
+- Setup is mostly the person's (browser login, role, certificate). Ask the person to run `suitescript-verify setup` in their own terminal: it refuses to run without one, so you never handle a credential or a typed confirmation. When a `doctor` check fails, relay its next step and wait.
 - Never run anything in production, never create credentials, and never run a real deploy or cleanup yourself: both need a person at a terminal.
 - Prompt the person to run a snippet by hand (the methods below) only when a probe cannot run: setup cannot pass, the claim depends on a script type the runner does not cover (anything but a RESTlet or a Suitelet), or the probe would write to the account. Give the exact snippet and say where to run it.
 - Before you write a batch of probes, read [Probes](#probes) and [Troubleshooting](#troubleshooting): each probe change costs a deploy, and one bad probe can take the whole runner down.
@@ -119,6 +119,26 @@ What was decided because of the results.
 ## Setup
 
 Every step that creates a credential or accepts a license is the person's. `init` creates none.
+
+```sh
+suitescript-verify init    # scaffold the folders; at a terminal it offers to continue into setup
+suitescript-verify setup   # the guided setup, at your own terminal
+```
+
+Install the SuiteCloud CLI and gitignore `verification/.env.local` first (steps 2 and 3 below). Then `setup` walks through the rest in order. It skips each step `doctor` already passes, so after a failure you fix the cause and run it again, and it picks up where it stopped. It refuses to run without a terminal, so an agent never handles a credential or a typed confirmation, and it needs the folders `init` creates.
+
+1. **SuiteCloud CLI and Java.** If `doctor`'s CLI or Java check fails, `setup` prints the fix and stops. Installing the CLI and accepting Oracle's license stay yours.
+2. **Certificate pairs.** It generates the missing pairs as `certificate` does and saves their key paths (`setup --keys-dir <path>` moves them).
+3. **The sandbox checklist.** It prints the one-trip checklist (the integration record's flags and scopes, the role's name and id to assign to yourself, which public certificate file goes to which mapping, with its path, and the one-time browser login) and waits for Enter. Step 5 under [Doing it by hand](#doing-it-by-hand) explains each item.
+4. **Account, client id and certificate ids.** It asks for each without echoing it (the terminal is in raw mode, so nothing typed appears on screen or in a terminal log) and writes it to `verification/.env.local` only, never printing it. Press Enter to keep a value that is already set, or type a new one to replace it. An account that is not a sandbox (`digits_SBn`) is asked again.
+5. **Passkey**, as `passkey` does.
+6. **`setup-ci`**, which registers the SDF login.
+7. **The first deploy.** Type `DEPLOY` to deploy now, which also takes over the runner's role; press Enter to skip it and deploy later with `deploy --approved`. It is skipped when the runner already passes its self-check.
+8. **`doctor`**, with the self-check. Its exit code is `setup`'s.
+
+`certificate`, `passkey`, `env set`, `setup-ci` and `deploy` keep working on their own, for a pipeline or a one-off fix.
+
+### Doing it by hand
 
 1. **Scaffold.** `suitescript-verify init` creates `verification/probes`, `verification/sdf`, your results folder and a committed `verification/.env` of layout keys, then prints a to-do list. `--dir <path>` moves `verification/`.
    - The package imposes no layout for results. Where results pages live is your choice, set as `SUITESCRIPT_VERIFY_RESULTS_DIR` in the committed `.env` (a path inside the project).

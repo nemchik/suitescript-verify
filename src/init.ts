@@ -104,7 +104,7 @@ export function init(
   return [
     `${results.ignoredNote}${created ? "Created" : "Kept"} ${envFile} and the folders ${dirs.map((dir) => shown(project, dir)).join(", ")}. No credentials were created.`,
     "",
-    "To do (each step is yours, the maintainer's):",
+    "To do (each step is yours, the maintainer's; suitescript-verify setup walks you through them at your own terminal):",
     "1. Install the SuiteCloud CLI: npm install --save-dev @oracle/suitecloud-cli. Read Oracle's license and accept it yourself; this package never does.",
     `2. Add ${local} to .gitignore before saving any value: it holds credentials.`,
     `3. Generate the private keys outside the repository. In a sandbox, in one visit, create the integration record, the runner's role (only its name and the id ${config.roleId}, assigned to yourself) and both certificate mappings: the SDF certificate to a role that can deploy, the runner certificate to the new role.`,

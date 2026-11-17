@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -57,28 +57,42 @@ function suitecloudEntry(project: string): string {
   return entry;
 }
 
+/** What the SuiteCloud CLI said, for a hint the CLI can add: the last part of its output is enough. */
+const OUTPUT_KEPT = 64 * 1024;
+
 /**
- * Runs the project's SuiteCloud CLI from the SDF project folder. The package
- * never sets SUITECLOUD_CLI_ACCEPT_LICENSE (ADR 0001): the child gets the
- * parent's environment plus the passkey, nothing about the license.
+ * Runs the project's SuiteCloud CLI from the SDF project folder, showing its
+ * output as it comes and returning its status with the end of that output.
+ * The package never sets SUITECLOUD_CLI_ACCEPT_LICENSE (ADR 0001): the child
+ * gets the parent's environment plus the passkey, nothing about the license.
  */
 export function suitecloud(
   project: string,
   config: Config,
   args: string[],
-): number {
+): Promise<{ output: string; status: number }> {
   const env: NodeJS.ProcessEnv = { ...process.env, ...config.values };
   // Hand the passkey to the CLI for this child process only.
   if (env.SUITESCRIPT_VERIFY_PASSKEY) {
     env.SUITECLOUD_CI_PASSKEY = env.SUITESCRIPT_VERIFY_PASSKEY;
   }
   if (env.SUITECLOUD_CI_PASSKEY) env.SUITECLOUD_CI = "1";
-  const result = spawnSync(
-    process.execPath,
-    [suitecloudEntry(project), ...args],
-    { cwd: config.sdfDir, env, stdio: "inherit" },
-  );
-  return result.status ?? 1;
+  return new Promise((done) => {
+    let output = "";
+    const child = spawn(process.execPath, [suitecloudEntry(project), ...args], {
+      cwd: config.sdfDir,
+      env,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    const tee = (to: NodeJS.WriteStream) => (chunk: Buffer) => {
+      to.write(chunk);
+      output = (output + chunk.toString("utf8")).slice(-OUTPUT_KEPT);
+    };
+    child.stdout?.on("data", tee(process.stdout));
+    child.stderr?.on("data", tee(process.stderr));
+    child.on("error", () => done({ output, status: 1 }));
+    child.on("close", (code) => done({ output, status: code ?? 1 }));
+  });
 }
 
 /**

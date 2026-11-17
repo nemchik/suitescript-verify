@@ -79,6 +79,11 @@ const os = require("node:os");
 const path = require("node:path");
 const command = process.argv[2];
 fs.appendFileSync(${JSON.stringify(log)}, command + (process.argv.includes("--dryrun") ? " --dryrun" : "") + (process.env.SUITECLOUD_CLI_ACCEPT_LICENSE === undefined ? "" : " LICENSE") + "\\n");
+const fails = JSON.parse(process.env.FAKE_SUITECLOUD_FAILS ?? "{}")[command];
+if (fails) {
+  console.error(fails);
+  process.exit(1);
+}
 if (command === "account:setup:ci") {
   fs.mkdirSync(path.join(os.homedir(), ".suitecloud-sdk"), { recursive: true });
   fs.writeFileSync(path.join(os.homedir(), ".suitecloud-sdk", "credentials_ci.p12"), "x");
@@ -287,6 +292,8 @@ describe("setup", () => {
       /ssv runner role suitescript_verify/,
       /customrole_suitescript_verify/,
       /assign it to yourself/,
+      /only the permission Log in using OAuth 2\.0 Access Tokens \(Full\)/,
+      /A role without it is not in the mapping's role list/,
       /runner certificate \S*runner-public\.pem -> the role customrole_suitescript_verify/,
       /SDF certificate \S*sdf-public\.pem -> a role that can deploy/,
       /account:setup/,
@@ -386,6 +393,106 @@ describe("setup", () => {
     assert.match(result.stdout, /Step 8 of 8: doctor/);
     assert.match(result.stdout, /Deploy first/);
     assert.equal(result.status, 1);
+  });
+
+  it("asks for the new certificate ids after generating new pairs, even when ids are already set", {
+    skip: !hasOpenssl ? "needs openssl" : needsJava,
+  }, () => {
+    const p = project();
+    write(
+      p.dir,
+      "verification/.env.local",
+      [
+        "SUITESCRIPT_VERIFY_ACCOUNT=1111111_SB1",
+        "SUITESCRIPT_VERIFY_CLIENT_ID=old-client-id",
+        "SUITESCRIPT_VERIFY_CERTIFICATE_ID=old-runner-cert",
+        "SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID=old-sdf-cert",
+        "",
+      ].join("\n"),
+    );
+    const result = cli(
+      p,
+      ["setup"],
+      fakeTerminal([
+        "",
+        "",
+        "",
+        "",
+        typed.certificateId,
+        typed.sdfCertificateId,
+        "",
+      ]),
+    );
+    assert.match(result.stdout, /Step 2 of 8: Certificate pairs:/);
+    assert.match(
+      result.stdout,
+      /Step 4 of 8: Account, client id and certificate ids:/,
+    );
+    assert.match(
+      result.stdout,
+      /Kept the existing SUITESCRIPT_VERIFY_CLIENT_ID\./,
+    );
+    // An Enter at a renewed certificate id keeps nothing: the old mapping's id is wrong now.
+    assert.match(
+      result.stdout,
+      /Runner certificate id \(SUITESCRIPT_VERIFY_CERTIFICATE_ID, new pair: the id of its new mapping, hidden\)/,
+    );
+    assert.match(
+      result.stdout,
+      /SUITESCRIPT_VERIFY_CERTIFICATE_ID is needed\./,
+    );
+    const env = localEnv(p);
+    assert.match(env, /^SUITESCRIPT_VERIFY_ACCOUNT=1111111_SB1$/m);
+    assert.match(env, /^SUITESCRIPT_VERIFY_CLIENT_ID=old-client-id$/m);
+    assert.match(env, /^SUITESCRIPT_VERIFY_CERTIFICATE_ID=typed-runner-cert$/m);
+    assert.match(
+      env,
+      /^SUITESCRIPT_VERIFY_SDF_CERTIFICATE_ID=typed-sdf-cert$/m,
+    );
+  });
+
+  it("prints the fix when setup-ci finds the auth id in use, and removes nothing itself", {
+    skip: !hasOpenssl ? "needs openssl" : needsJava,
+  }, () => {
+    const p = project();
+    const result = cli(
+      p,
+      ["setup"],
+      fakeTerminal(firstRun, {
+        FAKE_SUITECLOUD_FAILS: JSON.stringify({
+          "account:setup:ci":
+            "This authentication ID is already in use. Choose a different authentication ID for this account-role combination.",
+        }),
+      }),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stdout,
+      /suitecloud account:manageauth --remove suitescript-verify[^\n]*passkey/i,
+    );
+    assert.match(result.stdout, /then run [^\n]*setup[^\n]* again/);
+    assert.deepEqual(p.commands(), ["account:setup:ci"]);
+  });
+
+  it("names the missing Bulk Manage Roles permission when the deploy is refused for it", {
+    skip: !hasOpenssl ? "needs openssl" : needsJava,
+  }, () => {
+    const p = project();
+    const result = cli(
+      p,
+      ["setup"],
+      fakeTerminal(firstRun, {
+        FAKE_SUITECLOUD_FAILS: JSON.stringify({
+          "project:deploy":
+            "ERROR: com.netledger.app.accesscontrol.PermissionViolationError: Permission Violation: You need  the 'Bulk Manage Roles' permission to access this page.",
+        }),
+      }),
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stdout,
+      /The SDF login's role needs Bulk Manage Roles \(or Administrator\)[^\n]*setup-ci must have registered that role/,
+    );
   });
 
   it("stops with the fix when the SuiteCloud CLI is not installed, before anything else", () => {

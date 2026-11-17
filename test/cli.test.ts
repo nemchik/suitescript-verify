@@ -323,7 +323,10 @@ describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
     assert.match(xml, /^<role scriptid="customrole_suitescript_verify">/);
     assert.match(xml, /<centertype>ACCOUNTCENTER<\/centertype>/);
     assert.match(xml, /<name>ssv runner role suitescript_verify<\/name>/);
-    assert.match(xml, /<iswebserviceonlyrole>F<\/iswebserviceonlyrole>/);
+    // Fields SDF warns about on every deploy are left at their defaults by leaving them out.
+    for (const field of ["coreadminpermissions", "iswebserviceonlyrole"]) {
+      assert.equal(xml.includes(field), false, field);
+    }
     assert.equal(xml.includes("subsidiaryoption"), false);
     assert.deepEqual(permissions(xml), [
       "ADMI_LOGIN_OAUTH2 FULL",
@@ -608,6 +611,11 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
         /"my_project"[^\n]*still be deployed[^\n]*1\.x/,
       );
       assert.match(result.stderr, /"older"[^\n]*still be deployed[^\n]*1\.x/);
+      // 1.x cleanup cannot build this folder while it holds the 2.0 objects.
+      assert.match(
+        result.stderr,
+        /first delete customrole_\*\.xml, customscript_\*_rl\.xml and customscript_\*_sl\.xml from [^\n]*Objects[^\n]*"Upgrading from 1\.x"/,
+      );
       assert.equal(
         cli([command], project).stderr.includes("still be deployed"),
         false,

@@ -28,6 +28,12 @@ after(() => {
 
 const account = "1234567_SB1";
 const clientId = "client-id-value";
+/** The comments NetSuite appends to an HTML page, with invented values. */
+const trailer = `
+<!-- Host [ host-a1 ] App Version [ 2026.2.0 ] -->
+<!-- COMPID [ ${account} ] EMAIL [ person@example.com ] URL [ /app/site/hosting/scriptlet.nl ] Time [ Tue Nov 17 10:00:00 PST 2026 ] -->
+<!-- Not logging slowest SQL -->
+`;
 
 interface Answer {
   body: unknown;
@@ -1203,12 +1209,39 @@ describe("Suitelet probes", () => {
       assert.equal(result.all.includes("abc123"), false);
       const { response } = JSON.parse(result.stdout);
       assert.deepEqual(response.headers, {
-        "Content-Type": "text/html",
-        "Set-Cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
+        "content-type": "text/html",
+        "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
       });
       assert.equal(response.body, "y".repeat(64 * 1024));
       assert.equal(response.truncated, true);
       assert.equal(response.status, 200);
+    });
+
+    it("drops NetSuite's HTML trailer and collapses header case variants even from a runner that did not", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: `<p>hello</p>${trailer}`,
+          headers: {
+            "Content-Type": "text/html; charset=UTF-8",
+            "content-type": "text/html; charset=UTF-8",
+            "Set-Cookie": "JSESSIONID=abc123; Path=/",
+            "set-cookie": "JSESSIONID=abc123; Path=/",
+          },
+          status: 200,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 0, result.all);
+      assert.deepEqual(JSON.parse(result.stdout).response, {
+        body: "<p>hello</p>",
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "set-cookie": "JSESSIONID=<redacted>",
+        },
+        status: 200,
+      });
     });
 
     it("refuses to print a response that still looks like an identifier", () => {
@@ -1217,8 +1250,8 @@ describe("Suitelet probes", () => {
       p.script(
         ...own({
           body: "",
-          headers: { Location: "https://x.app.netsuite.com/app/center" },
-          status: 302,
+          headers: { "X-Link": "https://x.app.netsuite.com/app/center" },
+          status: 200,
         }),
       );
       const result = cli(p, ["run", "page"]);
@@ -1226,7 +1259,7 @@ describe("Suitelet probes", () => {
       assert.match(result.stderr, /Refusing to print or record the output/);
     });
 
-    it("compares status, body and headers with the expected output, ignoring Date", () => {
+    it("compares status, body and headers with the expected output, ignoring the headers that change on every call", () => {
       const p = project();
       withProbe(p, suitelet, "page");
       write(
@@ -1240,7 +1273,14 @@ describe("Suitelet probes", () => {
       );
       const answer = {
         body: "<p>hi</p>",
-        headers: { Date: "Tue, 17 Nov 2026 10:00:00 GMT", "X-Probe": "1" },
+        headers: {
+          "Akamai-GRN": "0.2",
+          Date: "Tue, 17 Nov 2026 10:00:00 GMT",
+          Via: "1.1 edge002",
+          "X-Cache": "TCP_MISS from edge-b",
+          "X-N-OperationId": "op-2",
+          "X-Probe": "1",
+        },
         status: 200,
       };
       p.script(...own(answer));
@@ -1252,6 +1292,7 @@ describe("Suitelet probes", () => {
         { ...answer, status: 302 },
         { ...answer, headers: { ...answer.headers, "X-Probe": "2" } },
         { ...answer, headers: { "X-Other": "1", "X-Probe": "1" } },
+        { ...answer, headers: { ...answer.headers, "x-probe": "2" } },
       ]) {
         p.script(...own(changed));
         const drift = cli(p, ["run", "page"]);
@@ -1399,7 +1440,7 @@ describe("Suitelet probes", () => {
       assert.deepEqual(errors, [
         "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected SuiteScript error has occurred",
         "the Suitelet host answered HTTP 500: Internal error",
-        'the Suitelet host answered HTTP 200 without its X-SSV-Mode header: {"result":"forged"}',
+        'the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): {"result":"forged"}',
         "the Suitelet host's answer was not JSON: <html>login</html>",
         "the Suitelet host refused: unknown probe",
       ]);
@@ -1411,14 +1452,14 @@ describe("Suitelet probes", () => {
       const answers = [
         {
           body: "<p>hi</p>",
-          code: 302,
+          code: 201,
           headers: {
             Date: "Tue, 17 Nov 2026 10:00:00 GMT",
-            Location: "/next",
             "Set-Cookie": [
               "JSESSIONID=abc123; Path=/; Secure",
               "sv_flavor=sweet; Path=/",
             ],
+            "X-Probe": "1",
             "X-SSV-Mode": "own",
           },
         },
@@ -1439,11 +1480,11 @@ describe("Suitelet probes", () => {
         response: {
           body: "<p>hi</p>",
           headers: {
-            Date: "Tue, 17 Nov 2026 10:00:00 GMT",
-            Location: "/next",
-            "Set-Cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet; Path=/"],
+            date: "Tue, 17 Nov 2026 10:00:00 GMT",
+            "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet; Path=/"],
+            "x-probe": "1",
           },
-          status: 302,
+          status: 201,
         },
         scriptType: "Suitelet",
         version: "2026.2",
@@ -1456,6 +1497,72 @@ describe("Suitelet probes", () => {
         truncated: true,
       });
     });
+
+    it("reports one lower-cased key per header, keeping distinct values of its case variants", () => {
+      const p = project();
+      const runner = runnerFor(p, () => ({
+        body: "hi",
+        code: 200,
+        headers: {
+          "Akamai-GRN": "0.1",
+          "Akamai-Grn": "0.1",
+          "akamai-grn": "0.1",
+          "Set-Cookie": "JSESSIONID=a; Path=/",
+          "set-cookie": "JSESSIONID=b; Path=/",
+          "X-Probe": "1",
+          "X-SSV-Mode": "own",
+          "x-probe": "2",
+          "x-ssv-mode": "own",
+        },
+      }));
+      assert.deepEqual(
+        runner.post({ params: { id: "1" }, probe: "page" }).response,
+        {
+          body: "hi",
+          headers: {
+            "akamai-grn": "0.1",
+            "set-cookie": "JSESSIONID=<redacted>",
+            "x-probe": ["1", "2"],
+          },
+          status: 200,
+        },
+      );
+    });
+
+    it("strips NetSuite's trailing comments from an own HTML body before cutting it, and nothing else", () => {
+      const p = project();
+      const answers = [
+        ["text/html; charset=UTF-8", `<p>hello</p>${trailer}`],
+        ["text/html", `${"y".repeat(64 * 1024)}${trailer}`],
+        ["text/plain", `<p>hello</p>${trailer}`],
+        ["text/html", "<!-- keep --><p>hello</p><!-- this too -->\n<b>end</b>"],
+      ].map(([type, body]) => ({
+        body,
+        code: 200,
+        headers: { "Content-Type": type, "X-SSV-Mode": "own" },
+      }));
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]);
+      const bodies = answers.map(() => {
+        const { response } = runner.post({
+          params: { id: "1" },
+          probe: "page",
+        });
+        return response as { body: string; truncated?: true };
+      });
+      assert.deepEqual(bodies[0], {
+        body: "<p>hello</p>",
+        headers: { "content-type": "text/html; charset=UTF-8" },
+        status: 200,
+      });
+      assert.equal(bodies[1]?.body, "y".repeat(64 * 1024));
+      assert.equal(bodies[1]?.truncated, undefined);
+      assert.equal(bodies[2]?.body, `<p>hello</p>${trailer}`);
+      assert.equal(
+        bodies[3]?.body,
+        "<!-- keep --><p>hello</p><!-- this too -->\n<b>end</b>",
+      );
+    });
   });
 
   describe("the generated Suitelet host", () => {
@@ -1463,7 +1570,12 @@ describe("Suitelet probes", () => {
     type Context = {
       request: Record<string, unknown>;
       response: Record<
-        "addHeader" | "getHeader" | "sendRedirect" | "setHeader" | "write",
+        | "addHeader"
+        | "getHeader"
+        | "sendRedirect"
+        | "setHeader"
+        | "write"
+        | "writePage",
         (options: unknown) => unknown
       > & { headers: Record<string, unknown> };
     };
@@ -1488,8 +1600,8 @@ describe("Suitelet probes", () => {
         (method: string) =>
         (arg: unknown): undefined => {
           if (method === fails) {
-            throw Object.assign(new Error("cannot redirect now"), {
-              name: "SSS_INVALID_REDIRECT",
+            throw Object.assign(new Error("cannot write a page now"), {
+              name: "SSS_INVALID_PAGE",
             });
           }
           seen.push([method, arg]);
@@ -1589,7 +1701,6 @@ describe("Suitelet probes", () => {
         response.write({ output: "<p>hello</p>" });
         response.addHeader({ name: "Set-Cookie", value: "sv_a=1; Path=/" });
         reads.push(response.headers);
-        response.sendRedirect({ identifier: "x", type: "SUITELET" });
       })(sandbox);
       const { marker, seen } = serve(host, { params, probe: "page" });
       assert.deepEqual(marker, ["own"]);
@@ -1598,7 +1709,6 @@ describe("Suitelet probes", () => {
         ["setHeader", { name: "X-Probe", value: "1" }],
         ["write", { output: "<p>hello</p>" }],
         ["addHeader", { name: "Set-Cookie", value: "sv_a=1; Path=/" }],
-        ["sendRedirect", { identifier: "x", type: "SUITELET" }],
       ]);
       assert.deepEqual(reads, [
         "1",
@@ -1645,13 +1755,13 @@ describe("Suitelet probes", () => {
         const host = hostFor(p, (_params, { response }) => {
           response.setHeader({ name: "X-Probe", value: "1" });
           if (writeFirst) response.write({ output: "partial" });
-          response.sendRedirect({ identifier: "x", type: "SUITELET" });
+          response.writePage({ pageObject: {} });
         })(sandbox);
         const { marker, seen } = serve(
           host,
           { params, probe: "page" },
           {},
-          "sendRedirect",
+          "writePage",
         );
         assert.equal(marker.at(-1), "wrapped");
         const writes = seen
@@ -1660,7 +1770,7 @@ describe("Suitelet probes", () => {
         const answer = writes.at(-1) ?? "";
         assert.deepEqual(JSON.parse(answer), {
           probe: "page",
-          result: "THROWS: SSS_INVALID_REDIRECT: cannot redirect now",
+          result: "THROWS: SSS_INVALID_PAGE: cannot write a page now",
           scriptType: "Suitelet",
           version: "2026.2",
         });
@@ -1669,6 +1779,20 @@ describe("Suitelet probes", () => {
         // JSON: an error, never a result or own output.
         assert.equal(writes.join("").startsWith("partial"), writeFirst);
       }
+    });
+
+    it("refuses a redirect as the probe's error, since requestSuitelet follows it, replaying nothing", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.setHeader({ name: "X-Probe", value: "1" });
+        response.sendRedirect({ identifier: "x", type: "SUITELET" });
+      })(sandbox);
+      assert.match(
+        call(host, { params, probe: "page" }).result,
+        /^THROWS: SSV_REDIRECT_REFUSED: .*requestSuitelet follows redirects/,
+      );
+      const { seen } = serve(host, { params, probe: "page" });
+      assert.equal(/X-Probe|sendRedirect/.test(JSON.stringify(seen)), false);
     });
 
     it("refuses a probe's attempt to set the marker, whatever the case or call", () => {

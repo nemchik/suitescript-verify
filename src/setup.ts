@@ -18,8 +18,8 @@ export interface SetupCommands {
   /** Loads the configuration again, refusing on a problem: each step can change it. */
   configure(): Config;
   /** The real deploy, already confirmed by the person. */
-  deploy(config: Config): number;
-  setupCi(): number;
+  deploy(config: Config): Promise<number>;
+  setupCi(): Promise<number>;
   doctor(): Promise<number>;
 }
 
@@ -59,7 +59,7 @@ function checklist(config: Config): string {
   return [
     "In the sandbox, in one visit (Setup > Integration):",
     "  1. Create an integration record. Enable the Client Credentials (Machine to Machine) grant, the token-based authentication flags, and the RESTlets and REST Web Services scopes. Keep its client id for the next step; it is shown once.",
-    `  2. Create the runner's role with only its name and id, and assign it to yourself: name "ssv runner role ${config.runnerId}", id ${config.roleId}. Leave its permissions empty: the first deploy writes them.`,
+    `  2. Create the runner's role with its name, its id and only the permission Log in using OAuth 2.0 Access Tokens (Full), and assign it to yourself: name "ssv runner role ${config.runnerId}", id ${config.roleId}. A role without it is not in the mapping's role list; the first deploy takes the role over and writes the rest.`,
     "  3. Map the certificates (Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup), each to that integration record:",
     `     runner certificate ${publicCertificate(v[names.privateKeyPath])} -> the role ${config.roleId}`,
     `     SDF certificate ${publicCertificate(v[names.sdfPrivateKeyPath])} -> a role that can deploy (Administrator in a sandbox), never the runner's role`,
@@ -70,9 +70,14 @@ function checklist(config: Config): string {
 
 /**
  * Asks for each value without echoing it. An existing value is kept when the
- * person just presses Enter. Returns only the values the person typed.
+ * person just presses Enter, except a certificate id whose pair is `renewed`:
+ * a new pair needs a new mapping, so the saved id is wrong. Returns only the
+ * values the person typed.
  */
-async function promptIds(config: Config): Promise<Record<string, string>> {
+async function promptIds(
+  config: Config,
+  renewed: string[],
+): Promise<Record<string, string>> {
   const typed: Record<string, string> = {};
   for (const [name, label] of [
     [names.account, "Sandbox account id (digits_SBn)"],
@@ -80,12 +85,15 @@ async function promptIds(config: Config): Promise<Record<string, string>> {
     [names.certificateId, "Runner certificate id"],
     [names.sdfCertificateId, "SDF certificate id"],
   ] as const) {
-    const existing = config.values[name] ?? "";
+    const fresh = renewed.includes(name);
+    const existing = fresh ? "" : (config.values[name] ?? "");
     for (;;) {
       const answer = await askHidden(
         existing
           ? `${label} (${name} is set; press Enter to keep it, or type a new value, hidden): `
-          : `${label} (${name}, hidden): `,
+          : fresh
+            ? `${label} (${name}, new pair: the id of its new mapping, hidden): `
+            : `${label} (${name}, hidden): `,
       );
       if (answer === null) throw closed();
       const value = answer.trim();
@@ -156,24 +164,29 @@ export async function setup(
     return 1;
   }
 
-  // 2. Certificate pairs, only the missing ones.
+  // 2. Certificate pairs, only the missing ones. A pair generated now needs
+  // a new mapping, so its certificate id is asked for again below.
   const keys = checks();
   const runnerOk = passes(keys, "runner-key");
   const sdfOk = passes(keys, "sdf-key");
+  const renewed: string[] = [];
   if (runnerOk && sdfOk) skipped("certificates");
   else {
     console.log(`${heading("certificates")}:`);
     const keysDir = flagValue(args, "--keys-dir");
-    await certificate(project, config, [
+    const generated = await certificate(project, config, [
       ...(runnerOk ? ["--only", "sdf"] : sdfOk ? ["--only", "runner"] : []),
       ...(keysDir === undefined ? [] : ["--keys-dir", keysDir]),
     ]);
+    if (generated.includes("runner")) renewed.push(names.certificateId);
+    if (generated.includes("sdf")) renewed.push(names.sdfCertificateId);
     config = commands.configure();
   }
 
-  // 3. The one sandbox trip.
-  if (passes(checks(), "ids", "sandbox", "login")) skipped("checklist");
-  else {
+  // 3. The one sandbox trip, also when new pairs need new mappings.
+  if (renewed.length === 0 && passes(checks(), "ids", "sandbox", "login")) {
+    skipped("checklist");
+  } else {
     console.log(`${heading("checklist")}:`);
     console.log(checklist(config));
     if (
@@ -184,10 +197,11 @@ export async function setup(
   }
 
   // 4. The values from the sandbox, never echoed.
-  if (passes(checks(), "ids", "sandbox")) skipped("ids");
-  else {
+  if (renewed.length === 0 && passes(checks(), "ids", "sandbox")) {
+    skipped("ids");
+  } else {
     console.log(`${heading("ids")}:`);
-    const typed = await promptIds(config);
+    const typed = await promptIds(config, renewed);
     if (Object.keys(typed).length > 0) {
       await saveEnv(config, ["--overwrite"], typed);
     }
@@ -208,7 +222,7 @@ export async function setup(
   if (passes(checks(), "files", "login")) skipped("login");
   else {
     console.log(`${heading("login")}:`);
-    const status = commands.setupCi();
+    const status = await commands.setupCi();
     if (status !== 0) {
       console.log(
         "\nsetup-ci failed; see Troubleshooting in the README, then run suitescript-verify setup again.",
@@ -226,7 +240,7 @@ export async function setup(
     );
     if (answer === null) throw closed();
     if (answer.trim() === "DEPLOY") {
-      const status = commands.deploy(config);
+      const status = await commands.deploy(config);
       if (status !== 0) {
         console.log(
           "\nThe deploy failed; fix it, then run suitescript-verify setup again.",

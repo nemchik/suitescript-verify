@@ -1,9 +1,7 @@
 <role scriptid="%%ROLE_ID%%">
   <centertype>ACCOUNTCENTER</centertype>
-  <coreadminpermissions>F</coreadminpermissions>
   <issalesrole>F</issalesrole>
   <issupportrole>F</issupportrole>
-  <iswebserviceonlyrole>F</iswebserviceonlyrole>
   <name>%%NAME%%</name>
   <restricttimeandexpenses>F</restricttimeandexpenses>
   <permissions>

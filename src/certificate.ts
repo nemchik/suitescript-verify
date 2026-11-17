@@ -69,12 +69,16 @@ function generatePair(options: {
   }
 }
 
-/** Generates the runner (EC P-256) and SDF (RSA-4096) key pairs outside the project and saves their paths in .env.local. */
+/**
+ * Generates the runner (EC P-256) and SDF (RSA-4096) key pairs outside the
+ * project and saves their paths in .env.local. Returns the pairs it generated
+ * (not the ones it kept): each needs a new mapping, with a new certificate id.
+ */
 export async function certificate(
   project: string,
   config: Config,
   args: string[],
-) {
+): Promise<("runner" | "sdf")[]> {
   const dir = resolve(
     flagValue(args, "--keys-dir") ?? join(homedir(), ".suitescript-verify"),
   );
@@ -111,6 +115,7 @@ export async function certificate(
     publicKey: join(dir, `${name}-public.pem`),
   });
   mkdirSync(dir, { mode: 0o700, recursive: true });
+  const generated: ("runner" | "sdf")[] = [];
   for (const name of which) {
     const pair = paths(name);
     const exists = existsSync(pair.privateKey) || existsSync(pair.publicKey);
@@ -125,6 +130,7 @@ export async function certificate(
     }
     if (!exists || (await allowReplace(args, `The ${name} key pair`))) {
       generatePair({ kind: kinds[name], openssl, ...pair });
+      generated.push(name);
       console.log(
         `Generated the ${name} key pair (${kinds[name] === "ec" ? "EC P-256" : "RSA-4096, RSA-PSS certificate"}, valid for 365 days).`,
       );
@@ -145,4 +151,5 @@ export async function certificate(
       ...which.map((name) => `  ${name}: ${paths(name).publicKey}`),
     ].join("\n"),
   );
+  return generated;
 }

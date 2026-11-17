@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { certificate } from "./certificate.ts";
 import {
@@ -121,12 +122,16 @@ function setupCommand(args: string[]): Promise<number> {
     configure: () => configure(args, true),
     deploy: (config) => {
       prepareDeploy(config);
-      return suitecloud(process.cwd(), config, ["project:deploy"]);
+      return runSuitecloud(config, ["project:deploy"]);
     },
     doctor: () => doctor(args),
     setupCi: () => setupCi(args),
   });
 }
+
+/** The generated SDF Objects folder, relative to where the CLI runs. */
+const objectsDir = (config: Config) =>
+  relative(process.cwd(), join(config.sdfDir, "src", "Objects")) || ".";
 
 /**
  * Generates the runner and its SDF project. A runner generated here under
@@ -138,7 +143,7 @@ function buildRunner(config: Config, deployed: boolean) {
   for (const { id, legacy } of built.replacedRunners) {
     console.warn(
       legacy
-        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}.`
+        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}, but first delete customrole_*.xml, customscript_*_rl.xml and customscript_*_sl.xml from ${objectsDir(config)}, or 1.x cannot build the folder. See the README's "Upgrading from 1.x".`
         : `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
     );
   }
@@ -157,7 +162,6 @@ function prepareDeploy(config: Config) {
 }
 
 async function deploy(args: string[]): Promise<number> {
-  const project = process.cwd();
   const config = configure(args, true);
   prepareDeploy(config);
   const approved = args.includes("--approved");
@@ -167,14 +171,13 @@ async function deploy(args: string[]): Promise<number> {
       "\nDry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
     );
   }
-  return suitecloud(project, config, [
+  return runSuitecloud(config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),
   ]);
 }
 
 async function cleanup(args: string[]): Promise<number> {
-  const project = process.cwd();
   const config = configure(args, true);
   requireSandbox(config);
   const approved = args.includes("--approved");
@@ -189,10 +192,38 @@ async function cleanup(args: string[]): Promise<number> {
     );
   }
   buildRunner(config, false);
-  return suitecloud(project, config, [
+  return runSuitecloud(config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),
   ]);
+}
+
+/** The auth id `setup-ci` registers the SDF login under. */
+const AUTH_ID = "suitescript-verify";
+
+/** A fix to print when the SuiteCloud CLI's output shows a failure with a known cause. */
+const SUITECLOUD_HINTS: [RegExp, string][] = [
+  [
+    /authentication ID is already in use/i,
+    `The SuiteCloud CLI already holds the auth id ${AUTH_ID}, registered for another role (or account). Remove it yourself: run npx suitecloud account:manageauth --remove ${AUTH_ID} with SUITECLOUD_CI_PASSKEY set to this project's passkey (SUITESCRIPT_VERIFY_PASSKEY), then run suitescript-verify setup-ci (or setup) again. See "Troubleshooting" in the README.`,
+  ],
+  [
+    /'Bulk Manage Roles' permission/i,
+    "The SDF login's role needs Bulk Manage Roles (or Administrator) to deploy the runner's role, and setup-ci must have registered that role: the deploy runs as the role behind the auth id setup-ci saved. See \"Troubleshooting\" in the README.",
+  ],
+];
+
+/** Runs the SuiteCloud CLI and, when it fails for a known cause, says how to fix it. */
+async function runSuitecloud(config: Config, args: string[]) {
+  const { output, status } = await suitecloud(process.cwd(), config, args);
+  if (status !== 0) {
+    for (const [cause, hint] of SUITECLOUD_HINTS) {
+      if (cause.test(output))
+        console.log(`
+${hint}`);
+    }
+  }
+  return status;
 }
 
 const CI_SETTINGS = [
@@ -212,15 +243,15 @@ const CI_NOTES = [
   "Accept Oracle's SuiteCloud license yourself in the pipeline; this package never does.",
 ].join("\n");
 
-function setupCi(args: string[]): number {
+async function setupCi(args: string[]): Promise<number> {
   const config = configure(args, true);
   const creds = requireSandbox(config);
-  const status = suitecloud(process.cwd(), config, [
+  const status = await runSuitecloud(config, [
     "account:setup:ci",
     "--account",
     creds.account,
     "--authid",
-    "suitescript-verify",
+    AUTH_ID,
     "--certificateid",
     creds.sdfCertificateId,
     "--privatekeypath",

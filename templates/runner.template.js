@@ -9,7 +9,8 @@
  * runner knows each Suitelet probe's name and parameters, never its code.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
- * status, headers (cookies redacted but `sv_*`) and body (cut at 64 KB).
+ * status, headers (one lower-cased key per name, cookies redacted but `sv_*`)
+ * and body (NetSuite's trailing HTML comments dropped, cut at 64 KB).
  *
  * It refuses to run unless the account is a sandbox. A body with `selfCheck`
  * (never a probe name) asks for the self-check instead, which only reads.
@@ -51,15 +52,50 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           .map((cookie) => redactCookie(cookie.trim()))
           .join(", ");
 
-  /** The probe's own response as the runner reports it: no marker, cookies redacted, the body cut at 64 KB. */
-  const ownResponse = (status, headers, text) => {
-    const shown = {};
+  /**
+   * One lower-cased key per header name: `ClientResponse.headers` holds several
+   * casings of each. Cookies are redacted, then repeated values dropped; a name
+   * left with one value keeps it, and one with several keeps them as a list.
+   */
+  const collapseHeaders = (headers) => {
+    const values = {};
     for (const key of Object.keys(headers)) {
       const lower = key.toLowerCase();
       if (lower === MARKER) continue;
-      shown[key] =
-        lower === "set-cookie" ? redactSetCookie(headers[key]) : headers[key];
+      const list = values[lower] || [];
+      for (const value of [].concat(headers[key])) {
+        const shown = lower === "set-cookie" ? redactSetCookie(value) : value;
+        if (!list.includes(shown)) list.push(shown);
+      }
+      values[lower] = list;
     }
+    const shown = {};
+    for (const key of Object.keys(values)) {
+      shown[key] = values[key].length === 1 ? values[key][0] : values[key];
+    }
+    return shown;
+  };
+
+  /** An HTML body without the `<!-- … -->` comments NetSuite appends to every page (they name the account and the user). */
+  const stripTrailer = (headers, text) => {
+    const type = String([].concat(headers["content-type"])[0]);
+    if (!/^\s*text\/html\b/i.test(type)) return text;
+    let body = text;
+    let stripped = false;
+    for (;;) {
+      const trimmed = body.replace(/\s+$/, "");
+      const start = trimmed.lastIndexOf("<!--");
+      if (!trimmed.endsWith("-->") || start < 0) break;
+      body = trimmed.slice(0, start);
+      stripped = true;
+    }
+    return stripped ? body.replace(/\s+$/, "") : text;
+  };
+
+  /** The probe's own response as the runner reports it: no marker, one key per header, cookies redacted, NetSuite's HTML trailer dropped, the body cut at 64 KB. */
+  const ownResponse = (status, headers, raw) => {
+    const shown = collapseHeaders(headers);
+    const text = stripTrailer(shown, raw);
     const response = {
       body: text.slice(0, BODY_LIMIT),
       headers: shown,
@@ -127,7 +163,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       return {
         error:
           status === 200
-            ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header: ${cut(text)}`
+            ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
             : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
       };
     }

@@ -19,7 +19,11 @@ import {
   readExpect,
   tagProblems,
 } from "./probes.ts";
-import { matchesExpectedResponse, ownResponse } from "./response.ts";
+import {
+  matchesExpectedResponse,
+  ownResponse,
+  withOwnResponse,
+} from "./response.ts";
 import { resultsDraft } from "./results.ts";
 import {
   type Creds,
@@ -216,7 +220,7 @@ export async function runProbe(
       : { probe: probe.slug },
   );
 
-  const scrubbed = scrub(text, known);
+  const scrubbed = scrub(withOwnResponse(text), known);
   if (scrubbed.problems.length > 0) {
     throw new UsageError(
       `Refusing to print or record the output: ${scrubbed.problems.join("; ")}. Review it by hand.`,

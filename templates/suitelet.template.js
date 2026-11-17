@@ -71,9 +71,11 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     String(options && options.name !== undefined ? options.name : "").trim();
 
   /**
-   * A response that records every write, page, file, redirect and header call
-   * for replay, and answers header reads from what it recorded. It refuses the
-   * marker header, so a probe cannot choose how the runner reads its answer.
+   * A response that records every write, page, file and header call for
+   * replay, and answers header reads from what it recorded. It refuses the
+   * marker header, so a probe cannot choose how the runner reads its answer,
+   * and refuses a redirect: `requestSuitelet` follows it, so the runner would
+   * see the page it leads to (often the login page), never the redirect.
    */
   const recorder = () => {
     const calls = [];
@@ -111,7 +113,13 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         return { ...headers };
       },
       renderPdf: record("renderPdf"),
-      sendRedirect: record("sendRedirect"),
+      sendRedirect: () => {
+        const e = new Error(
+          "a Suitelet probe cannot redirect: requestSuitelet follows redirects, so the runner never sees one",
+        );
+        e.name = "SSV_REDIRECT_REFUSED";
+        throw e;
+      },
       setCdnCacheable: record("setCdnCacheable"),
       setHeader: header("setHeader", true),
       write: record("write"),
@@ -193,8 +201,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         // `wrapped` and appends the `THROWS` answer: with nothing written yet
         // the runner reads a clean THROWS result, and after a write it reads
         // the partial output plus the answer as a body that is not JSON, which
-        // it reports as an error, never as `own` output. Whether the platform
-        // still takes a header set after a write is not yet confirmed.
+        // it reports as an error, never as `own` output. The platform still
+        // takes a header set after a write (confirmed in a sandbox).
         wrapped(`THROWS: ${e.name}: ${e.message}`);
       }
     },

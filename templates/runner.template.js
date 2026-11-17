@@ -11,7 +11,8 @@
  * holding the probe's result, or the probe's `own` response, reported as its
  * status, headers (cookies redacted but `sv_*`) and body (cut at 64 KB).
  *
- * It refuses to run unless the account is a sandbox.
+ * It refuses to run unless the account is a sandbox. A body with `selfCheck`
+ * (never a probe name) asks for the self-check instead, which only reads.
  *
  * @NApiVersion 2.1
  * @NScriptType Restlet
@@ -155,8 +156,85 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     };
   };
 
+  /** What the deploy baked in: the package version, every probe and each permission written to the role. */
+  const deployment = {
+    packageVersion: "%%PACKAGE_VERSION%%",
+    permissions: "%%PERMISSIONS%%".split(",").filter(Boolean),
+    probes: "%%PROBES%%".split(",").filter(Boolean),
+  };
+
+  /** The held level of a permission, by its name in `runtime.Permission`; a key it cannot read is reported, never thrown. */
+  const heldLevel = (user, name) => {
+    try {
+      const held = user.getPermission({ name });
+      const level = Object.keys(runtime.Permission).find(
+        (key) => runtime.Permission[key] === held,
+      );
+      return level === undefined ? String(held) : level;
+    } catch (e) {
+      const { message, name: kind } = e || {};
+      return `UNREADABLE: ${kind}: ${message}`;
+    }
+  };
+
+  /** The Suitelet host's answer to its own self-check, or the error the call met. */
+  const hostSelfCheck = () => {
+    let reply;
+    try {
+      reply = https.requestSuitelet({
+        deploymentId: host.deploymentId,
+        scriptId: host.scriptId,
+        urlParams: { selfCheck: "1" },
+      });
+    } catch (e) {
+      const { message, name: kind } = e || {};
+      return { error: `the Suitelet host call failed: ${kind}: ${message}` };
+    }
+    const status = reply ? reply.code : undefined;
+    const text = reply && reply.body !== undefined ? String(reply.body) : "";
+    if (status !== 200) {
+      return {
+        error: `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      };
+    }
+    let answer;
+    try {
+      answer = JSON.parse(text);
+    } catch (_) {
+      return { error: `the Suitelet host's answer was not JSON: ${cut(text)}` };
+    }
+    if (!answer || typeof answer.selfCheck !== "object" || !answer.selfCheck) {
+      return { error: `the Suitelet host has no self-check: ${cut(text)}` };
+    }
+    return answer.selfCheck;
+  };
+
+  /** The reserved self-check: proves the deployment, its role and the host without running a probe. */
+  const selfCheck = () => {
+    if (runtime.envType !== runtime.EnvType.SANDBOX) {
+      return { selfCheck: { sandbox: false } };
+    }
+    const user = runtime.getCurrentUser();
+    const permissions = {};
+    for (const name of deployment.permissions) {
+      permissions[name] = heldLevel(user, name);
+    }
+    return {
+      selfCheck: {
+        host: hostSelfCheck(),
+        packageVersion: deployment.packageVersion,
+        permissions,
+        probes: deployment.probes,
+        role: String(user.roleId),
+        sandbox: true,
+        version: String(runtime.version),
+      },
+    };
+  };
+
   return {
     post(body) {
+      if (body && body.selfCheck !== undefined) return selfCheck();
       if (runtime.envType !== runtime.EnvType.SANDBOX) {
         return { error: "refused: the runner only runs in a sandbox" };
       }

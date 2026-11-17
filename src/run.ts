@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Config } from "./config.ts";
-import { clientAssertion, restletUrl, scrub, tokenUrl } from "./netsuite.ts";
+import {
+  clientAssertion,
+  type KnownIds,
+  restletUrl,
+  scrub,
+  tokenUrl,
+} from "./netsuite.ts";
 import {
   anchored,
   isRunnable,
@@ -86,6 +92,82 @@ function validateParams(probe: Probe, args: string[]): Record<string, string> {
   );
 }
 
+type Creds = ReturnType<typeof requireSandbox>;
+
+/** The configured ids the scrubber replaces with placeholders. */
+export const knownIds = (creds: Creds): KnownIds => ({
+  account: creds.account,
+  certificateId: creds.certificateId,
+  clientId: creds.clientId,
+  sdfCertificateId: creds.sdfCertificateId,
+});
+
+/**
+ * Gets a token with the runner's certificate (OAuth 2.0 client credentials)
+ * and posts `body` to the deployed runner. Returns the runner's answer as text;
+ * a failed token request, a failed call or a non-OK status is a UsageError
+ * whose message is scrubbed of the configured ids.
+ */
+export async function callRunner(
+  creds: Creds,
+  runnerId: string,
+  body: unknown,
+): Promise<string> {
+  const safe = (text: string) => scrub(text, knownIds(creds)).text;
+  const endpoint = tokenUrl(creds.account);
+  const assertion = clientAssertion({
+    certificateId: creds.certificateId,
+    clientId: creds.clientId,
+    privateKeyPem: readFileSync(creds.privateKeyPath, "utf8"),
+    tokenEndpoint: endpoint,
+  });
+  try {
+    const tokenResponse = await fetch(endpoint, {
+      body: new URLSearchParams({
+        client_assertion: assertion,
+        client_assertion_type:
+          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        grant_type: "client_credentials",
+      }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    const tokenBody = (await tokenResponse.json().catch(() => ({}))) as {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!tokenResponse.ok || !tokenBody.access_token) {
+      throw new UsageError(
+        safe(
+          `Token request failed: HTTP ${tokenResponse.status} ${tokenBody.error ?? ""} ${tokenBody.error_description ?? ""}`.trim(),
+        ),
+      );
+    }
+    const response = await fetch(restletUrl(creds.account, runnerId), {
+      body: JSON.stringify(body),
+      headers: {
+        authorization: `Bearer ${tokenBody.access_token}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new UsageError(
+        `The runner call failed: HTTP ${response.status}
+${safe(text.slice(0, 500))}`,
+      );
+    }
+    return text;
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    throw new UsageError(
+      safe(`The request failed: ${(error as Error).message}`),
+    );
+  }
+}
+
 /**
  * Runs one probe, by name from the fixed list in the probes folder, through
  * the deployed runner. Nothing from a request or an argument is ever run as
@@ -125,69 +207,15 @@ export async function runProbe(
   if (!existsSync(creds.privateKeyPath)) {
     throw new UsageError("The runner private key file does not exist.");
   }
-  const known = {
-    account: creds.account,
-    certificateId: creds.certificateId,
-    clientId: creds.clientId,
-    sdfCertificateId: creds.sdfCertificateId,
-  };
-  const safe = (text: string) => scrub(text, known).text;
+  const known = knownIds(creds);
 
-  const endpoint = tokenUrl(creds.account);
-  const assertion = clientAssertion({
-    certificateId: creds.certificateId,
-    clientId: creds.clientId,
-    privateKeyPem: readFileSync(creds.privateKeyPath, "utf8"),
-    tokenEndpoint: endpoint,
-  });
-  let text: string;
-  try {
-    const tokenResponse = await fetch(endpoint, {
-      body: new URLSearchParams({
-        client_assertion: assertion,
-        client_assertion_type:
-          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        grant_type: "client_credentials",
-      }),
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      method: "POST",
-    });
-    const tokenBody = (await tokenResponse.json().catch(() => ({}))) as {
-      access_token?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!tokenResponse.ok || !tokenBody.access_token) {
-      throw new UsageError(
-        safe(
-          `Token request failed: HTTP ${tokenResponse.status} ${tokenBody.error ?? ""} ${tokenBody.error_description ?? ""}`.trim(),
-        ),
-      );
-    }
-    const response = await fetch(restletUrl(creds.account, config.runnerId), {
-      body: JSON.stringify(
-        probe.params.length > 0
-          ? { params, probe: probe.slug }
-          : { probe: probe.slug },
-      ),
-      headers: {
-        authorization: `Bearer ${tokenBody.access_token}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-    });
-    text = await response.text();
-    if (!response.ok) {
-      throw new UsageError(
-        `The runner call failed: HTTP ${response.status}\n${safe(text.slice(0, 500))}`,
-      );
-    }
-  } catch (error) {
-    if (error instanceof UsageError) throw error;
-    throw new UsageError(
-      safe(`The request failed: ${(error as Error).message}`),
-    );
-  }
+  const text = await callRunner(
+    creds,
+    config.runnerId,
+    probe.params.length > 0
+      ? { params, probe: probe.slug }
+      : { probe: probe.slug },
+  );
 
   const scrubbed = scrub(text, known);
   if (scrubbed.problems.length > 0) {

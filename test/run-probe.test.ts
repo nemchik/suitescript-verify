@@ -1688,3 +1688,373 @@ describe("Suitelet probes", () => {
     });
   });
 });
+
+const packageVersion = (
+  JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
+
+describe("the self-check", () => {
+  const levels = { CREATE: 2, EDIT: 3, FULL: 4, NONE: 0, VIEW: 1 };
+  /** A runtime whose current user runs as `role`, holding `held` (a permission key to a level). */
+  const runtimeFor = (
+    held: Record<string, number>,
+    role = "customrole_suitescript_verify",
+    env = sandbox,
+  ) => ({
+    ...env,
+    getCurrentUser: () => ({
+      getPermission: ({ name }: { name: string }) => held[name] ?? 0,
+      roleId: role,
+    }),
+    Permission: levels,
+  });
+  const deployed = (p: Project) => {
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource(`${restlet}\n * @permission LIST_EMPLOYEE VIEW`),
+    );
+    write(
+      p.dir,
+      "verification/probes/page.js",
+      probeSource("@scriptType Suitelet"),
+    );
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return calls(p);
+  };
+  const full = { ADMI_LOGIN_OAUTH2: 4, ADMI_RESTWEBSERVICES: 4 };
+
+  describe("the generated Suitelet host", () => {
+    const ask = (source: string, runtime: unknown) => {
+      const written: string[] = [];
+      let ran = 0;
+      load<{ onRequest: (c: unknown) => void }>(source, runtime, {
+        run: () => ran++,
+      }).onRequest({
+        request: { method: "GET", parameters: { selfCheck: "1" } },
+        response: {
+          setHeader: () => undefined,
+          write: (o: { output: string } | string) =>
+            written.push(typeof o === "string" ? o : o.output),
+        },
+      });
+      assert.equal(ran, 0);
+      return JSON.parse(written.join(""));
+    };
+
+    it("answers the reserved self-check with the sandbox check, the package version and its probes, running none", () => {
+      const p = project();
+      const host = deployed(p).suitelet.join("");
+      assert.deepEqual(ask(host, sandbox), {
+        selfCheck: {
+          packageVersion,
+          probes: ["page"],
+          sandbox: true,
+        },
+      });
+      assert.deepEqual(ask(host, { ...sandbox, envType: "PRODUCTION" }), {
+        selfCheck: { sandbox: false },
+      });
+    });
+  });
+
+  describe("the generated runner", () => {
+    type Runner = { post: (b: unknown) => Record<string, unknown> };
+    const runnerFrom = (
+      source: string,
+      runtime: unknown,
+      requestSuitelet: (o: unknown) => unknown,
+    ) => {
+      let ran = 0;
+      const runner = load<Runner>(
+        source,
+        runtime,
+        { requestSuitelet },
+        {
+          run: () => ran++,
+        },
+      );
+      return { ran: () => ran, runner };
+    };
+    const hostAnswer = {
+      body: JSON.stringify({
+        selfCheck: { packageVersion, probes: ["page"], sandbox: true },
+      }),
+      code: 200,
+      headers: {},
+    };
+
+    it("answers the reserved self-check with the sandbox check, its role, each written permission's held level, the deployed version and probes, and the host's answer", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      const { ran, runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtimeFor({ ...full, LIST_EMPLOYEE: 1 }),
+        (options) => {
+          seen.push(options);
+          return hostAnswer;
+        },
+      );
+      assert.deepEqual(runner.post({ selfCheck: true }), {
+        selfCheck: {
+          host: { packageVersion, probes: ["page"], sandbox: true },
+          packageVersion,
+          permissions: {
+            ADMI_LOGIN_OAUTH2: "FULL",
+            ADMI_RESTWEBSERVICES: "FULL",
+            LIST_EMPLOYEE: "VIEW",
+          },
+          probes: ["one", "page"],
+          role: "customrole_suitescript_verify",
+          sandbox: true,
+          version: "2026.2",
+        },
+      });
+      assert.deepEqual(seen, [
+        {
+          deploymentId: "customdeploy_suitescript_verify_sl",
+          scriptId: "customscript_suitescript_verify_sl",
+          urlParams: { selfCheck: "1" },
+        },
+      ]);
+      assert.equal(ran(), 0);
+    });
+
+    it("reports a permission the role lacks, or cannot read, as it found it", () => {
+      const p = project();
+      const runtime = runtimeFor({ ADMI_LOGIN_OAUTH2: 4 });
+      const user = runtime.getCurrentUser();
+      runtime.getCurrentUser = () => ({
+        ...user,
+        getPermission: ({ name }: { name: string }) => {
+          if (name === "LIST_EMPLOYEE") {
+            throw Object.assign(new Error("bad key"), { name: "SSS_X" });
+          }
+          return user.getPermission({ name });
+        },
+      });
+      const { runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtime,
+        () => hostAnswer,
+      );
+      const answer = runner.post({ selfCheck: true }).selfCheck as {
+        permissions: unknown;
+      };
+      assert.deepEqual(answer.permissions, {
+        ADMI_LOGIN_OAUTH2: "FULL",
+        ADMI_RESTWEBSERVICES: "NONE",
+        LIST_EMPLOYEE: "UNREADABLE: SSS_X: bad key",
+      });
+    });
+
+    it("reports a host that does not answer, never throwing", () => {
+      const p = project();
+      const source = deployed(p).runner.join("");
+      for (const [reply, error] of [
+        [
+          () => {
+            throw Object.assign(new Error("An unexpected error"), {
+              name: "UNEXPECTED_ERROR",
+            });
+          },
+          "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected error",
+        ],
+        [
+          () => ({ body: "Server error", code: 500 }),
+          "the Suitelet host answered HTTP 500: Server error",
+        ],
+        [
+          () => ({ body: "<html>login</html>", code: 200 }),
+          "the Suitelet host's answer was not JSON: <html>login</html>",
+        ],
+        [
+          () => ({ body: '{"error":"unknown probe"}', code: 200 }),
+          'the Suitelet host has no self-check: {"error":"unknown probe"}',
+        ],
+      ] as const) {
+        const { runner } = runnerFrom(source, runtimeFor(full), reply);
+        const answer = runner.post({ selfCheck: true }).selfCheck as {
+          host: unknown;
+          sandbox: boolean;
+        };
+        assert.deepEqual(answer.host, { error });
+        assert.equal(answer.sandbox, true);
+      }
+    });
+
+    it("answers only the sandbox check outside a sandbox", () => {
+      const p = project();
+      let called = 0;
+      const { runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtimeFor(full, "customrole_suitescript_verify", {
+          ...sandbox,
+          envType: "PRODUCTION",
+        }),
+        () => {
+          called++;
+          return hostAnswer;
+        },
+      );
+      assert.deepEqual(runner.post({ selfCheck: true }), {
+        selfCheck: { sandbox: false },
+      });
+      assert.equal(called, 0);
+    });
+  });
+});
+
+describe("doctor calls the self-check", () => {
+  const step = /The deployed runner passes its self-check/;
+  const lineOf = (out: string) =>
+    out.split("\n").find((l) => /^(ok|FAIL) /.test(l) && step.test(l)) ?? "";
+  const withProbes = (p: Project) => {
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource(`${restlet}\n * @permission LIST_EMPLOYEE VIEW`),
+    );
+    write(
+      p.dir,
+      "verification/probes/page.js",
+      probeSource("@scriptType Suitelet"),
+    );
+  };
+  const deployedProject = () => {
+    const p = project();
+    withProbes(p);
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return p;
+  };
+  const healthy = () => ({
+    host: { packageVersion, probes: ["page"], sandbox: true },
+    packageVersion,
+    permissions: {
+      ADMI_LOGIN_OAUTH2: "FULL",
+      ADMI_RESTWEBSERVICES: "FULL",
+      LIST_EMPLOYEE: "VIEW",
+    },
+    probes: ["one", "page"],
+    role: "customrole_suitescript_verify",
+    sandbox: true,
+    version: "2026.2",
+  });
+  /** Runs doctor and checks it printed no identifier. */
+  const doctor = (p: Project) => {
+    const out = cli(p, ["doctor"]).all;
+    for (const id of [
+      "1234567",
+      clientId,
+      "cert-runner-id",
+      "cert-sdf-id",
+      "tok-abc",
+      "netsuite.com",
+    ]) {
+      assert.equal(out.includes(id), false, id);
+    }
+    return out;
+  };
+
+  it("passes when the deployed version, probes, host and role match the project, asking through the token flow run uses", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: healthy() }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^ok {3}/);
+    const [token, call] = p.requests();
+    assert.match(token?.url ?? "", /\/oauth2\/v1\/token$/);
+    assert.match(call?.url ?? "", /script=customscript_suitescript_verify_rl&/);
+    assert.equal(call?.body, JSON.stringify({ selfCheck: true }));
+  });
+
+  it("says to deploy first before any deploy", () => {
+    const p = project();
+    withProbes(p);
+    p.script(
+      { body: { error: "invalid_grant" }, status: 400 },
+      { body: {}, status: 200 },
+    );
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Deploy first/);
+  });
+
+  it("says to redeploy when the deployed version, probe list or host differs", () => {
+    for (const [change, why] of [
+      [{ packageVersion: "0.0.1" }, /version 0\.0\.1/],
+      [{ probes: ["one"] }, /probes/],
+      [
+        { host: { error: "the Suitelet host answered HTTP 500: x" } },
+        /HTTP 500/,
+      ],
+      [
+        { host: { packageVersion, probes: [], sandbox: true } },
+        /Suitelet host/,
+      ],
+    ] as const) {
+      const p = deployedProject();
+      p.script(...ok({ selfCheck: { ...healthy(), ...change } }));
+      const out = doctor(p);
+      assert.match(lineOf(out), /^FAIL /, String(why));
+      assert.match(out, /Maintainer's own step: Redeploy/, String(why));
+      assert.match(out, why);
+    }
+  });
+
+  it("says to redeploy a runner that has no self-check", () => {
+    const p = deployedProject();
+    p.script(...ok({ error: "unknown probe", known: ["one"] }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Redeploy/);
+  });
+
+  it("reports drift when the role lacks a permission the deploy wrote", () => {
+    const p = deployedProject();
+    const answer = healthy();
+    answer.permissions.LIST_EMPLOYEE = "NONE";
+    p.script(...ok({ selfCheck: answer }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Drift/);
+    assert.match(out, /LIST_EMPLOYEE/);
+    assert.doesNotMatch(out, /ADMI_LOGIN_OAUTH2 \(/);
+  });
+
+  it("fails when the runner runs as another role or outside a sandbox", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: { ...healthy(), role: "customrole_other" } }));
+    assert.match(doctor(p), /customrole_other/);
+    p.script(...ok({ selfCheck: { sandbox: false } }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /sandbox/);
+  });
+
+  it("refuses to print an answer that looks like an identifier", () => {
+    const p = deployedProject();
+    p.script(
+      ...ok({
+        selfCheck: {
+          ...healthy(),
+          host: { error: "failed at 7654321-sb2.app.netsuite.com" },
+        },
+      }),
+    );
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.equal(out.includes("7654321"), false);
+  });
+
+  it("calls nothing before the runner's settings pass", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: healthy() }));
+    const out = cli(p, ["doctor"], {
+      SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: join(p.dir, "missing.pem"),
+    }).all;
+    assert.match(lineOf(out), /^FAIL /);
+    assert.deepEqual(p.requests(), []);
+  });
+});

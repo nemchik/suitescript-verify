@@ -165,7 +165,7 @@ Install the SuiteCloud CLI and gitignore `verification/.env.local` first (steps 
 5. **In the sandbox, in one visit, create the integration record, the runner's role and both certificate mappings.**
    - **The integration record** needs more than the machine-to-machine grant: also enable the token-based authentication flags and the RESTlets and REST Web Services scopes (see [Troubleshooting](#every-call-fails-with-401-invalid_login_attempt)).
    - **The runner's role:** create it with only its name and id, and assign it to yourself. The id is `customrole_<runner id>` (`customrole_suitescript_verify` by default; `doctor` prints the one in use), and the name `ssv runner role <runner id>`. Leave its permissions empty: every deploy writes the role as an SDF object, so the first deploy takes it over and gives it exactly `ADMI_LOGIN_OAUTH2` (Log In Using OAuth 2.0 Access Tokens) and `ADMI_RESTWEBSERVICES` (REST Web Services), both at Full, plus each permission a probe declares with `@permission` (see [Permissions](#permissions)), on the Account center, with every other flag at its default. A permission added by hand does not survive the next deploy.
-   - **The SDF certificate** maps to a role that can deploy, never the runner's role, since a deploy that rewrote its own login role would strip the permissions the next deploy needs. In a sandbox that can be Administrator; otherwise use a deploy role with SuiteScript, Documents and Files, Allow JS/HTML Uploads and Bulk Manage Roles.
+   - **The SDF certificate** maps to a role that can deploy, never the runner's role, since a deploy that rewrote its own login role would strip the permissions the next deploy needs. In a sandbox Administrator is the expected choice, though mapping it for the SDF login is not yet confirmed in a real sandbox; otherwise use a deploy role with SuiteScript, Documents and Files, Allow JS/HTML Uploads and Bulk Manage Roles.
    - **The runner certificate** maps to the runner's role.
    - **Each project needs its own role.** A deploy rewrites the role, so two projects deploying one role would overwrite each other. The default id follows the runner id, so projects with their own runner id (see [Deploy](#deploy)) already have their own role. `SUITESCRIPT_VERIFY_ROLE_ID` sets another id and wins over the default; do not rely on changing an id later, since a custom role's id may be read-only after saving. The platform rejects a role id over 40 characters, `customrole_` included, so the id after the prefix is at most 29 characters; the package refuses a longer one before it reaches the sandbox.
    - **In a OneWorld account** the role gets every subsidiary: the generated role names none, so it deploys in any account.
@@ -279,6 +279,7 @@ When the probe returns, the host answers in one of two modes:
 | Makes response calls and returns nothing    | `own`     | `response`: `{ status, headers, body }` of the HTTP response the runner saw, with the calls replayed in order |
 | Does both                                   | error     | `the probe both wrote a response and returned a value`                                                        |
 | Throws, before or after writing             | `wrapped` | `result` is `THROWS: <name>: <message>`; nothing it wrote is replayed                                         |
+| Makes a call the real response refuses      | `wrapped` | `THROWS: <name>: <message>` for the refused call, or an error when replayed output came first (see below)     |
 
 ```js
 /**
@@ -295,7 +296,15 @@ define([], () => ({
 }));
 ```
 
-The host names the mode in an `X-SSV-Mode` header, and the runner reads the body as JSON only when it says `wrapped`. A probe cannot set that header: `setHeader` or `addHeader` with its name, in any case, throws `SSV_RESERVED_HEADER`. An answer without it is reported as an error, never read.
+The host names the mode in an `X-SSV-Mode` header, and the runner reads the body as JSON only when it says `wrapped`. An answer without it is reported as an error, never read. The errors particular to Suitelet probes:
+
+| Error                                                  | Raised by                            | Cause and fix                                                                                                                                                                              |
+| ------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SSV_RESERVED_HEADER`                                  | The probe's `setHeader`, `addHeader` | The probe set `X-SSV-Mode` (in any case). Only the host sets it; reported as `THROWS`.                                                                                                     |
+| `the probe both wrote a response and returned a value` | The host                             | A Suitelet probe writes its own response or returns a value, never both. Drop the return value or the response calls.                                                                      |
+| `THROWS` from a replayed call                          | The real response, during replay     | A recorded call the real response refused. Replayed output cannot be taken back, so when some came first, `run` reports a `wrapped` body that is not JSON instead: an error, not a result. |
+| `UNKNOWN_PARAM`                                        | `requestSuitelet`                    | Its answer to a `params` option. The runner never passes one: it sends the parameters in `urlParams`.                                                                                      |
+| `UNEXPECTED_ERROR`                                     | `requestSuitelet`                    | The generic error it gives for a script that does not exist. See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).                                          |
 
 For an `own` response, the runner reports every header but the marker, with these limits (the CLI applies them again):
 
@@ -303,11 +312,11 @@ For an `own` response, the runner reports every header but the marker, with thes
 - **The body is cut at 64 KB** (65,536 characters), and the response then carries `"truncated": true`.
 - **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a redirect whose `Location` names the account's host is refused, not printed.
 
-The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out the `Date` header, which changes on every call.
+The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and leaves out headers that change on every call. That list holds only `Date` for now, and grows as the platform's per-call headers are confirmed.
 
 The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe, the runner checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet`:
 
-- The options are `scriptId` and `deploymentId` (the host's `_sl` ids) and `urlParams`, which carries the probe name (`probe`) and the parameters as one JSON string (`params`). `requestSuitelet` rejects a `params` option (`UNKNOWN_PARAM`) and `external: true`, gives only a generic `UNEXPECTED_ERROR` for a script that does not exist, and costs 10 governance units.
+- The options are `scriptId` and `deploymentId` (the host's `_sl` ids) and `urlParams`, which carries the probe name (`probe`) and the parameters as one JSON string (`params`). `requestSuitelet` rejects a `params` option and `external: true` (see the errors above), and costs 10 governance units.
 - The host's deployment is never available without login (`isonline` F), its audience is only the runner's role (`allroles` F), and its status is released. Oracle says `requestSuitelet` works only for authenticated users in trusted contexts, so no anonymous URL is needed.
 - Like the runner, the host refuses outside a sandbox, runs only the Suitelet probes generated into its own fixed list, checks the parameters again against the declarations, and reports a throw as `THROWS: <name>: <message>`.
 - A failed or unexpected answer from the host is reported, never thrown: `run` stops with `The runner reported an error:` and what the runner saw (the error the call threw, the HTTP status and the start of the body, an answer without the `X-SSV-Mode` header, a `wrapped` body that is not JSON, or the host's own refusal). See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).
@@ -364,7 +373,7 @@ Every setting is a `SUITESCRIPT_VERIFY_` key. They layer from the committed `ver
 
 ### `doctor` says "Deploy first"
 
-The self-check got no answer and this project's generated SDF folder holds no deployed runner: nothing is deployed yet, or the runner is deployed from another checkout (a fresh git worktree has no generated `src/`). Before the first deploy the token request itself fails, since the role holds no permission until a deploy writes them. Dry-run `deploy`, then the person runs `deploy --approved`, and run `doctor` again. If the runner was deployed elsewhere, the reason in parentheses says why it did not answer.
+The self-check got no answer and this project's generated SDF folder holds no deployed runner: nothing is deployed yet, or the runner is deployed from another checkout (a fresh git worktree has no generated `src/`). Before the first deploy the call fails, and `doctor` reports Deploy first. Dry-run `deploy`, then the person runs `deploy --approved`, and run `doctor` again. If the runner was deployed elsewhere, the reason in parentheses says why it did not answer.
 
 ### `doctor` says "Redeploy"
 

@@ -26,6 +26,30 @@ const template = (name: string) =>
 const q = (value: string) => JSON.stringify(value);
 
 /**
+ * The runner role's permissions: the minimum the runner needs to be called
+ * with a token. A deploy writes exactly these, replacing any added by hand.
+ */
+const rolePermissions: [permkey: string, level: string][] = [
+  ["ADMI_LOGIN_OAUTH2", "FULL"],
+  ["ADMI_RESTWEBSERVICES", "FULL"],
+];
+
+/** The generated role object; its name comes from the runner id and fits the platform's 40 characters. */
+const roleObject = (roleId: string, runnerId: string) =>
+  template("sdf/role.xml")
+    .replaceAll("%%ROLE_ID%%", roleId)
+    .replaceAll("%%NAME%%", `ssv runner role ${runnerId}`)
+    .replace(
+      "%%PERMISSIONS%%",
+      rolePermissions
+        .map(
+          ([permkey, level]) =>
+            `    <permission>\n      <permkey>${permkey}</permkey>\n      <permlevel>${level}</permlevel>\n    </permission>\n`,
+        )
+        .join(""),
+    );
+
+/**
  * A script's source (the runner or a script host) with its dependency list
  * generated from the probe slugs. `declared` lists probes the script hands to
  * a host: their names and parameters only, never their code.
@@ -69,7 +93,9 @@ export function generateScript(
  * `deployed: false` both deployments are switched off (cleanup). A runner
  * generated here under another id, or by 1.x (`_runner`) under any id, is
  * removed so it is not deployed again; `replacedRunners` names them, since each
- * may still be deployed in the sandbox.
+ * may still be deployed in the sandbox. The runner's role is written too, the
+ * same in deploy and cleanup (cleanup leaves it alone); a role object written
+ * here under another id is removed so it is not deployed again.
  */
 export function buildSdfProject(
   {
@@ -113,6 +139,8 @@ export function buildSdfProject(
       ) {
         replacedRunners.push(runner);
       }
+    } else if (/^customrole_.*\.xml$/.test(file) && file !== `${roleId}.xml`) {
+      rmSync(join(src, "Objects", file));
     }
   }
   writeFileSync(join(sdfDir, "package.json"), template("sdf/package.json"));
@@ -120,9 +148,10 @@ export function buildSdfProject(
     join(sdfDir, "suitecloud.config.js"),
     template("sdf/suitecloud.config.js"),
   );
+  writeFileSync(join(src, "manifest.xml"), template("sdf/manifest.xml"));
   writeFileSync(
-    join(src, "manifest.xml"),
-    template("sdf/manifest.xml").replaceAll("%%ROLE_ID%%", roleId),
+    join(src, "Objects", `${roleId}.xml`),
+    roleObject(roleId, runnerId),
   );
   writeFileSync(
     join(src, "deploy.xml"),

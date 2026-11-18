@@ -227,6 +227,18 @@ export function differingPaths(
   );
 }
 
+/** A JSON value with every object's keys sorted, as an expectation is written. */
+export const sortKeys = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(sortKeys)
+    : isRecord(value)
+      ? Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, sortKeys(value[key])]),
+        )
+      : value;
+
 /** The differing paths as one phrase, naming at most ten. */
 export const listDifferences = (paths: string[]) =>
   paths.length > 10

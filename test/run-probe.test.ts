@@ -547,6 +547,47 @@ describe("run", () => {
     assert.equal(call?.body, JSON.stringify({ probe: "one" }));
   });
 
+  it("prints and drafts the output with every object's keys sorted, so it can be copied as the expectation", () => {
+    const p = project();
+    withProbe(p);
+    p.script(
+      ...ok({
+        // Parsed from text, so Biome's sorted-keys action cannot sort it.
+        result: JSON.parse(
+          '{"z": 1, "a": [{"y": 1, "b": 2}], "m": {"k": 1, "c": 2}}',
+        ),
+        version: "2026.2",
+      }),
+    );
+    const result = cli(p, ["run", "one", "--draft"]);
+    assert.equal(result.status, 0, result.all);
+    const sorted = `{
+  "a": [
+    {
+      "b": 2,
+      "y": 1
+    }
+  ],
+  "m": {
+    "c": 2,
+    "k": 1
+  },
+  "z": 1
+}`;
+    assert.ok(
+      result.stdout.includes(`"result": ${sorted.replaceAll("\n", "\n  ")}`),
+      result.stdout,
+    );
+    assert.ok(
+      result.stdout.indexOf('"result"') < result.stdout.indexOf('"version"'),
+    );
+    const draft = readFileSync(
+      join(p.dir, "docs", "verification", "results", "one.md"),
+      "utf8",
+    );
+    assert.ok(draft.includes(sorted), draft);
+  });
+
   it("calls the default runner, and the one named by SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const p = project();
     withProbe(p);

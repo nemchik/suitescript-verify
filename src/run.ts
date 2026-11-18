@@ -18,6 +18,7 @@ import {
   type Probe,
   read,
   readExpect,
+  sortKeys,
   tagProblems,
 } from "./probes.ts";
 import {
@@ -244,7 +245,8 @@ export async function runProbe(
   // A Suitelet probe that wrote its own response is reported as that response, not a result.
   const own = "response" in body ? ownResponse(body.response) : undefined;
   if (own) body.response = own;
-  console.log(JSON.stringify(body, null, 2));
+  // Sorted as an expectation is written, so the printed output can be copied as one.
+  console.log(JSON.stringify(sortKeys(body), null, 2));
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
@@ -272,7 +274,7 @@ export async function runProbe(
       const draft = scrub(
         resultsDraft({
           date: new Date().toISOString().slice(0, 10),
-          output: own ?? body.result,
+          output: sortKeys(own ?? body.result),
           probe,
           probeFile,
           resultsDir,

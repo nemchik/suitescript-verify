@@ -130,8 +130,9 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     return { calls, response };
   };
 
-  /** What the deploy baked in: the package version and this host's probes. */
+  /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
   const deployment = {
+    build: "%%BUILD%%",
     packageVersion: "%%PACKAGE_VERSION%%",
     probes: "%%PROBES%%".split(",").filter(Boolean),
   };

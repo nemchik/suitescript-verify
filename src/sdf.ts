@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readdirSync,
@@ -112,6 +113,67 @@ const hostedEntries = (hosted: Pick<Probe, "params" | "slug">[]) =>
     .map((probe) => `[${q(probe.slug)}, ${JSON.stringify(probe.params)}],`)
     .join(" ");
 
+/** The placeholder the build fingerprint replaces, left in place while it is computed. */
+const BUILD = "%%BUILD%%";
+
+/**
+ * The generated runner and Suitelet host, and their build fingerprint: the
+ * first 12 hex digits of a sha256 of both scripts (with the placeholder still
+ * in place) and every probe's source. The package version stays the same
+ * between builds, so the fingerprint is what tells the self-check that the
+ * templates or the probes changed since the deploy.
+ */
+function generateScripts(
+  probes: Probe[],
+  { probesDir, runnerId }: Pick<Config, "probesDir" | "runnerId">,
+): { build: string; host: string; runner: string } {
+  const restlets = probes.filter(isRestlet);
+  const suitelets = probes.filter(isSuitelet);
+  const host = scriptNames(runnerId, "sl");
+  const slugList = (list: Probe[]) =>
+    list
+      .map((probe) => probe.slug)
+      .sort()
+      .join(",");
+  const runner = generateScript(restlets, template("runner.template.js"))
+    .replace("/*SUITELET_ENTRIES*/", hostedEntries(suitelets))
+    .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)
+    .replace("%%SUITELET_DEPLOY_ID%%", host.deployId)
+    .replace("%%PACKAGE_VERSION%%", packageVersion)
+    .replace(
+      "%%PERMISSIONS%%",
+      rolePermissions(probes)
+        .map(({ permkey }) => permkey)
+        .join(","),
+    )
+    .replace("%%PROBES%%", slugList(probes));
+  const hostScript = generateScript(suitelets, template("suitelet.template.js"))
+    .replace("%%PACKAGE_VERSION%%", packageVersion)
+    .replace("%%PROBES%%", slugList(suitelets));
+  const hash = createHash("sha256").update(runner).update(hostScript);
+  for (const { slug } of probes) {
+    hash.update(`\0${slug}\0${read(join(probesDir, `${slug}.js`))}`);
+  }
+  const build = hash.digest("hex").slice(0, 12);
+  return {
+    build,
+    host: hostScript.replace(BUILD, build),
+    runner: runner.replace(BUILD, build),
+  };
+}
+
+/** The build fingerprint a deploy from this project would bake into the runner and the host. */
+export function buildFingerprint({
+  extraTags,
+  probesDir,
+  runnerId,
+}: Pick<Config, "extraTags" | "probesDir" | "runnerId">): string {
+  return generateScripts(listProbes(probesDir, extraTags).filter(isRunnable), {
+    probesDir,
+    runnerId,
+  }).build;
+}
+
 /** A script's SDF object: its ids, file, name and role, and whether it is deployed. */
 const scriptObject = (
   name: string,
@@ -208,35 +270,10 @@ export function buildSdfProject(
     join(src, "Objects", `${host.scriptId}.xml`),
     scriptObject("sdf/suitelet.xml", host, roleId, deployed),
   );
-  const restlets = probes.filter(isRestlet);
-  const suitelets = probes.filter(isSuitelet);
+  const scripts = generateScripts(probes, { probesDir, runnerId });
   const files: string[] = [names.file, host.file];
-  const slugList = (list: Probe[]) =>
-    list
-      .map((probe) => probe.slug)
-      .sort()
-      .join(",");
-  writeFileSync(
-    join(folder, names.file),
-    generateScript(restlets, template("runner.template.js"))
-      .replace("/*SUITELET_ENTRIES*/", hostedEntries(suitelets))
-      .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)
-      .replace("%%SUITELET_DEPLOY_ID%%", host.deployId)
-      .replace("%%PACKAGE_VERSION%%", packageVersion)
-      .replace(
-        "%%PERMISSIONS%%",
-        rolePermissions(probes)
-          .map(({ permkey }) => permkey)
-          .join(","),
-      )
-      .replace("%%PROBES%%", slugList(probes)),
-  );
-  writeFileSync(
-    join(folder, host.file),
-    generateScript(suitelets, template("suitelet.template.js"))
-      .replace("%%PACKAGE_VERSION%%", packageVersion)
-      .replace("%%PROBES%%", slugList(suitelets)),
-  );
+  writeFileSync(join(folder, names.file), scripts.runner);
+  writeFileSync(join(folder, host.file), scripts.host);
   for (const slug of probes.map((probe) => probe.slug)) {
     writeFileSync(
       join(folder, "probes", `${slug}.js`),
@@ -247,7 +284,7 @@ export function buildSdfProject(
   return {
     files,
     replacedRunners,
-    slugs: restlets.map((probe) => probe.slug),
-    suiteletSlugs: suitelets.map((probe) => probe.slug),
+    slugs: probes.filter(isRestlet).map((probe) => probe.slug),
+    suiteletSlugs: probes.filter(isSuitelet).map((probe) => probe.slug),
   };
 }

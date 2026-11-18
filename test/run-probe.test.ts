@@ -1906,11 +1906,14 @@ describe("the self-check", () => {
       return JSON.parse(written.join(""));
     };
 
-    it("answers the reserved self-check with the sandbox check, the package version and its probes, running none", () => {
+    it("answers the reserved self-check with the sandbox check, the package version, the build and its probes, running none", () => {
       const p = project();
       const host = deployed(p).suitelet.join("");
+      const { build } = ask(host, sandbox).selfCheck;
+      assert.match(build, /^[0-9a-f]{12}$/);
       assert.deepEqual(ask(host, sandbox), {
         selfCheck: {
+          build,
           packageVersion,
           probes: ["page"],
           sandbox: true,
@@ -1959,8 +1962,14 @@ describe("the self-check", () => {
           return hostAnswer;
         },
       );
-      assert.deepEqual(runner.post({ selfCheck: true }), {
+      const answer = runner.post({ selfCheck: true }) as {
+        selfCheck: { build: string };
+      };
+      const { build } = answer.selfCheck;
+      assert.match(build, /^[0-9a-f]{12}$/);
+      assert.deepEqual(answer, {
         selfCheck: {
+          build,
           host: { packageVersion, probes: ["page"], sandbox: true },
           packageVersion,
           permissions: {
@@ -1982,6 +1991,37 @@ describe("the self-check", () => {
         },
       ]);
       assert.equal(ran(), 0);
+    });
+
+    it("bakes one build fingerprint into the runner and the host, which changes when a probe's code changes", () => {
+      const p = project();
+      const build = () => {
+        const call = calls(p);
+        const { runner } = runnerFrom(
+          call.runner.join(""),
+          runtimeFor(full),
+          () => hostAnswer,
+        );
+        const fromRunner = (
+          runner.post({ selfCheck: true }).selfCheck as { build: string }
+        ).build;
+        const fromHost = /build: "([0-9a-f]{12})"/.exec(
+          call.suitelet.join(""),
+        )?.[1];
+        assert.equal(fromHost, fromRunner);
+        return fromRunner;
+      };
+      deployed(p);
+      const first = build();
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      assert.equal(build(), first);
+      write(
+        p.dir,
+        "verification/probes/page.js",
+        probeSource("@scriptType Suitelet").replace("ok: true", "ok: false"),
+      );
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      assert.notEqual(build(), first);
     });
 
     it("reports a permission the role lacks, or cannot read, as it found it", () => {
@@ -2091,8 +2131,17 @@ describe("doctor calls the self-check", () => {
     assert.equal(cli(p, ["deploy"]).status, 0);
     return p;
   };
-  const healthy = () => ({
-    host: { packageVersion, probes: ["page"], sandbox: true },
+  /** The build fingerprint the last deploy baked into the runner. */
+  const builtAs = (p: Project) =>
+    /build: "([0-9a-f]{12})"/.exec(calls(p).runner.join(""))?.[1] ?? "";
+  const healthy = (p: Project) => ({
+    build: builtAs(p),
+    host: {
+      build: builtAs(p),
+      packageVersion,
+      probes: ["page"],
+      sandbox: true,
+    },
     packageVersion,
     permissions: {
       ADMI_LOGIN_OAUTH2: "FULL",
@@ -2122,7 +2171,7 @@ describe("doctor calls the self-check", () => {
 
   it("passes when the deployed version, probes, host and role match the project, asking through the token flow run uses", () => {
     const p = deployedProject();
-    p.script(...ok({ selfCheck: healthy() }));
+    p.script(...ok({ selfCheck: healthy(p) }));
     const out = doctor(p);
     assert.match(lineOf(out), /^ok {3}/);
     const [token, call] = p.requests();
@@ -2157,11 +2206,33 @@ describe("doctor calls the self-check", () => {
       ],
     ] as const) {
       const p = deployedProject();
-      p.script(...ok({ selfCheck: { ...healthy(), ...change } }));
+      p.script(...ok({ selfCheck: { ...healthy(p), ...change } }));
       const out = doctor(p);
       assert.match(lineOf(out), /^FAIL /, String(why));
       assert.match(out, /Maintainer's own step: Redeploy/, String(why));
       assert.match(out, why);
+    }
+  });
+
+  it("says to redeploy a runner or host of the same version built from other templates or probes, naming the builds", () => {
+    for (const change of [
+      (answer: ReturnType<typeof healthy>) => {
+        answer.build = "abcdef0abcde";
+      },
+      (answer: ReturnType<typeof healthy>) => {
+        answer.host.build = "abcdef0abcde";
+      },
+    ]) {
+      const p = deployedProject();
+      const answer = healthy(p);
+      change(answer);
+      p.script(...ok({ selfCheck: answer }));
+      const out = doctor(p);
+      assert.match(lineOf(out), /^FAIL /);
+      assert.match(out, /Maintainer's own step: Redeploy/);
+      assert.match(out, /abcdef0abcde/);
+      assert.ok(out.includes(builtAs(p)), out);
+      assert.match(out, new RegExp(packageVersion.replaceAll(".", ".")));
     }
   });
 
@@ -2175,7 +2246,7 @@ describe("doctor calls the self-check", () => {
 
   it("reports drift when the role lacks a permission the deploy wrote", () => {
     const p = deployedProject();
-    const answer = healthy();
+    const answer = healthy(p);
     answer.permissions.LIST_EMPLOYEE = "NONE";
     p.script(...ok({ selfCheck: answer }));
     const out = doctor(p);
@@ -2187,7 +2258,7 @@ describe("doctor calls the self-check", () => {
 
   it("fails when the runner runs as another role or outside a sandbox", () => {
     const p = deployedProject();
-    p.script(...ok({ selfCheck: { ...healthy(), role: "customrole_other" } }));
+    p.script(...ok({ selfCheck: { ...healthy(p), role: "customrole_other" } }));
     assert.match(doctor(p), /customrole_other/);
     p.script(...ok({ selfCheck: { sandbox: false } }));
     const out = doctor(p);
@@ -2200,7 +2271,7 @@ describe("doctor calls the self-check", () => {
     p.script(
       ...ok({
         selfCheck: {
-          ...healthy(),
+          ...healthy(p),
           host: { error: "failed at 7654321-sb2.app.netsuite.com" },
         },
       }),
@@ -2212,7 +2283,7 @@ describe("doctor calls the self-check", () => {
 
   it("calls nothing before the runner's settings pass", () => {
     const p = deployedProject();
-    p.script(...ok({ selfCheck: healthy() }));
+    p.script(...ok({ selfCheck: healthy(p) }));
     const out = cli(p, ["doctor"], {
       SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: join(p.dir, "missing.pem"),
     }).all;

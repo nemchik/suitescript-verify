@@ -12,12 +12,12 @@ import {
   permissionLevels,
 } from "./probes.ts";
 import { callRunner, knownIds } from "./run.ts";
-import { rolePermissions } from "./sdf.ts";
+import { buildFingerprint, rolePermissions } from "./sdf.ts";
 import { type Creds, requireSandbox } from "./shared.ts";
 import { packageVersion } from "./version.ts";
 
 const name =
-  "The deployed runner passes its self-check (version, probes, Suitelet host and role)";
+  "The deployed runner passes its self-check (version, build, probes, Suitelet host and role)";
 
 /** Permission levels from least to most; anything else (an unreadable permission) ranks below NONE. */
 const levels = ["NONE", ...permissionLevels];
@@ -27,6 +27,7 @@ const redeployHow =
   "Run suitescript-verify deploy, then ask the user to run it with --approved in their own terminal, and run doctor again.";
 
 interface HostAnswer {
+  build?: string;
   error?: string;
   packageVersion?: string;
   probes?: string[];
@@ -34,6 +35,7 @@ interface HostAnswer {
 }
 
 interface SelfCheck {
+  build?: string;
   host?: HostAnswer;
   packageVersion?: string;
   permissions?: Record<string, string>;
@@ -66,14 +68,15 @@ function redeployReasons(
   check: SelfCheck,
   probes: Probe[],
   wanted: ProbePermission[],
+  build: string,
 ): string[] {
   const slugs = probes.map((probe) => probe.slug);
   const suitelets = probes.filter(isSuitelet).map((probe) => probe.slug);
   const permkeys = wanted.map(({ permkey }) => permkey);
   const reasons: string[] = [];
-  if (check.packageVersion !== packageVersion) {
+  if (check.packageVersion !== packageVersion || check.build !== build) {
     reasons.push(
-      `the deployed runner is version ${check.packageVersion}, this project has ${packageVersion}`,
+      `the deployed runner is version ${check.packageVersion} build ${check.build}, this project has version ${packageVersion} build ${build}`,
     );
   }
   if (!same(check.probes, slugs)) {
@@ -94,10 +97,11 @@ function redeployReasons(
   } else if (
     host.sandbox !== true ||
     host.packageVersion !== packageVersion ||
+    host.build !== build ||
     !same(host.probes, suitelets)
   ) {
     reasons.push(
-      `the Suitelet host is version ${host.packageVersion} with probes ${list(host.probes)}, this project has ${packageVersion} with ${list(suitelets)}`,
+      `the Suitelet host is version ${host.packageVersion} build ${host.build} with probes ${list(host.probes)}, this project has version ${packageVersion} build ${build} with ${list(suitelets)}`,
     );
   }
   return reasons;
@@ -170,7 +174,12 @@ export async function selfCheckStep(config: Config): Promise<Check> {
     isRunnable,
   );
   const wanted = rolePermissions(probes);
-  const reasons = redeployReasons(check, probes, wanted);
+  const reasons = redeployReasons(
+    check,
+    probes,
+    wanted,
+    buildFingerprint(config),
+  );
   if (reasons.length > 0) {
     return fail(`Redeploy: ${reasons.join("; ")}. ${redeployHow}`);
   }

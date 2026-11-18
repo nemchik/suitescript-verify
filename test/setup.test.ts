@@ -72,7 +72,8 @@ const deployed = JSON.stringify({
  * The fake SuiteCloud CLI: logs only the command it was given (never an
  * argument, which can hold the account) and acts as the real one does for
  * setup: account:setup:ci stores a CI login and the project's default auth id,
- * and a real deploy makes the fake NetSuite's runner answer its self-check.
+ * and a real deploy makes the fake NetSuite's runner answer its self-check,
+ * with the build fingerprint the deploy baked into the generated runner.
  */
 const fakeCli = (log: string, script: string) => `const fs = require("node:fs");
 const os = require("node:os");
@@ -90,7 +91,18 @@ if (command === "account:setup:ci") {
   fs.writeFileSync("project.json", JSON.stringify({ defaultAuthId: "suitescript-verify" }));
 }
 if (command === "project:deploy" && !process.argv.includes("--dryrun")) {
-  fs.writeFileSync(${JSON.stringify(script)}, ${JSON.stringify(deployed)});
+  const cabinet = path.join("src", "FileCabinet");
+  const runner = fs
+    .readdirSync(cabinet, { recursive: true })
+    .map(String)
+    .find((file) => file.endsWith("restlet.js"));
+  const build = /build: "([0-9a-f]{12})"/.exec(
+    fs.readFileSync(path.join(cabinet, runner), "utf8"),
+  )[1];
+  const answer = JSON.parse(${JSON.stringify(deployed)});
+  answer.restlet.body.selfCheck.build = build;
+  answer.restlet.body.selfCheck.host.build = build;
+  fs.writeFileSync(${JSON.stringify(script)}, JSON.stringify(answer));
 }`;
 
 /** A folder on the PATH with a `java` that prints `version`, as the real one does; on Windows, the machine's own Java. */

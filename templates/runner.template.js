@@ -192,8 +192,13 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     };
   };
 
-  /** What the deploy baked in: the package version, every probe and each permission written to the role. */
+  /**
+   * What the deploy baked in: the package version, the build fingerprint (a
+   * hash of the generated scripts and probes, shared with the host), every
+   * probe and each permission written to the role.
+   */
   const deployment = {
+    build: "%%BUILD%%",
     packageVersion: "%%PACKAGE_VERSION%%",
     permissions: "%%PERMISSIONS%%".split(",").filter(Boolean),
     probes: "%%PROBES%%".split(",").filter(Boolean),
@@ -257,6 +262,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     }
     return {
       selfCheck: {
+        build: deployment.build,
         host: hostSelfCheck(),
         packageVersion: deployment.packageVersion,
         permissions,

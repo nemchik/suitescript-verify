@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v1.1.0...suitescript-verify-v2.0.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* script ids are renamed (customscript_<id>_rl and customscript_<id>_sl), the deploy writes the runner's role (default customrole_<runner id>, which may need new M2M certificates and mappings), the SDF login's role needs Bulk Manage Roles, doctor fails until the runner is deployed, and own probes' expect.json files need rewriting. See "Upgrading from 1.x" in the README.
+
+### Features
+
+* Suitelet probes, type-suffix naming and a deploy-owned role (2.0) ([#46](https://github.com/nemchik/suitescript-verify/issues/46)) ([2583148](https://github.com/nemchik/suitescript-verify/commit/258314870f2125ffda0f2ab52b71daf643c410dc))
+
 ## [1.1.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v1.0.0...suitescript-verify-v1.1.0) (2026-11-14)
 
 

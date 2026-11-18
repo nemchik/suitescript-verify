@@ -14,11 +14,11 @@
  * A probe gets `run(params, context)`: a request view of only the method and
  * its declared parameters, and a response that records every call and replays
  * nothing until the probe returns. The host then answers in one mode, named by
- * the X-SSV-Mode header, which a probe cannot set:
+ * the X-SSV-Mode header, which a probe cannot set (nor any X-SSV- header):
  * - `wrapped`: the probe made no response calls (or threw), and its returned
  *   value (or `THROWS: …`) is written as JSON;
  * - `own`: the probe made response calls and returned nothing, and they are
- *   replayed in order; a replayed call that fails switches the marker back to
+ *   replayed in order, with its headers also listed in X-SSV-Headers; a replayed call that fails switches the marker back to
  *   `wrapped` and writes `THROWS: …`;
  * - both is refused, as wrapped JSON.
  *
@@ -30,6 +30,15 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     /*PROBE_ENTRIES*/
   ]);
   const MARKER = "X-SSV-Mode";
+  /**
+   * The host's report of the probe's own headers, for an `own` answer: the
+   * runner's `ClientResponse.headers` keeps one value per name (the first), so
+   * a second `addHeader` value or a probe's `Set-Cookie` behind the platform's
+   * session cookie never reaches it otherwise.
+   */
+  const HEADERS = "X-SSV-Headers";
+  /** Every `X-SSV-` header is the host's; a probe cannot set one. */
+  const RESERVED = /^x-ssv-/i;
 
   const answer = (response, body) => {
     response.setHeader({ name: MARKER, value: "wrapped" });
@@ -72,8 +81,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
 
   /**
    * A response that records every write, page, file and header call for
-   * replay, and answers header reads from what it recorded. It refuses the
-   * marker header, so a probe cannot choose how the runner reads its answer,
+   * replay, and answers header reads from what it recorded. It refuses every
+   * X-SSV- header, so a probe cannot choose how the runner reads its answer,
    * and refuses a redirect: `requestSuitelet` follows it, so the runner would
    * see the page it leads to (often the login page), never the redirect.
    */
@@ -85,8 +94,10 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     };
     const header = (method, replace) => (options) => {
       const name = headerName(options);
-      if (name.toLowerCase() === MARKER.toLowerCase()) {
-        const e = new Error(`the probe cannot set the ${MARKER} header`);
+      if (RESERVED.test(name)) {
+        const e = new Error(
+          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}) are the host's`,
+        );
         e.name = "SSV_RESERVED_HEADER";
         throw e;
       }
@@ -127,7 +138,15 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       writeLine: record("writeLine"),
       writePage: record("writePage"),
     });
-    return { calls, response };
+    /** The recorded headers as the response ends up with them, in order: `{ name, value }` per value. */
+    const list = () =>
+      Object.keys(headers).flatMap((name) =>
+        [].concat(headers[name]).map((value) => ({
+          name,
+          value: String(value),
+        })),
+      );
+    return { calls, headers: list, response };
   };
 
   /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
@@ -192,6 +211,18 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         });
       if (recorded.calls.length === 0) return wrapped(result);
       response.setHeader({ name: MARKER, value: "own" });
+      try {
+        // JSON with every non-ASCII character escaped, so it is a valid header value.
+        response.setHeader({
+          name: HEADERS,
+          value: JSON.stringify(recorded.headers()).replace(
+            /[\u007f-\uffff]/g,
+            (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+          ),
+        });
+      } catch (_) {
+        // The runner falls back to the platform's headers alone.
+      }
       try {
         for (const [method, options] of recorded.calls) {
           response[method](options);

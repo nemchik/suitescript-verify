@@ -9,7 +9,8 @@
  * runner knows each Suitelet probe's name and parameters, never its code.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
- * status, headers (one lower-cased key per name, cookies redacted but `sv_*`)
+ * status, headers (one lower-cased key per name, with the probe's own headers
+ * from the host's X-SSV-Headers laid over them, cookies redacted but `sv_*`)
  * and body (NetSuite's trailing HTML comments dropped, cut at 64 KB).
  *
  * It refuses to run unless the account is a sandbox. A body with `selfCheck`
@@ -35,6 +36,10 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   const cut = (text) => String(text).slice(0, 500);
   /** The host's header naming how to read its answer: `wrapped` JSON, or the probe's `own` response. */
   const MARKER = "x-ssv-mode";
+  /** The host's list of the probe's own headers, for an `own` answer. */
+  const HEADERS = "x-ssv-headers";
+  /** The host's own headers, never reported. */
+  const RESERVED = /^x-ssv-/;
   const BODY_LIMIT = 64 * 1024;
 
   /** One Set-Cookie value with its value and attributes redacted, unless the cookie is the probe's own (`sv_*`). */
@@ -53,21 +58,58 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           .join(", ");
 
   /**
+   * The probe's own headers as the host reports them in X-SSV-Headers: a JSON
+   * list of `{ name, value }`, in order. A missing or malformed report gives
+   * none, and the platform's headers are reported alone rather than failing
+   * the probe.
+   */
+  const recordedHeaders = (headers) => {
+    const key = Object.keys(headers).find(
+      (name) => name.toLowerCase() === HEADERS,
+    );
+    if (key === undefined) return [];
+    let list;
+    try {
+      list = JSON.parse([].concat(headers[key])[0]);
+    } catch (_) {
+      return [];
+    }
+    return Array.isArray(list)
+      ? list.filter((entry) => entry && typeof entry.name === "string")
+      : [];
+  };
+
+  /**
    * One lower-cased key per header name: `ClientResponse.headers` holds several
-   * casings of each. Cookies are redacted, then repeated values dropped; a name
-   * left with one value keeps it, and one with several keeps them as a list.
+   * casings of each, but only the first value of each name, so the probe's own
+   * headers from the host's report are laid over it. A name the probe set
+   * replaces the platform's values, except `set-cookie`, where the platform's
+   * cookies come first and the probe's follow. No X-SSV- header is reported.
+   * Cookies are redacted, then repeated values dropped; a name left with one
+   * value keeps it, and one with several keeps them as a list.
    */
   const collapseHeaders = (headers) => {
     const values = {};
+    const add = (lower, value) => {
+      const list = values[lower] || [];
+      const shown = lower === "set-cookie" ? redactSetCookie(value) : value;
+      if (!list.includes(shown)) list.push(shown);
+      values[lower] = list;
+    };
     for (const key of Object.keys(headers)) {
       const lower = key.toLowerCase();
-      if (lower === MARKER) continue;
-      const list = values[lower] || [];
-      for (const value of [].concat(headers[key])) {
-        const shown = lower === "set-cookie" ? redactSetCookie(value) : value;
-        if (!list.includes(shown)) list.push(shown);
+      if (RESERVED.test(lower)) continue;
+      for (const value of [].concat(headers[key])) add(lower, value);
+    }
+    const replaced = {};
+    for (const { name, value } of recordedHeaders(headers)) {
+      const lower = name.toLowerCase();
+      if (RESERVED.test(lower)) continue;
+      if (lower !== "set-cookie" && !replaced[lower]) {
+        values[lower] = [];
+        replaced[lower] = true;
       }
-      values[lower] = list;
+      add(lower, String(value));
     }
     const shown = {};
     for (const key of Object.keys(values)) {

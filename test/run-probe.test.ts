@@ -1217,7 +1217,7 @@ describe("Suitelet probes", () => {
       assert.equal(response.status, 200);
     });
 
-    it("drops NetSuite's HTML trailer and collapses header case variants even from a runner that did not", () => {
+    it("drops NetSuite's HTML trailer, the host's X-SSV- headers and header case variants even from a runner that did not", () => {
       const p = project();
       withProbe(p, suitelet, "page");
       p.script(
@@ -1228,6 +1228,8 @@ describe("Suitelet probes", () => {
             "content-type": "text/html; charset=UTF-8",
             "Set-Cookie": "JSESSIONID=abc123; Path=/",
             "set-cookie": "JSESSIONID=abc123; Path=/",
+            "X-SSV-Headers": "[]",
+            "x-ssv-mode": "own",
           },
           status: 200,
         }),
@@ -1529,6 +1531,93 @@ describe("Suitelet probes", () => {
       );
     });
 
+    describe("overlays the probe's headers the host reports in X-SSV-Headers", () => {
+      /** The runner's report of an own answer whose platform headers keep one value per name, as ClientResponse.headers does. */
+      const reported = (
+        platform: Record<string, unknown>,
+        reserved?: string,
+      ) => {
+        const p = project();
+        const runner = runnerFor(p, () => ({
+          body: "hi",
+          code: 200,
+          headers: {
+            ...platform,
+            "X-SSV-Mode": "own",
+            ...(reserved === undefined ? {} : { "X-SSV-Headers": reserved }),
+          },
+        }));
+        const { response } = runner.post({
+          params: { id: "1" },
+          probe: "page",
+        });
+        return (response as { headers: Record<string, unknown> }).headers;
+      };
+      const json = (list: { name: string; value: string }[]) =>
+        JSON.stringify(list);
+
+      it("keeps both values of two addHeader calls of one name", () => {
+        assert.deepEqual(
+          reported(
+            { "Content-Type": "text/plain", "X-Sv-Multi": "a" },
+            json([
+              { name: "X-Sv-Multi", value: "a" },
+              { name: "X-Sv-Multi", value: "b" },
+            ]),
+          ),
+          { "content-type": "text/plain", "x-sv-multi": ["a", "b"] },
+        );
+      });
+
+      it("keeps the platform's cookies first, then the probe's, redacting all but sv_*", () => {
+        assert.deepEqual(
+          reported(
+            { "Set-Cookie": "JSESSIONID=abc123; Path=/" },
+            json([
+              { name: "Set-Cookie", value: "sv_flavor=sweet; Path=/" },
+              { name: "Set-Cookie", value: "other=x; Path=/" },
+            ]),
+          ),
+          {
+            "set-cookie": [
+              "JSESSIONID=<redacted>",
+              "sv_flavor=sweet; Path=/",
+              "other=<redacted>",
+            ],
+          },
+        );
+        assert.deepEqual(
+          reported(
+            { "set-cookie": "JSESSIONID=abc123; Path=/" },
+            json([{ name: "Set-Cookie", value: "sv_single=one; Path=/" }]),
+          ),
+          {
+            "set-cookie": ["JSESSIONID=<redacted>", "sv_single=one; Path=/"],
+          },
+        );
+      });
+
+      it("replaces the platform's value of a name the probe set", () => {
+        assert.deepEqual(
+          reported(
+            { "Content-Type": "text/html;charset=utf-8" },
+            json([{ name: "content-type", value: "text/plain" }]),
+          ),
+          { "content-type": "text/plain" },
+        );
+      });
+
+      it("falls back to the platform's headers when the report is missing or not valid JSON, and never reports it", () => {
+        for (const reserved of [undefined, "not json", '{"name":"x"}']) {
+          assert.deepEqual(
+            reported({ "X-Sv-Multi": "a" }, reserved),
+            { "x-sv-multi": "a" },
+            String(reserved),
+          );
+        }
+      });
+    });
+
     it("strips NetSuite's trailing comments from an own HTML body before cutting it, and nothing else", () => {
       const p = project();
       const answers = [
@@ -1706,6 +1795,16 @@ describe("Suitelet probes", () => {
       assert.deepEqual(marker, ["own"]);
       assert.deepEqual(seen, [
         ["setHeader", { name: "X-SSV-Mode", value: "own" }],
+        [
+          "setHeader",
+          {
+            name: "X-SSV-Headers",
+            value: JSON.stringify([
+              { name: "X-Probe", value: "1" },
+              { name: "Set-Cookie", value: "sv_a=1; Path=/" },
+            ]),
+          },
+        ],
         ["setHeader", { name: "X-Probe", value: "1" }],
         ["write", { output: "<p>hello</p>" }],
         ["addHeader", { name: "Set-Cookie", value: "sv_a=1; Path=/" }],
@@ -1713,6 +1812,28 @@ describe("Suitelet probes", () => {
       assert.deepEqual(reads, [
         "1",
         { "Set-Cookie": "sv_a=1; Path=/", "X-Probe": "1" },
+      ]);
+    });
+
+    it("reports the probe's headers in X-SSV-Headers, setHeader replacing a name's values and addHeader appending", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.addHeader({ name: "X-Sv-Multi", value: "a" });
+        response.addHeader({ name: "x-sv-multi", value: "b" });
+        response.addHeader({ name: "X-Sv-Once", value: "old" });
+        response.setHeader({ name: "X-SV-ONCE", value: "new" });
+        response.setHeader({ name: "Set-Cookie", value: "sv_single=one" });
+        response.write({ output: "hi" });
+      })(sandbox);
+      const { seen } = serve(host, { params, probe: "page" });
+      const reported = seen
+        .map(([, arg]) => arg as { name?: string; value?: string })
+        .find(({ name }) => name === "X-SSV-Headers");
+      assert.deepEqual(JSON.parse(reported?.value ?? ""), [
+        { name: "X-Sv-Multi", value: "a" },
+        { name: "X-Sv-Multi", value: "b" },
+        { name: "X-Sv-Once", value: "new" },
+        { name: "Set-Cookie", value: "sv_single=one" },
       ]);
     });
 
@@ -1795,32 +1916,36 @@ describe("Suitelet probes", () => {
       assert.equal(/X-Probe|sendRedirect/.test(JSON.stringify(seen)), false);
     });
 
-    it("refuses a probe's attempt to set the marker, whatever the case or call", () => {
-      const p = project();
-      let caught = 0;
-      let swallow = false;
-      const host = hostFor(p, (_params, { response }) => {
-        for (const method of ["setHeader", "addHeader"] as const) {
-          try {
-            response[method]({ name: " x-ssv-MODE", value: "wrapped" });
-          } catch (e) {
-            caught++;
-            if (!swallow) throw e;
+    it("refuses a probe's attempt to set the marker or any X-SSV- header, whatever the case or call", () => {
+      for (const reserved of [" x-ssv-MODE", "X-SSV-Headers", "x-ssv-other"]) {
+        const p = project();
+        let caught = 0;
+        let swallow = false;
+        const host = hostFor(p, (_params, { response }) => {
+          for (const method of ["setHeader", "addHeader"] as const) {
+            try {
+              response[method]({ name: reserved, value: "wrapped" });
+            } catch (e) {
+              caught++;
+              if (!swallow) throw e;
+            }
           }
-        }
-        response.write({ output: '{"result":"forged"}' });
-      })(sandbox);
-      assert.match(
-        call(host, { params, probe: "page" }).result,
-        /^THROWS: .*X-SSV-Mode/,
-      );
-      swallow = true;
-      const { marker, seen } = serve(host, { params, probe: "page" });
-      assert.deepEqual(marker, ["own"]);
-      assert.deepEqual(seen.slice(1), [
-        ["write", { output: '{"result":"forged"}' }],
-      ]);
-      assert.equal(caught, 3);
+          response.write({ output: '{"result":"forged"}' });
+        })(sandbox);
+        assert.match(
+          call(host, { params, probe: "page" }).result,
+          /^THROWS: SSV_RESERVED_HEADER: .*X-SSV-/,
+          reserved,
+        );
+        swallow = true;
+        const { marker, seen } = serve(host, { params, probe: "page" });
+        assert.deepEqual(marker, ["own"]);
+        assert.deepEqual(seen.slice(1), [
+          ["setHeader", { name: "X-SSV-Headers", value: "[]" }],
+          ["write", { output: '{"result":"forged"}' }],
+        ]);
+        assert.equal(caught, 3);
+      }
     });
 
     it("shows the probe only the method and its declared parameters, never headers, cookies or body", () => {

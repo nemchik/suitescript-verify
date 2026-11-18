@@ -26,8 +26,8 @@ export const CHANGING_HEADERS = [
   "x-n-operationid",
 ];
 
-/** The host's marker header, never reported. */
-const MARKER = "x-ssv-mode";
+/** The host's own headers (its X-SSV-Mode marker and X-SSV-Headers list), never reported. */
+const RESERVED = /^x-ssv-/;
 
 const redactCookie = (cookie: string) => {
   const name = (cookie.split("=")[0] ?? "").trim();
@@ -45,7 +45,8 @@ const redactSetCookie = (value: unknown): unknown =>
 
 /**
  * One lowercase key per header name, as the runner reports them:
- * `ClientResponse.headers` holds several casings of each. Cookies are
+ * `ClientResponse.headers` holds several casings of each (the runner has
+ * already laid the probe's own headers from X-SSV-Headers over them). Cookies are
  * redacted, then repeated values dropped; a name left with one value keeps it,
  * and one with several keeps them as a list.
  */
@@ -53,7 +54,7 @@ const collapseHeaders = (given: object): Record<string, unknown> => {
   const values = new Map<string, unknown[]>();
   for (const [key, header] of Object.entries(given)) {
     const name = key.toLowerCase();
-    if (name === MARKER) continue;
+    if (RESERVED.test(name)) continue;
     const list = values.get(name) ?? [];
     for (const value of ([] as unknown[]).concat(header)) {
       const shown = name === "set-cookie" ? redactSetCookie(value) : value;

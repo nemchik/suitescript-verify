@@ -48,6 +48,11 @@ const list = (items: readonly string[] | undefined) =>
   `[${(items ?? []).join(", ")}]`;
 const same = (a: readonly string[] | undefined, b: readonly string[]) =>
   list([...(a ?? [])].sort()) === list([...b].sort());
+/** A deployed version and build, as `doctor` names them; a build older than the fingerprint has none. */
+const built = (version: string | undefined, build: string | undefined) =>
+  build === undefined
+    ? `version ${version} with no build fingerprint (deployed by an older build)`
+    : `version ${version} build ${build}`;
 
 /** Whether the generated SDF project here last switched the runner on: a local trace of a deploy. */
 function deployedHere(config: Config): boolean {
@@ -76,7 +81,7 @@ function redeployReasons(
   const reasons: string[] = [];
   if (check.packageVersion !== packageVersion || check.build !== build) {
     reasons.push(
-      `the deployed runner is version ${check.packageVersion} build ${check.build}, this project has version ${packageVersion} build ${build}`,
+      `the deployed runner is ${built(check.packageVersion, check.build)}, this project has version ${packageVersion} build ${build}`,
     );
   }
   if (!same(check.probes, slugs)) {
@@ -101,7 +106,7 @@ function redeployReasons(
     !same(host.probes, suitelets)
   ) {
     reasons.push(
-      `the Suitelet host is version ${host.packageVersion} build ${host.build} with probes ${list(host.probes)}, this project has version ${packageVersion} build ${build} with ${list(suitelets)}`,
+      `the Suitelet host is ${built(host.packageVersion, host.build)} with probes ${list(host.probes)}, this project has version ${packageVersion} build ${build} with ${list(suitelets)}`,
     );
   }
   return reasons;

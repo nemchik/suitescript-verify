@@ -2388,6 +2388,24 @@ describe("doctor calls the self-check", () => {
     }
   });
 
+  it("says a runner or host deployed before build fingerprints has none, never `build undefined`", () => {
+    const p = deployedProject();
+    const { build: _runner, ...answer } = healthy(p);
+    const { build: _host, ...host } = answer.host;
+    p.script(...ok({ selfCheck: { ...answer, host } }));
+    const out = doctor(p);
+    assert.match(out, /Maintainer's own step: Redeploy/);
+    assert.doesNotMatch(out, /undefined/);
+    assert.match(
+      out,
+      /the deployed runner is version \S+ with no build fingerprint \(deployed by an older build\)/,
+    );
+    assert.match(
+      out,
+      /the Suitelet host is version \S+ with no build fingerprint \(deployed by an older build\)/,
+    );
+  });
+
   it("says to redeploy a runner that has no self-check", () => {
     const p = deployedProject();
     p.script(...ok({ error: "unknown probe", known: ["one"] }));

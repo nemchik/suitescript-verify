@@ -1199,9 +1199,13 @@ describe("Suitelet probes", () => {
           body: "y".repeat(70 * 1024),
           headers: {
             Authorization: "Bearer abc123",
+            "Content-Disposition":
+              "attachment; filename=\"abc123.pdf\"; filename*=UTF-8''abc123.pdf",
             "Content-Type": "text/html",
             "Set-Cookie": ["JSESSIONID=abc123; Path=/", "sv_flavor=sweet"],
             "X-Api-Token": "abc123",
+            "X-Hmac": "abc123",
+            "X-Signature": "abc123",
           },
           status: 200,
         }),
@@ -1212,9 +1216,13 @@ describe("Suitelet probes", () => {
       const { response } = JSON.parse(result.stdout);
       assert.deepEqual(response.headers, {
         authorization: "<redacted>",
+        "content-disposition":
+          "attachment; filename=<redacted>; filename*=<redacted>",
         "content-type": "text/html",
         "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
         "x-api-token": "<redacted>",
+        "x-hmac": "<redacted>",
+        "x-signature": "<redacted>",
       });
       assert.equal(response.body, "y".repeat(64 * 1024));
       assert.equal(response.truncated, true);
@@ -1566,6 +1574,12 @@ describe("Suitelet probes", () => {
           "X-Password",
           "X-Auth-User",
           "X-API-KEY",
+          "X-Signature",
+          "X-Hmac",
+          "X-Credentials",
+          "X-Nonce",
+          "X-Jwt",
+          "X-Csrf",
         ];
         assert.deepEqual(
           reported(
@@ -1575,6 +1589,26 @@ describe("Suitelet probes", () => {
           Object.fromEntries(
             names.map((name) => [name.toLowerCase(), "<redacted>"]),
           ),
+        );
+      });
+
+      it("redacts the file name in a Content-Disposition, whether the platform or the probe set it", () => {
+        assert.deepEqual(
+          reported({
+            "Content-Disposition": 'attachment; filename="Acme invoice.pdf"',
+          }),
+          { "content-disposition": "attachment; filename=<redacted>" },
+        );
+        assert.deepEqual(
+          reported({}, [
+            {
+              name: "Content-Disposition",
+              value: "attachment; filename*=UTF-8''Acme%20invoice.pdf; size=3",
+            },
+          ]),
+          {
+            "content-disposition": "attachment; filename*=<redacted>; size=3",
+          },
         );
       });
 

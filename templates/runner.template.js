@@ -11,7 +11,7 @@
  * holding the probe's result, or the probe's `own` response, reported as its
  * status, headers (one lower-cased key per name: the platform's content
  * headers and every header the probe set, from the host's X-SSV-Headers, with
- * cookies but `sv_*` and credential-like values redacted)
+ * cookies but `sv_*`, credential-like values and file names redacted)
  * and body (NetSuite's trailing HTML comments dropped, cut at 64 KB).
  *
  * It refuses to run unless the account is a sandbox. A body with `selfCheck`
@@ -53,7 +53,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   ];
   /** A probe header whose name looks like a credential: its value is reported as `<redacted>`. */
   const CREDENTIAL =
-    /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key/;
+    /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key|csrf|sign|hmac|credential|nonce|jwt/;
 
   /** One Set-Cookie value with its value and attributes redacted, unless the cookie is the probe's own (`sv_*`). */
   const redactCookie = (cookie) => {
@@ -69,13 +69,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           .split(/,(?=\s*[^;,=\s]+=)/)
           .map((cookie) => redactCookie(cookie.trim()))
           .join(", ");
-  /** A header value as it may be committed: cookies but `sv_*` and credential-like values redacted (by lower-cased name). */
+  /** A Content-Disposition with its `filename` and `filename*` values redacted: a file name can name a record or a customer. */
+  const redactFileName = (value) =>
+    String(value).replace(
+      /(\bfilename\*?\s*=\s*)("(?:[^"\\]|\\.)*"|[^;]*)/gi,
+      "$1<redacted>",
+    );
+  /** A header value as it may be committed: cookies but `sv_*`, credential-like values and file names redacted (by lower-cased name). */
   const safeValue = (lower, value) =>
     lower === "set-cookie"
       ? redactSetCookie(value)
-      : CREDENTIAL.test(lower)
-        ? "<redacted>"
-        : value;
+      : lower === "content-disposition"
+        ? redactFileName(value)
+        : CREDENTIAL.test(lower)
+          ? "<redacted>"
+          : value;
 
   /**
    * The probe's own headers as the host reports them in X-SSV-Headers: a JSON

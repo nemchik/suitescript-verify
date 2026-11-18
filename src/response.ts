@@ -24,7 +24,7 @@ const RESERVED = /^x-ssv-/;
 
 /** A header whose name looks like a credential: its value is reported as `<redacted>` (by lowercase name). */
 const CREDENTIAL =
-  /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key/;
+  /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key|csrf|sign|hmac|credential|nonce|jwt/;
 
 const redactCookie = (cookie: string) => {
   const name = (cookie.split("=")[0] ?? "").trim();
@@ -40,13 +40,22 @@ const redactSetCookie = (value: unknown): unknown =>
         .map((cookie) => redactCookie(cookie.trim()))
         .join(", ");
 
-/** A header value as it may be committed: cookies but `sv_*` and credential-like values redacted. */
+/** A Content-Disposition with its `filename` and `filename*` values redacted: a file name can name a record or a customer. */
+const redactFileName = (value: unknown) =>
+  String(value).replace(
+    /(\bfilename\*?\s*=\s*)("(?:[^"\\]|\\.)*"|[^;]*)/gi,
+    "$1<redacted>",
+  );
+
+/** A header value as it may be committed: cookies but `sv_*`, credential-like values and file names redacted. */
 const safeValue = (name: string, value: unknown): unknown =>
   name === "set-cookie"
     ? redactSetCookie(value)
-    : CREDENTIAL.test(name)
-      ? "<redacted>"
-      : value;
+    : name === "content-disposition"
+      ? redactFileName(value)
+      : CREDENTIAL.test(name)
+        ? "<redacted>"
+        : value;
 
 /**
  * One lowercase key per header name, as the runner reports them:

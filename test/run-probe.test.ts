@@ -1191,15 +1191,17 @@ describe("Suitelet probes", () => {
     const own = (response: Record<string, unknown>) =>
       ok({ probe: "page", response, scriptType: "Suitelet", version: "1" });
 
-    it("reports status, headers and body, with session cookies redacted and the body cut at 64 KB", () => {
+    it("reports status, headers and body, with cookies but sv_* and credential-like headers redacted and the body cut at 64 KB, even from a runner that did not", () => {
       const p = project();
       withProbe(p, suitelet, "page");
       p.script(
         ...own({
           body: "y".repeat(70 * 1024),
           headers: {
+            Authorization: "Bearer abc123",
             "Content-Type": "text/html",
             "Set-Cookie": ["JSESSIONID=abc123; Path=/", "sv_flavor=sweet"],
+            "X-Api-Token": "abc123",
           },
           status: 200,
         }),
@@ -1209,8 +1211,10 @@ describe("Suitelet probes", () => {
       assert.equal(result.all.includes("abc123"), false);
       const { response } = JSON.parse(result.stdout);
       assert.deepEqual(response.headers, {
+        authorization: "<redacted>",
         "content-type": "text/html",
         "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
+        "x-api-token": "<redacted>",
       });
       assert.equal(response.body, "y".repeat(64 * 1024));
       assert.equal(response.truncated, true);
@@ -1261,7 +1265,7 @@ describe("Suitelet probes", () => {
       assert.match(result.stderr, /Refusing to print or record the output/);
     });
 
-    it("compares status, body and headers with the expected output, ignoring the headers that change on every call", () => {
+    it("compares status, body and every reported header with the expected output, by lower-cased name", () => {
       const p = project();
       withProbe(p, suitelet, "page");
       write(
@@ -1269,20 +1273,13 @@ describe("Suitelet probes", () => {
         "verification/probes/page.expect.json",
         JSON.stringify({
           body: "<p>hi</p>",
-          headers: { date: "Mon, 16 Nov 2026 09:00:00 GMT", "X-Probe": "1" },
+          headers: { "Content-Type": "text/html", "X-Probe": "1" },
           status: 200,
         }),
       );
       const answer = {
         body: "<p>hi</p>",
-        headers: {
-          "Akamai-GRN": "0.2",
-          Date: "Tue, 17 Nov 2026 10:00:00 GMT",
-          Via: "1.1 edge002",
-          "X-Cache": "TCP_MISS from edge-b",
-          "X-N-OperationId": "op-2",
-          "X-Probe": "1",
-        },
+        headers: { "content-type": "text/html", "x-probe": "1" },
         status: 200,
       };
       p.script(...own(answer));
@@ -1292,9 +1289,9 @@ describe("Suitelet probes", () => {
       for (const changed of [
         { ...answer, body: "<p>bye</p>" },
         { ...answer, status: 302 },
-        { ...answer, headers: { ...answer.headers, "X-Probe": "2" } },
-        { ...answer, headers: { "X-Other": "1", "X-Probe": "1" } },
         { ...answer, headers: { ...answer.headers, "x-probe": "2" } },
+        { ...answer, headers: { ...answer.headers, "x-other": "1" } },
+        { ...answer, headers: { ...answer.headers, date: "today" } },
       ]) {
         p.script(...own(changed));
         const drift = cli(p, ["run", "page"]);
@@ -1448,7 +1445,7 @@ describe("Suitelet probes", () => {
       ]);
     });
 
-    it("reports a probe's own response as status, headers and body, redacting cookies and cutting the body", () => {
+    it("reports a probe's own response as status, headers and body, cutting the body", () => {
       const p = project();
       const big = "x".repeat(70 * 1024);
       const answers = [
@@ -1456,24 +1453,12 @@ describe("Suitelet probes", () => {
           body: "<p>hi</p>",
           code: 201,
           headers: {
-            Date: "Tue, 17 Nov 2026 10:00:00 GMT",
-            "Set-Cookie": [
-              "JSESSIONID=abc123; Path=/; Secure",
-              "sv_flavor=sweet; Path=/",
-            ],
-            "X-Probe": "1",
+            "Content-Type": "text/html",
+            "X-SSV-Headers": JSON.stringify([{ name: "X-Probe", value: "1" }]),
             "X-SSV-Mode": "own",
           },
         },
-        {
-          body: big,
-          code: 200,
-          headers: {
-            "set-cookie":
-              "NS_ROUTING=r1; Expires=Wed, 18 Nov 2026 07:28:00 GMT, sv_a=1; Path=/",
-            "x-ssv-mode": ["own"],
-          },
-        },
+        { body: big, code: 200, headers: { "x-ssv-mode": ["own"] } },
       ];
       let next = 0;
       const runner = runnerFor(p, () => answers[next++]);
@@ -1481,11 +1466,7 @@ describe("Suitelet probes", () => {
         probe: "page",
         response: {
           body: "<p>hi</p>",
-          headers: {
-            date: "Tue, 17 Nov 2026 10:00:00 GMT",
-            "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet; Path=/"],
-            "x-probe": "1",
-          },
+          headers: { "content-type": "text/html", "x-probe": "1" },
           status: 201,
         },
         scriptType: "Suitelet",
@@ -1494,48 +1475,17 @@ describe("Suitelet probes", () => {
       const cut = runner.post({ params: { id: "1" }, probe: "page" });
       assert.deepEqual(cut.response, {
         body: "x".repeat(64 * 1024),
-        headers: { "set-cookie": "NS_ROUTING=<redacted>, sv_a=1; Path=/" },
+        headers: {},
         status: 200,
         truncated: true,
       });
     });
 
-    it("reports one lower-cased key per header, keeping distinct values of its case variants", () => {
-      const p = project();
-      const runner = runnerFor(p, () => ({
-        body: "hi",
-        code: 200,
-        headers: {
-          "Akamai-GRN": "0.1",
-          "Akamai-Grn": "0.1",
-          "akamai-grn": "0.1",
-          "Set-Cookie": "JSESSIONID=a; Path=/",
-          "set-cookie": "JSESSIONID=b; Path=/",
-          "X-Probe": "1",
-          "X-SSV-Mode": "own",
-          "x-probe": "2",
-          "x-ssv-mode": "own",
-        },
-      }));
-      assert.deepEqual(
-        runner.post({ params: { id: "1" }, probe: "page" }).response,
-        {
-          body: "hi",
-          headers: {
-            "akamai-grn": "0.1",
-            "set-cookie": "JSESSIONID=<redacted>",
-            "x-probe": ["1", "2"],
-          },
-          status: 200,
-        },
-      );
-    });
-
-    describe("overlays the probe's headers the host reports in X-SSV-Headers", () => {
-      /** The runner's report of an own answer whose platform headers keep one value per name, as ClientResponse.headers does. */
+    describe("reports the headers that are safe to commit", () => {
+      /** The headers the runner reports for an own answer with these platform headers and, if given, this X-SSV-Headers report. */
       const reported = (
         platform: Record<string, unknown>,
-        reserved?: string,
+        probe?: { name: string; value: string }[] | string,
       ) => {
         const p = project();
         const runner = runnerFor(p, () => ({
@@ -1544,7 +1494,12 @@ describe("Suitelet probes", () => {
           headers: {
             ...platform,
             "X-SSV-Mode": "own",
-            ...(reserved === undefined ? {} : { "X-SSV-Headers": reserved }),
+            ...(probe === undefined
+              ? {}
+              : {
+                  "X-SSV-Headers":
+                    typeof probe === "string" ? probe : JSON.stringify(probe),
+                }),
           },
         }));
         const { response } = runner.post({
@@ -1553,66 +1508,104 @@ describe("Suitelet probes", () => {
         });
         return (response as { headers: Record<string, unknown> }).headers;
       };
-      const json = (list: { name: string; value: string }[]) =>
-        JSON.stringify(list);
+      /** Platform headers of one call: per-call ids, routing, a session cookie and an unknown NetSuite header. */
+      const perCall = {
+        "Akamai-GRN": "0.1",
+        Date: "Tue, 17 Nov 2026 10:00:00 GMT",
+        "Set-Cookie": "JSESSIONID=abc123; Path=/; Secure",
+        Via: "1.1 edge002",
+        "X-Cache": "TCP_MISS from edge-b",
+        "X-N-OperationId": "op-2",
+        "x-ns-foo": "bar",
+      };
 
-      it("keeps both values of two addHeader calls of one name", () => {
+      it("keeps only the platform headers that describe the content, one lower-cased key each", () => {
         assert.deepEqual(
           reported(
-            { "Content-Type": "text/plain", "X-Sv-Multi": "a" },
-            json([
-              { name: "X-Sv-Multi", value: "a" },
-              { name: "X-Sv-Multi", value: "b" },
-            ]),
+            {
+              ...perCall,
+              "Cache-Control": "no-store",
+              "Content-Disposition": "inline",
+              "Content-Encoding": "gzip",
+              "Content-Language": "en",
+              "Content-Type": "text/plain",
+              "content-language": "fr",
+              "content-type": "text/plain",
+            },
+            [],
           ),
-          { "content-type": "text/plain", "x-sv-multi": ["a", "b"] },
+          {
+            "cache-control": "no-store",
+            "content-disposition": "inline",
+            "content-encoding": "gzip",
+            "content-language": ["en", "fr"],
+            "content-type": "text/plain",
+          },
         );
       });
 
-      it("keeps the platform's cookies first, then the probe's, redacting all but sv_*", () => {
+      it("keeps every header the probe set, with both values of two addHeader calls of one name", () => {
         assert.deepEqual(
-          reported(
-            { "Set-Cookie": "JSESSIONID=abc123; Path=/" },
-            json([
-              { name: "Set-Cookie", value: "sv_flavor=sweet; Path=/" },
-              { name: "Set-Cookie", value: "other=x; Path=/" },
-            ]),
-          ),
-          {
-            "set-cookie": [
-              "JSESSIONID=<redacted>",
-              "sv_flavor=sweet; Path=/",
-              "other=<redacted>",
-            ],
-          },
+          reported({ ...perCall, "X-Sv-Multi": "a" }, [
+            { name: "X-Sv-Multi", value: "a" },
+            { name: "X-Sv-Multi", value: "b" },
+            { name: "Date", value: "today" },
+          ]),
+          { date: "today", "x-sv-multi": ["a", "b"] },
         );
+      });
+
+      it("redacts the value of a probe header whose name looks like a credential", () => {
+        const names = [
+          "Authorization",
+          "Proxy-Authorization",
+          "Cookie",
+          "X-Api-Token",
+          "X-Client-Secret",
+          "X-Session-Id",
+          "X-Password",
+          "X-Auth-User",
+          "X-API-KEY",
+        ];
         assert.deepEqual(
           reported(
-            { "set-cookie": "JSESSIONID=abc123; Path=/" },
-            json([{ name: "Set-Cookie", value: "sv_single=one; Path=/" }]),
+            {},
+            names.map((name) => ({ name, value: "s3cr3t" })),
           ),
-          {
-            "set-cookie": ["JSESSIONID=<redacted>", "sv_single=one; Path=/"],
-          },
+          Object.fromEntries(
+            names.map((name) => [name.toLowerCase(), "<redacted>"]),
+          ),
+        );
+      });
+
+      it("reports only the probe's cookies, redacting all but sv_*", () => {
+        assert.deepEqual(
+          reported(perCall, [
+            { name: "Set-Cookie", value: "sv_flavor=sweet; Path=/" },
+            { name: "Set-Cookie", value: "other=x; Path=/" },
+          ]),
+          { "set-cookie": ["sv_flavor=sweet; Path=/", "other=<redacted>"] },
         );
       });
 
       it("replaces the platform's value of a name the probe set", () => {
         assert.deepEqual(
-          reported(
-            { "Content-Type": "text/html;charset=utf-8" },
-            json([{ name: "content-type", value: "text/plain" }]),
-          ),
+          reported({ "Content-Type": "text/html;charset=utf-8" }, [
+            { name: "content-type", value: "text/plain" },
+          ]),
           { "content-type": "text/plain" },
         );
       });
 
-      it("falls back to the platform's headers when the report is missing or not valid JSON, and never reports it", () => {
-        for (const reserved of [undefined, "not json", '{"name":"x"}']) {
+      it("falls back to the allowlisted platform headers when the report is missing or not valid JSON, and never reports it", () => {
+        for (const probe of [undefined, "not json", '{"name":"x"}']) {
           assert.deepEqual(
-            reported({ "X-Sv-Multi": "a" }, reserved),
-            { "x-sv-multi": "a" },
-            String(reserved),
+            reported(
+              { ...perCall, "Content-Type": "text/plain", "X-Sv-Multi": "a" },
+              probe,
+            ),
+            { "content-type": "text/plain" },
+            String(probe),
           );
         }
       });

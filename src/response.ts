@@ -2,10 +2,12 @@ import { isDeepStrictEqual } from "node:util";
 
 /**
  * The response a Suitelet probe wrote itself, as the runner reports it. The
- * runner already collapses header casings, redacts cookies, drops NetSuite's
+ * runner already keeps only the headers safe to commit, collapses their
+ * casings, redacts cookies and credential-like values, drops NetSuite's
  * HTML trailer and cuts the body inside the account; the CLI applies the same
- * rules again, so a runner from another version cannot leak a session cookie
- * or the trailer's account and email, or flood the output.
+ * value rules again, so a runner from another version cannot leak a session
+ * cookie, a credential-like header or the trailer's account and email, or
+ * flood the output.
  */
 export interface OwnResponse {
   body: string;
@@ -17,17 +19,12 @@ export interface OwnResponse {
 /** The longest body reported, in characters. */
 export const BODY_LIMIT = 64 * 1024;
 
-/** Headers that change on every call, left out when comparing with an expected output (by lowercase name). */
-export const CHANGING_HEADERS = [
-  "akamai-grn",
-  "date",
-  "via",
-  "x-cache",
-  "x-n-operationid",
-];
-
 /** The host's own headers (its X-SSV-Mode marker and X-SSV-Headers list), never reported. */
 const RESERVED = /^x-ssv-/;
+
+/** A header whose name looks like a credential: its value is reported as `<redacted>` (by lowercase name). */
+const CREDENTIAL =
+  /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key/;
 
 const redactCookie = (cookie: string) => {
   const name = (cookie.split("=")[0] ?? "").trim();
@@ -43,11 +40,21 @@ const redactSetCookie = (value: unknown): unknown =>
         .map((cookie) => redactCookie(cookie.trim()))
         .join(", ");
 
+/** A header value as it may be committed: cookies but `sv_*` and credential-like values redacted. */
+const safeValue = (name: string, value: unknown): unknown =>
+  name === "set-cookie"
+    ? redactSetCookie(value)
+    : CREDENTIAL.test(name)
+      ? "<redacted>"
+      : value;
+
 /**
  * One lowercase key per header name, as the runner reports them:
  * `ClientResponse.headers` holds several casings of each (the runner has
- * already laid the probe's own headers from X-SSV-Headers over them). Cookies are
- * redacted, then repeated values dropped; a name left with one value keeps it,
+ * already kept only the platform's content headers and laid the probe's own
+ * headers from X-SSV-Headers over them). The CLI cannot tell the two apart, so
+ * it applies the rules that hold for both: values are made safe, then
+ * repeated ones dropped; a name left with one value keeps it,
  * and one with several keeps them as a list.
  */
 const collapseHeaders = (given: object): Record<string, unknown> => {
@@ -57,7 +64,7 @@ const collapseHeaders = (given: object): Record<string, unknown> => {
     if (RESERVED.test(name)) continue;
     const list = values.get(name) ?? [];
     for (const value of ([] as unknown[]).concat(header)) {
-      const shown = name === "set-cookie" ? redactSetCookie(value) : value;
+      const shown = safeValue(name, value);
       if (!list.some((known) => isDeepStrictEqual(known, shown))) {
         list.push(shown);
       }
@@ -88,7 +95,7 @@ const stripTrailer = (headers: Record<string, unknown>, text: string) => {
   return stripped ? body.trimEnd() : text;
 };
 
-/** The probe's own response with one key per header, cookies redacted, NetSuite's HTML trailer dropped and the body cut, or undefined when the value is not one. */
+/** The probe's own response with one key per header, cookies and credential-like values redacted, NetSuite's HTML trailer dropped and the body cut, or undefined when the value is not one. */
 export function ownResponse(value: unknown): OwnResponse | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -131,15 +138,13 @@ export function withOwnResponse(text: string): string {
   return own ? JSON.stringify({ ...answer, response: own }) : text;
 }
 
-/** What an expected output is compared on: header names lowercased, and the headers that change on every call left out. */
+/** What an expected output is compared on: header names lowercased. */
 const comparable = (value: unknown) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const { headers, ...rest } = value as Record<string, unknown>;
   const kept = Object.entries(
     headers && typeof headers === "object" ? headers : {},
-  )
-    .map(([name, header]) => [name.toLowerCase(), header] as const)
-    .filter(([name]) => !CHANGING_HEADERS.includes(name));
+  ).map(([name, header]) => [name.toLowerCase(), header] as const);
   return { ...rest, headers: Object.fromEntries(kept) };
 };
 

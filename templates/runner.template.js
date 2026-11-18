@@ -9,8 +9,9 @@
  * runner knows each Suitelet probe's name and parameters, never its code.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
- * status, headers (one lower-cased key per name, with the probe's own headers
- * from the host's X-SSV-Headers laid over them, cookies redacted but `sv_*`)
+ * status, headers (one lower-cased key per name: the platform's content
+ * headers and every header the probe set, from the host's X-SSV-Headers, with
+ * cookies but `sv_*` and credential-like values redacted)
  * and body (NetSuite's trailing HTML comments dropped, cut at 64 KB).
  *
  * It refuses to run unless the account is a sandbox. A body with `selfCheck`
@@ -42,6 +43,18 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   const RESERVED = /^x-ssv-/;
   const BODY_LIMIT = 64 * 1024;
 
+  /** The platform's headers that describe the content and stay the same from call to call: the only ones reported. */
+  const PLATFORM_HEADERS = [
+    "cache-control",
+    "content-disposition",
+    "content-encoding",
+    "content-language",
+    "content-type",
+  ];
+  /** A probe header whose name looks like a credential: its value is reported as `<redacted>`. */
+  const CREDENTIAL =
+    /^(authorization|proxy-authorization|cookie)$|token|secret|session|password|auth|key/;
+
   /** One Set-Cookie value with its value and attributes redacted, unless the cookie is the probe's own (`sv_*`). */
   const redactCookie = (cookie) => {
     const text = String(cookie);
@@ -56,12 +69,19 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           .split(/,(?=\s*[^;,=\s]+=)/)
           .map((cookie) => redactCookie(cookie.trim()))
           .join(", ");
+  /** A header value as it may be committed: cookies but `sv_*` and credential-like values redacted (by lower-cased name). */
+  const safeValue = (lower, value) =>
+    lower === "set-cookie"
+      ? redactSetCookie(value)
+      : CREDENTIAL.test(lower)
+        ? "<redacted>"
+        : value;
 
   /**
    * The probe's own headers as the host reports them in X-SSV-Headers: a JSON
    * list of `{ name, value }`, in order. A missing or malformed report gives
-   * none, and the platform's headers are reported alone rather than failing
-   * the probe.
+   * none, and only the platform's allowlisted headers are reported rather
+   * than failing the probe.
    */
   const recordedHeaders = (headers) => {
     const key = Object.keys(headers).find(
@@ -80,32 +100,32 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   };
 
   /**
-   * One lower-cased key per header name: `ClientResponse.headers` holds several
-   * casings of each, but only the first value of each name, so the probe's own
-   * headers from the host's report are laid over it. A name the probe set
-   * replaces the platform's values, except `set-cookie`, where the platform's
-   * cookies come first and the probe's follow. No X-SSV- header is reported.
-   * Cookies are redacted, then repeated values dropped; a name left with one
-   * value keeps it, and one with several keeps them as a list.
+   * One lower-cased key per header name, holding only what is safe to commit.
+   * From the platform (`ClientResponse.headers`, several casings of each name)
+   * only the allowlisted content headers; every other platform header,
+   * cookies included, is dropped. Every header the probe set, from the host's
+   * report, replaces the platform's values of that name. No X-SSV- header is
+   * reported. Values are made safe, then repeated ones dropped; a name left
+   * with one value keeps it, and one with several keeps them as a list.
    */
   const collapseHeaders = (headers) => {
     const values = {};
     const add = (lower, value) => {
       const list = values[lower] || [];
-      const shown = lower === "set-cookie" ? redactSetCookie(value) : value;
+      const shown = safeValue(lower, value);
       if (!list.includes(shown)) list.push(shown);
       values[lower] = list;
     };
     for (const key of Object.keys(headers)) {
       const lower = key.toLowerCase();
-      if (RESERVED.test(lower)) continue;
+      if (!PLATFORM_HEADERS.includes(lower)) continue;
       for (const value of [].concat(headers[key])) add(lower, value);
     }
     const replaced = {};
     for (const { name, value } of recordedHeaders(headers)) {
       const lower = name.toLowerCase();
       if (RESERVED.test(lower)) continue;
-      if (lower !== "set-cookie" && !replaced[lower]) {
+      if (!replaced[lower]) {
         values[lower] = [];
         replaced[lower] = true;
       }
@@ -134,7 +154,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     return stripped ? body.replace(/\s+$/, "") : text;
   };
 
-  /** The probe's own response as the runner reports it: no marker, one key per header, cookies redacted, NetSuite's HTML trailer dropped, the body cut at 64 KB. */
+  /** The probe's own response as the runner reports it: no marker, one key per header, only headers safe to commit, NetSuite's HTML trailer dropped, the body cut at 64 KB. */
   const ownResponse = (status, headers, raw) => {
     const shown = collapseHeaders(headers);
     const text = stripTrailer(shown, raw);

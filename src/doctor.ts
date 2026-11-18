@@ -288,8 +288,18 @@ export function formatChecks(checks: Check[]): string {
   if (failed.length === 0) lines.push("\nAll checks passed.");
   else {
     const own = failed.filter((c) => c.owner === "maintainer").length;
+    const total =
+      failed.length === 1 ? "1 check failed" : `${failed.length} checks failed`;
+    const whose =
+      own === 0
+        ? ""
+        : own > 1
+          ? `; ${own} are the maintainer's own steps: relay each next step`
+          : `; ${failed.length === 1 ? "it" : "1"} is the maintainer's own step: relay its next step`;
     lines.push(
-      `\n${failed.length} check(s) failed.${own > 0 ? ` ${own} are the Maintainer's own: relay each next step to the maintainer and wait. Never accept the license, create credentials or touch an account for them.` : ""}`,
+      own === 0
+        ? `\n${total}.`
+        : `\n${total}${whose} to the maintainer and wait. Never accept the license, create credentials or touch an account for them.`,
     );
   }
   return lines.join("\n");

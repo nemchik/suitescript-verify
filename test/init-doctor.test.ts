@@ -343,6 +343,15 @@ describe("doctor", () => {
       assert.equal(status(result.stdout, name), "FAIL", String(name));
     }
     assert.match(result.stdout, /Maintainer's own/);
+    const failed = steps(result.stdout).filter((l) => l.startsWith("FAIL"));
+    const own = result.stdout.match(/Maintainer's own step:/g) ?? [];
+    assert.ok(own.length > 1 && own.length < failed.length, result.stdout);
+    assert.ok(
+      result.stdout.includes(
+        `\n${failed.length} checks failed; ${own.length} are the maintainer's own steps: relay each next step to the maintainer and wait.`,
+      ),
+      result.stdout,
+    );
   });
 
   it("passes the CLI step when the CLI is installed", () => {

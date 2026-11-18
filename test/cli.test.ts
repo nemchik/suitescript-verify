@@ -121,6 +121,18 @@ describe("help", () => {
     assert.equal(cli([], tmpdir()).stdout, cli(["--help"], tmpdir()).stdout);
   });
 
+  it("prints the package version for version and --version, and lists it", () => {
+    const { version } = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+    ) as { version: string };
+    for (const command of ["version", "--version"]) {
+      const result = cli([command], tmpdir());
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `${version}\n`);
+    }
+    assert.match(cli(["help"], tmpdir()).stdout, /^ {2}version, --version /m);
+  });
+
   it("rejects an unknown command", () => {
     const result = cli(["frobnicate"], tmpdir());
     assert.equal(result.status, 1);

@@ -27,6 +27,7 @@ import {
   suitecloud,
   UsageError,
 } from "./shared.ts";
+import { packageVersion } from "./version.ts";
 
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
@@ -43,6 +44,7 @@ Commands:
   deploy [--approved]                  Dry-run the runner deployment; --approved deploys, from your own terminal
   run <probe> [--param name=value ...] [--draft]              Run one RESTlet or Suitelet probe through the runner; --draft writes a results page
   cleanup [--approved]                 Turn the runner's and Suitelet host's deployments off (dry run without --approved)
+  version, --version                   Print the package version
   help                                 Show this help
 
 Every command takes --dir <path> to move the verification folder (default verification).
@@ -293,6 +295,10 @@ export async function main(args: string[]): Promise<number> {
   try {
     if (command === undefined || command === "help" || command === "--help") {
       console.log(USAGE);
+      return 0;
+    }
+    if (command === "version" || command === "--version") {
+      console.log(packageVersion);
       return 0;
     }
     if (command === "deploy") return await deploy(rest);

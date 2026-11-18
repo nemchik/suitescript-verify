@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -57,28 +57,42 @@ function suitecloudEntry(project: string): string {
   return entry;
 }
 
+/** What the SuiteCloud CLI said, for a hint the CLI can add: the last part of its output is enough. */
+const OUTPUT_KEPT = 64 * 1024;
+
 /**
- * Runs the project's SuiteCloud CLI from the SDF project folder. The package
- * never sets SUITECLOUD_CLI_ACCEPT_LICENSE (ADR 0001): the child gets the
- * parent's environment plus the passkey, nothing about the license.
+ * Runs the project's SuiteCloud CLI from the SDF project folder, showing its
+ * output as it comes and returning its status with the end of that output.
+ * The package never sets SUITECLOUD_CLI_ACCEPT_LICENSE (ADR 0001): the child
+ * gets the parent's environment plus the passkey, nothing about the license.
  */
 export function suitecloud(
   project: string,
   config: Config,
   args: string[],
-): number {
+): Promise<{ output: string; status: number }> {
   const env: NodeJS.ProcessEnv = { ...process.env, ...config.values };
   // Hand the passkey to the CLI for this child process only.
   if (env.SUITESCRIPT_VERIFY_PASSKEY) {
     env.SUITECLOUD_CI_PASSKEY = env.SUITESCRIPT_VERIFY_PASSKEY;
   }
   if (env.SUITECLOUD_CI_PASSKEY) env.SUITECLOUD_CI = "1";
-  const result = spawnSync(
-    process.execPath,
-    [suitecloudEntry(project), ...args],
-    { cwd: config.sdfDir, env, stdio: "inherit" },
-  );
-  return result.status ?? 1;
+  return new Promise((done) => {
+    let output = "";
+    const child = spawn(process.execPath, [suitecloudEntry(project), ...args], {
+      cwd: config.sdfDir,
+      env,
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    const tee = (to: NodeJS.WriteStream) => (chunk: Buffer) => {
+      to.write(chunk);
+      output = (output + chunk.toString("utf8")).slice(-OUTPUT_KEPT);
+    };
+    child.stdout?.on("data", tee(process.stdout));
+    child.stderr?.on("data", tee(process.stderr));
+    child.on("error", () => done({ output, status: 1 }));
+    child.on("close", (code) => done({ output, status: code ?? 1 }));
+  });
 }
 
 /**
@@ -152,8 +166,18 @@ export function requireResultsDir(config: Config): string {
   return config.resultsDir;
 }
 
+/** The runner's and the SDF login's settings for a sandbox account. */
+export interface Creds {
+  account: string;
+  certificateId: string;
+  clientId: string;
+  privateKeyPath: string;
+  sdfCertificateId: string;
+  sdfPrivateKeyPath: string;
+}
+
 /** The runner credentials, or a refusal: every command that reaches the sandbox needs a sandbox account. */
-export function requireSandbox(config: Config) {
+export function requireSandbox(config: Config): Creds {
   const v = config.values;
   const missing = Object.values(names).filter(
     (name) => name !== names.passkey && !v[name],
@@ -177,4 +201,55 @@ export function requireSandbox(config: Config) {
     sdfCertificateId: v[names.sdfCertificateId] ?? "",
     sdfPrivateKeyPath: v[names.sdfPrivateKeyPath] ?? "",
   };
+}
+
+/**
+ * Asks one question at the terminal; null when the terminal closes first, so
+ * a caller can stop instead of waiting forever.
+ */
+export async function ask(question: string): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise<string | null>((resolve) => {
+      rl.once("close", () => resolve(null));
+      rl.question(question).then(resolve, () => resolve(null));
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Asks for a secret at the terminal without echoing it: raw mode, so nothing
+ * typed appears on screen or in a terminal log. Null when the terminal closes
+ * or the person presses Ctrl+C.
+ */
+export function askHidden(question: string): Promise<string | null> {
+  const input = process.stdin;
+  process.stdout.write(question);
+  return new Promise((resolve) => {
+    let value = "";
+    const wasRaw = input.isRaw;
+    const done = (result: string | null) => {
+      input.off("data", onData);
+      input.off("end", onEnd);
+      input.setRawMode?.(wasRaw);
+      input.pause();
+      process.stdout.write("\n");
+      resolve(result);
+    };
+    const onData = (chunk: Buffer | string) => {
+      for (const char of String(chunk)) {
+        if (char === "\r" || char === "\n") return done(value);
+        if (char === "\u0003" || char === "\u0004") return done(null);
+        if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
+        else if (char >= " ") value += char;
+      }
+    };
+    const onEnd = () => done(null);
+    input.setRawMode?.(true);
+    input.on("data", onData);
+    input.once("end", onEnd);
+    input.resume();
+  });
 }

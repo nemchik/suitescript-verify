@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { certificate } from "./certificate.ts";
 import {
@@ -14,7 +15,10 @@ import { envNames } from "./envfile.ts";
 import { init } from "./init.ts";
 import { runProbe } from "./run.ts";
 import { buildSdfProject } from "./sdf.ts";
+import { selfCheckStep } from "./selfcheck.ts";
+import { setup } from "./setup.ts";
 import {
+  ask,
   confirmWrite,
   flagValue,
   positionals,
@@ -23,12 +27,14 @@ import {
   suitecloud,
   UsageError,
 } from "./shared.ts";
+import { packageVersion } from "./version.ts";
 
 export const USAGE = `Usage: suitescript-verify <command> [options]
 
 Commands:
-  init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results)
-  doctor                               Check the setup; each failing step says who does it
+  init [--results-dir <path>]          Scaffold the folders and .env, and print a to-do list; the results folder is yours to choose (suggested: docs/verification/results). At a terminal it offers to continue into setup
+  setup [--keys-dir <path>]            Walk through the whole setup at your own terminal, skipping each step doctor already passes
+  doctor                               Check the setup, then the deployed runner's self-check (reads only); each failing step says who does it
   certificate [--only runner|sdf] [--keys-dir <path>] [--overwrite | --keep]
                                        Generate the key pairs outside the project
   passkey [--overwrite | --keep]       Generate the SuiteCloud passkey into .env.local
@@ -36,8 +42,9 @@ Commands:
                                        Save a setting in .env.local
   setup-ci                             Register the SDF credentials (account:setup:ci)
   deploy [--approved]                  Dry-run the runner deployment; --approved deploys, from your own terminal
-  run <probe> [--param name=value ...] [--draft]              Run one RESTlet probe through the runner; --draft writes a results page
-  cleanup [--approved]                 Turn the runner's deployment off (dry run without --approved)
+  run <probe> [--param name=value ...] [--draft]              Run one RESTlet or Suitelet probe through the runner; --draft writes a results page
+  cleanup [--approved]                 Turn the runner's and Suitelet host's deployments off (dry run without --approved)
+  version, --version                   Print the package version
   help                                 Show this help
 
 Every command takes --dir <path> to move the verification folder (default verification).
@@ -69,9 +76,12 @@ function reporting(args: string[]): Config {
   return config;
 }
 
-function doctor(args: string[]): number {
+async function doctor(args: string[]): Promise<number> {
   const config = reporting(args);
-  const checks = runChecks(process.cwd(), config);
+  const checks = [
+    ...runChecks(process.cwd(), config),
+    await selfCheckStep(config),
+  ];
   console.log(formatChecks(checks));
   return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
 }
@@ -102,8 +112,28 @@ async function initCommand(args: string[]): Promise<number> {
   console.log(
     init(process.cwd(), config, await chooseResultsDir(config, args)),
   );
-  return 0;
+  if (!process.stdin.isTTY) return 0;
+  const answer = await ask(
+    "\nContinue into guided setup now (suitescript-verify setup)? [y/N] ",
+  );
+  return /^y(es)?$/i.test(answer?.trim() ?? "") ? setupCommand(args) : 0;
 }
+
+function setupCommand(args: string[]): Promise<number> {
+  return setup(process.cwd(), args, {
+    configure: () => configure(args, true),
+    deploy: (config) => {
+      prepareDeploy(config);
+      return runSuitecloud(config, ["project:deploy"]);
+    },
+    doctor: () => doctor(args),
+    setupCi: () => setupCi(args),
+  });
+}
+
+/** The generated SDF Objects folder, relative to where the CLI runs. */
+const objectsDir = (config: Config) =>
+  relative(process.cwd(), join(config.sdfDir, "src", "Objects")) || ".";
 
 /**
  * Generates the runner and its SDF project. A runner generated here under
@@ -112,21 +142,30 @@ async function initCommand(args: string[]): Promise<number> {
  */
 function buildRunner(config: Config, deployed: boolean) {
   const built = buildSdfProject(config, { deployed });
-  for (const id of built.replacedRunners) {
+  for (const { id, legacy } of built.replacedRunners) {
     console.warn(
-      `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
+      legacy
+        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}, but first delete customrole_*.xml, customscript_*_rl.xml and customscript_*_sl.xml from ${objectsDir(config)}, or 1.x cannot build the folder. See the README's "Upgrading from 1.x".`
+        : `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
     );
   }
   return built;
 }
 
-async function deploy(args: string[]): Promise<number> {
-  const project = process.cwd();
-  const config = configure(args, true);
+/** Generates the runner with its deployments on and says what a deploy uploads. Sends nothing. */
+function prepareDeploy(config: Config) {
   requireSandbox(config);
-  const { files, slugs } = buildRunner(config, true);
+  const { files, slugs, suiteletSlugs } = buildRunner(config, true);
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
+  console.log(
+    `Probes in the Suitelet host: ${suiteletSlugs.join(", ") || "(none)"}`,
+  );
   console.log(`Files to upload: ${files.join(", ")}`);
+}
+
+async function deploy(args: string[]): Promise<number> {
+  const config = configure(args, true);
+  prepareDeploy(config);
   const approved = args.includes("--approved");
   if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
   else {
@@ -134,29 +173,59 @@ async function deploy(args: string[]): Promise<number> {
       "\nDry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
     );
   }
-  return suitecloud(project, config, [
+  return runSuitecloud(config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),
   ]);
 }
 
 async function cleanup(args: string[]): Promise<number> {
-  const project = process.cwd();
   const config = configure(args, true);
   requireSandbox(config);
   const approved = args.includes("--approved");
   if (approved) {
-    await confirmWrite("CLEANUP", "This turns the runner's deployment off");
+    await confirmWrite(
+      "CLEANUP",
+      "This turns the runner's and the Suitelet host's deployments off",
+    );
   } else {
     console.log(
-      "Dry run only. This turns the runner's deployment off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
+      "Dry run only. This turns the runner's and the Suitelet host's deployments off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
     );
   }
   buildRunner(config, false);
-  return suitecloud(project, config, [
+  return runSuitecloud(config, [
     "project:deploy",
     ...(approved ? [] : ["--dryrun"]),
   ]);
+}
+
+/** The auth id `setup-ci` registers the SDF login under. */
+const AUTH_ID = "suitescript-verify";
+
+/** A fix to print when the SuiteCloud CLI's output shows a failure with a known cause. */
+const SUITECLOUD_HINTS: [RegExp, string][] = [
+  [
+    /authentication ID is already in use/i,
+    `The SuiteCloud CLI already holds the auth id ${AUTH_ID}, registered for another role (or account). Remove it yourself: run npx suitecloud account:manageauth --remove ${AUTH_ID} with SUITECLOUD_CI_PASSKEY set to this project's passkey (SUITESCRIPT_VERIFY_PASSKEY), then run suitescript-verify setup-ci (or setup) again. See "Troubleshooting" in the README.`,
+  ],
+  [
+    /'Bulk Manage Roles' permission/i,
+    "The SDF login's role needs Bulk Manage Roles (or Administrator) to deploy the runner's role, and setup-ci must have registered that role: the deploy runs as the role behind the auth id setup-ci saved. See \"Troubleshooting\" in the README.",
+  ],
+];
+
+/** Runs the SuiteCloud CLI and, when it fails for a known cause, says how to fix it. */
+async function runSuitecloud(config: Config, args: string[]) {
+  const { output, status } = await suitecloud(process.cwd(), config, args);
+  if (status !== 0) {
+    for (const [cause, hint] of SUITECLOUD_HINTS) {
+      if (cause.test(output))
+        console.log(`
+${hint}`);
+    }
+  }
+  return status;
 }
 
 const CI_SETTINGS = [
@@ -176,15 +245,15 @@ const CI_NOTES = [
   "Accept Oracle's SuiteCloud license yourself in the pipeline; this package never does.",
 ].join("\n");
 
-function setupCi(args: string[]): number {
+async function setupCi(args: string[]): Promise<number> {
   const config = configure(args, true);
   const creds = requireSandbox(config);
-  const status = suitecloud(process.cwd(), config, [
+  const status = await runSuitecloud(config, [
     "account:setup:ci",
     "--account",
     creds.account,
     "--authid",
-    "suitescript-verify",
+    AUTH_ID,
     "--certificateid",
     creds.sdfCertificateId,
     "--privatekeypath",
@@ -228,6 +297,10 @@ export async function main(args: string[]): Promise<number> {
       console.log(USAGE);
       return 0;
     }
+    if (command === "version" || command === "--version") {
+      console.log(packageVersion);
+      return 0;
+    }
     if (command === "deploy") return await deploy(rest);
     if (command === "cleanup") return await cleanup(rest);
     if (command === "run") {
@@ -246,8 +319,9 @@ export async function main(args: string[]): Promise<number> {
     }
     if (command === "env") return await envCommand(rest);
     if (command === "setup-ci") return setupCi(rest);
-    if (command === "doctor") return doctor(rest);
+    if (command === "doctor") return await doctor(rest);
     if (command === "init") return await initCommand(rest);
+    if (command === "setup") return await setupCommand(rest);
     throw new UsageError(`Unknown command "${command}".\n\n${USAGE}`);
   } catch (error) {
     if (error instanceof UsageError) {

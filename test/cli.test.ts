@@ -121,6 +121,18 @@ describe("help", () => {
     assert.equal(cli([], tmpdir()).stdout, cli(["--help"], tmpdir()).stdout);
   });
 
+  it("prints the package version for version and --version, and lists it", () => {
+    const { version } = JSON.parse(
+      readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+    ) as { version: string };
+    for (const command of ["version", "--version"]) {
+      const result = cli([command], tmpdir());
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, `${version}\n`);
+    }
+    assert.match(cli(["help"], tmpdir()).stdout, /^ {2}version, --version /m);
+  });
+
   it("rejects an unknown command", () => {
     const result = cli(["frobnicate"], tmpdir());
     assert.equal(result.status, 1);
@@ -305,43 +317,146 @@ describe("SUITESCRIPT_VERIFY_ROLE_ID", () => {
   const roleKey = "SUITESCRIPT_VERIFY_ROLE_ID";
   const sdfFile = (project: string, file: string) =>
     readFileSync(join(project, "verification", "sdf", "src", file), "utf8");
-  const runner = "Objects/customscript_suitescript_verify_runner.xml";
+  const runner = "Objects/customscript_suitescript_verify_rl.xml";
 
-  it("defaults to customrole_suitescript_verify in the manifest and the runner", () => {
+  const role = (project: string, id: string) =>
+    sdfFile(project, `Objects/${id}.xml`);
+  const permissions = (xml: string) =>
+    [
+      ...xml.matchAll(
+        /<permission>\s*<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>\s*<\/permission>/g,
+      ),
+    ].map((match) => `${match[1]} ${match[2]}`);
+
+  it("writes the role as an SDF object with only the token-login and REST permissions, at FULL", () => {
     const project = fakeProject();
     assert.equal(cli(["deploy"], project).status, 0);
+    const xml = role(project, "customrole_suitescript_verify");
+    assert.match(xml, /^<role scriptid="customrole_suitescript_verify">/);
+    assert.match(xml, /<centertype>ACCOUNTCENTER<\/centertype>/);
+    assert.match(xml, /<name>ssv runner role suitescript_verify<\/name>/);
+    // Fields SDF warns about on every deploy are left at their defaults by leaving them out.
+    for (const field of ["coreadminpermissions", "iswebserviceonlyrole"]) {
+      assert.equal(xml.includes(field), false, field);
+    }
+    assert.equal(xml.includes("subsidiaryoption"), false);
+    assert.deepEqual(permissions(xml), [
+      "ADMI_LOGIN_OAUTH2 FULL",
+      "ADMI_RESTWEBSERVICES FULL",
+    ]);
+    assert.equal((xml.match(/<permission>/g) ?? []).length, 2);
+  });
+
+  it("leaves the role out of the manifest's dependencies, since the project holds it", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    const manifest = sdfFile(project, "manifest.xml");
+    assert.equal(manifest.includes("customrole_"), false);
+    assert.equal(manifest.includes("<objects>"), false);
     assert.match(
-      sdfFile(project, "manifest.xml"),
-      /<object>customrole_suitescript_verify<\/object>/,
-    );
-    assert.match(
-      sdfFile(project, runner),
-      /<audslctrole>\[customrole_suitescript_verify\]<\/audslctrole>/,
+      manifest,
+      /<feature required="true">SERVERSIDESCRIPTING<\/feature>/,
     );
   });
 
-  it("is overridden from the committed .env and used in both files", () => {
+  it("defaults to customrole_<runner id>, in the role object and the runner's audience", () => {
     const project = fakeProject();
-    write(project, "verification/.env", `${roleKey}=customrole_my_runner\n`);
+    write(
+      project,
+      "verification/.env",
+      "SUITESCRIPT_VERIFY_RUNNER_ID=my_project\n",
+    );
     assert.equal(cli(["deploy"], project).status, 0);
     assert.match(
-      sdfFile(project, "manifest.xml"),
-      /<object>customrole_my_runner<\/object>/,
+      role(project, "customrole_my_project"),
+      /<role scriptid="customrole_my_project">/,
     );
     assert.match(
-      sdfFile(project, runner),
+      sdfFile(project, "Objects/customscript_my_project_rl.xml"),
+      /<audslctrole>\[customrole_my_project\]<\/audslctrole>/,
+    );
+    const out = cli(["doctor"], project).stdout;
+    assert.match(out, /customrole_my_project/);
+  });
+
+  it("follows a 24-character runner id and stays within the platform's 40 characters", () => {
+    const project = fakeProject();
+    const id = `r${"a".repeat(23)}`;
+    write(project, "verification/.env", `SUITESCRIPT_VERIFY_RUNNER_ID=${id}\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const xml = role(project, `customrole_${id}`);
+    const scriptId = /<role scriptid="([^"]+)">/.exec(xml)?.[1] ?? "";
+    assert.equal(scriptId, `customrole_${id}`);
+    assert.ok(scriptId.length <= 40);
+    const name = /<name>([^<]+)<\/name>/.exec(xml)?.[1] ?? "";
+    assert.ok(name.length <= 40, name);
+  });
+
+  it("is overridden from the committed .env, in the role object and the runner", () => {
+    const project = fakeProject();
+    write(
+      project,
+      "verification/.env",
+      `${roleKey}=customrole_my_runner\nSUITESCRIPT_VERIFY_RUNNER_ID=other\n`,
+    );
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      role(project, "customrole_my_runner"),
+      /<role scriptid="customrole_my_runner">/,
+    );
+    assert.equal(
+      existsSync(
+        join(project, "verification/sdf/src/Objects/customrole_other.xml"),
+      ),
+      false,
+    );
+    assert.match(
+      sdfFile(project, "Objects/customscript_other_rl.xml"),
       /<audslctrole>\[customrole_my_runner\]<\/audslctrole>/,
     );
   });
 
-  it("layers: the process environment wins over .env", () => {
+  it("layers: .env.local and then the process environment win over .env", () => {
     const project = fakeProject();
     write(project, "verification/.env", `${roleKey}=customrole_from_file\n`);
+    write(
+      project,
+      "verification/.env.local",
+      `${roleKey}=customrole_from_local\n`,
+    );
+    assert.equal(cli(["deploy"], project).status, 0);
+    assert.match(
+      role(project, "customrole_from_local"),
+      /scriptid="customrole_from_local"/,
+    );
     assert.equal(
       cli(["deploy"], project, { [roleKey]: "customrole_from_env" }).status,
       0,
     );
-    assert.match(sdfFile(project, "manifest.xml"), /customrole_from_env/);
+    assert.match(
+      role(project, "customrole_from_env"),
+      /scriptid="customrole_from_env"/,
+    );
+  });
+
+  it("removes a role object generated under another id, so it is not deployed again", () => {
+    const project = fakeProject();
+    write(project, "verification/.env", `${roleKey}=customrole_old_role\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    write(project, "verification/.env", `${roleKey}=customrole_new_role\n`);
+    assert.equal(cli(["deploy"], project).status, 0);
+    const objects = join(project, "verification/sdf/src/Objects");
+    assert.equal(existsSync(join(objects, "customrole_old_role.xml")), false);
+    assert.ok(existsSync(join(objects, "customrole_new_role.xml")));
+  });
+
+  it("cleanup leaves the role as deploy wrote it and only switches the runner off", () => {
+    const project = fakeProject();
+    assert.equal(cli(["deploy"], project).status, 0);
+    const deployed = role(project, "customrole_suitescript_verify");
+    assert.equal(cli(["cleanup"], project).status, 0);
+    assert.equal(role(project, "customrole_suitescript_verify"), deployed);
+    assert.match(sdfFile(project, runner), /<isdeployed>F<\/isdeployed>/);
   });
 
   for (const value of [
@@ -409,22 +524,33 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
   const read = (project: string, file: string) =>
     readFileSync(src(project, file), "utf8");
 
-  it("defaults to today's runner ids and folder", () => {
+  it("defaults to the runner ids, file, name and folder of suitescript_verify", () => {
     const project = fakeProject();
     assert.equal(cli(["deploy"], project).status, 0);
     const runner = read(
       project,
-      "Objects/customscript_suitescript_verify_runner.xml",
+      "Objects/customscript_suitescript_verify_rl.xml",
     );
-    assert.match(runner, /scriptid="customscript_suitescript_verify_runner"/);
-    assert.match(runner, /scriptid="customdeploy_suitescript_verify_runner"/);
-    assert.match(runner, /\[\/SuiteScripts\/suitescript-verify\/runner\.js\]/);
+    assert.match(
+      runner,
+      /<restlet scriptid="customscript_suitescript_verify_rl">/,
+    );
+    assert.match(runner, /scriptid="customdeploy_suitescript_verify_rl"/);
+    assert.match(runner, /<name>ssv runner suitescript_verify<\/name>/);
+    assert.match(runner, /<title>ssv runner suitescript_verify<\/title>/);
+    assert.match(
+      runner,
+      /<description>[^<]*suitescript-verify[^<]*<\/description>/,
+    );
+    assert.match(runner, /\[\/SuiteScripts\/suitescript-verify\/restlet\.js\]/);
+    assert.ok(
+      existsSync(
+        src(project, "FileCabinet/SuiteScripts/suitescript-verify/restlet.js"),
+      ),
+    );
     assert.match(
       read(project, "deploy.xml"),
       /~\/FileCabinet\/SuiteScripts\/suitescript-verify\/\*/,
-    );
-    assert.ok(
-      existsSync(src(project, "FileCabinet/SuiteScripts/suitescript-verify")),
     );
   });
 
@@ -432,10 +558,11 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const project = fakeProject();
     write(project, "verification/.env", `${key}=my_project\n`);
     assert.equal(cli(["deploy"], project).status, 0);
-    const runner = read(project, "Objects/customscript_my_project_runner.xml");
-    assert.match(runner, /scriptid="customscript_my_project_runner"/);
-    assert.match(runner, /scriptid="customdeploy_my_project_runner"/);
-    assert.match(runner, /\[\/SuiteScripts\/my-project\/runner\.js\]/);
+    const runner = read(project, "Objects/customscript_my_project_rl.xml");
+    assert.match(runner, /scriptid="customscript_my_project_rl"/);
+    assert.match(runner, /scriptid="customdeploy_my_project_rl"/);
+    assert.match(runner, /<name>ssv runner my_project<\/name>/);
+    assert.match(runner, /\[\/SuiteScripts\/my-project\/restlet\.js\]/);
     assert.match(
       read(project, "deploy.xml"),
       /~\/FileCabinet\/SuiteScripts\/my-project\/\*/,
@@ -443,7 +570,7 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     assert.ok(existsSync(src(project, "FileCabinet/SuiteScripts/my-project")));
     assert.equal(
       existsSync(
-        src(project, "Objects/customscript_suitescript_verify_runner.xml"),
+        src(project, "Objects/customscript_suitescript_verify_rl.xml"),
       ),
       false,
     );
@@ -459,24 +586,61 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const second = cli(["deploy"], project);
     assert.equal(second.status, 0);
     assert.equal(
-      existsSync(src(project, "Objects/customscript_old_one_runner.xml")),
+      existsSync(src(project, "Objects/customscript_old_one_rl.xml")),
       false,
     );
-    assert.ok(
-      existsSync(src(project, "Objects/customscript_new_one_runner.xml")),
+    assert.ok(existsSync(src(project, "Objects/customscript_new_one_rl.xml")));
+    assert.equal(
+      existsSync(src(project, "Objects/customscript_old_one_sl.xml")),
+      false,
     );
+    assert.ok(existsSync(src(project, "Objects/customscript_new_one_sl.xml")));
+    assert.equal(second.stderr.match(/still be deployed/g)?.length, 1);
     assert.match(second.stderr, /old_one/);
     assert.match(second.stderr, /still be deployed/);
     assert.match(second.stderr, /cleanup/);
     assert.equal(cli(["deploy"], project).stderr.includes("old_one"), false);
   });
 
+  for (const command of ["deploy", "cleanup"]) {
+    it(`${command} removes a 1.x _runner object, even of the same id, and warns with its id`, () => {
+      const project = fakeProject();
+      write(project, "verification/.env", `${key}=my_project\n`);
+      const legacy = "Objects/customscript_my_project_runner.xml";
+      const other = "Objects/customscript_older_runner.xml";
+      mkdirSync(src(project, "Objects"), { recursive: true });
+      writeFileSync(src(project, legacy), "<restlet/>");
+      writeFileSync(src(project, other), "<restlet/>");
+      const result = cli([command], project);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(src(project, legacy)), false);
+      assert.equal(existsSync(src(project, other)), false);
+      assert.ok(
+        existsSync(src(project, "Objects/customscript_my_project_rl.xml")),
+      );
+      assert.match(
+        result.stderr,
+        /"my_project"[^\n]*still be deployed[^\n]*1\.x/,
+      );
+      assert.match(result.stderr, /"older"[^\n]*still be deployed[^\n]*1\.x/);
+      // 1.x cleanup cannot build this folder while it holds the 2.0 objects.
+      assert.match(
+        result.stderr,
+        /first delete customrole_\*\.xml, customscript_\*_rl\.xml and customscript_\*_sl\.xml from [^\n]*Objects[^\n]*"Upgrading from 1\.x"/,
+      );
+      assert.equal(
+        cli([command], project).stderr.includes("still be deployed"),
+        false,
+      );
+    });
+  }
+
   it("turns the named runner's deployment off in cleanup", () => {
     const project = fakeProject();
     write(project, "verification/.env", `${key}=my_project\n`);
     assert.equal(cli(["cleanup"], project).status, 0);
     assert.match(
-      read(project, "Objects/customscript_my_project_runner.xml"),
+      read(project, "Objects/customscript_my_project_rl.xml"),
       /<isdeployed>F<\/isdeployed>/,
     );
   });
@@ -485,23 +649,44 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const project = fakeProject();
     write(project, "verification/.env", `${key}=from_file\n`);
     assert.equal(cli(["deploy"], project, { [key]: "from_env" }).status, 0);
-    assert.ok(
-      existsSync(src(project, "Objects/customscript_from_env_runner.xml")),
-    );
+    assert.ok(existsSync(src(project, "Objects/customscript_from_env_rl.xml")));
   });
 
-  it("accepts 20 characters, the longest id whose script and deployment ids fit the platform's 40", () => {
+  it("accepts 24 characters, and every generated id and name fits the platform's 40", () => {
     const project = fakeProject();
-    const id = "a".repeat(20);
+    const id = "a".repeat(24);
     write(project, "verification/.env", `${key}=${id}\n`);
     assert.equal(cli(["deploy"], project).status, 0);
-    const script = `customscript_${id}_runner`;
+    const script = "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_rl";
     assert.equal(script.length, 40);
-    assert.ok(existsSync(src(project, `Objects/${script}.xml`)));
-    assert.equal(`customdeploy_${id}_runner`.length, 40);
+    const runner = read(project, `Objects/${script}.xml`);
+    const values = [
+      ...runner.matchAll(/scriptid="([^"]+)"|<(?:name|title)>([^<]+)</g),
+    ].map((m) => m[1] ?? m[2] ?? "");
+    assert.deepEqual(values.sort(), [
+      "customdeploy_aaaaaaaaaaaaaaaaaaaaaaaa_rl",
+      "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_rl",
+      "ssv runner aaaaaaaaaaaaaaaaaaaaaaaa",
+      "ssv runner aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+    for (const value of values) assert.ok(value.length <= 40, value);
+    const host = read(
+      project,
+      "Objects/customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl.xml",
+    );
+    const hostValues = [
+      ...host.matchAll(/scriptid="([^"]+)"|<(?:name|title)>([^<]+)</g),
+    ].map((m) => m[1] ?? m[2] ?? "");
+    assert.deepEqual(hostValues.sort(), [
+      "customdeploy_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
+      "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
+      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
+      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+    for (const value of hostValues) assert.ok(value.length <= 40, value);
   });
 
-  for (const bad of ["Nope", "has-dash", "x".repeat(21), "1abc"]) {
+  for (const bad of ["Nope", "has-dash", "x".repeat(25), "1abc"]) {
     it(`refuses ${JSON.stringify(bad)} from the committed .env, naming the key and not the value`, () => {
       const project = fakeProject();
       write(project, "verification/.env", `${key}=${bad}\n`);

@@ -1,0 +1,9 @@
+<role scriptid="%%ROLE_ID%%">
+  <centertype>ACCOUNTCENTER</centertype>
+  <issalesrole>F</issalesrole>
+  <issupportrole>F</issupportrole>
+  <name>%%NAME%%</name>
+  <restricttimeandexpenses>F</restricttimeandexpenses>
+  <permissions>
+%%PERMISSIONS%%  </permissions>
+</role>

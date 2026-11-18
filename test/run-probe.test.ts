@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
+import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
 const bin = join(root, "dist", "bin", "suitescript-verify.js");
@@ -27,6 +28,12 @@ after(() => {
 
 const account = "1234567_SB1";
 const clientId = "client-id-value";
+/** The comments NetSuite appends to an HTML page, with invented values. */
+const trailer = `
+<!-- Host [ host-a1 ] App Version [ 2026.2.0 ] -->
+<!-- COMPID [ ${account} ] EMAIL [ person@example.com ] URL [ /app/site/hosting/scriptlet.nl ] Time [ Tue Nov 17 10:00:00 PST 2026 ] -->
+<!-- Not logging slowest SQL -->
+`;
 
 interface Answer {
   body: unknown;
@@ -61,7 +68,10 @@ fs.writeFileSync(${JSON.stringify(join(dir, "calls.json"))}, JSON.stringify({
   license: process.env.SUITECLOUD_CLI_ACCEPT_LICENSE ?? null,
   objects: list(objects).map((f) => fs.readFileSync(path.join(objects, f), "utf8")),
   runner: list(cabinet)
-    .filter((f) => f.endsWith("runner.js"))
+    .filter((f) => f.endsWith("restlet.js"))
+    .map((f) => fs.readFileSync(path.join(cabinet, f), "utf8")),
+  suitelet: list(cabinet)
+    .filter((f) => f.endsWith("suitelet.js"))
     .map((f) => fs.readFileSync(path.join(cabinet, f), "utf8")),
 }));`;
 
@@ -150,6 +160,7 @@ const calls = (p: Project) =>
     license: string | null;
     objects: string[];
     runner: string[];
+    suitelet: string[];
   };
 
 const ok = (restletBody: unknown): [Answer, Answer] => [
@@ -179,7 +190,8 @@ describe("deploy builds the runner from the probes", () => {
       "SuiteScripts/suitescript-verify",
       "SuiteScripts/suitescript-verify/probes",
       "SuiteScripts/suitescript-verify/probes/one.js",
-      "SuiteScripts/suitescript-verify/runner.js",
+      "SuiteScripts/suitescript-verify/restlet.js",
+      "SuiteScripts/suitescript-verify/suitelet.js",
     ]);
     assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
     const runner = call.runner.join("");
@@ -204,6 +216,45 @@ describe("deploy builds the runner from the probes", () => {
     assert.match(result.stderr, /needs the user at a terminal/);
     assert.equal(existsSync(join(p.dir, "calls.json")), false);
   });
+
+  it("deploys for real once the person types DEPLOY at the terminal", () => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    const result = cli(
+      p,
+      ["deploy", "--approved"],
+      fakeTerminal(["DEPLOY"], p.env),
+    );
+    assert.equal(result.status, 0, result.all);
+    assert.match(
+      result.stdout,
+      /This deploys to the sandbox\. Type DEPLOY to continue: /,
+    );
+    const call = calls(p);
+    assert.deepEqual(call.args, ["project:deploy"]);
+    assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
+  });
+
+  for (const typed of ["deploy", "yes", "CLEANUP", ""]) {
+    it(`deploys nothing when the person types ${JSON.stringify(typed)} instead of DEPLOY`, () => {
+      const p = project();
+      const result = cli(
+        p,
+        ["deploy", "--approved"],
+        fakeTerminal([typed], p.env),
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Not confirmed\. Nothing was changed\./);
+      assert.equal(existsSync(join(p.dir, "calls.json")), false);
+    });
+  }
+
+  it("deploys nothing when the terminal closes before an answer", () => {
+    const p = project();
+    const result = cli(p, ["deploy", "--approved"], fakeTerminal([], p.env));
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
 });
 
 describe("cleanup", () => {
@@ -223,6 +274,37 @@ describe("cleanup", () => {
     assert.match(result.stderr, /needs the user at a terminal/);
     assert.equal(existsSync(join(p.dir, "calls.json")), false);
   });
+
+  it("turns the deployment off for real once the person types CLEANUP at the terminal", () => {
+    const p = project();
+    const result = cli(
+      p,
+      ["cleanup", "--approved"],
+      fakeTerminal(["CLEANUP"], p.env),
+    );
+    assert.equal(result.status, 0, result.all);
+    assert.match(
+      result.stdout,
+      /This turns the runner's and the Suitelet host's deployments off\. Type CLEANUP to continue: /,
+    );
+    const call = calls(p);
+    assert.deepEqual(call.args, ["project:deploy"]);
+    assert.match(call.objects.join(""), /<isdeployed>F<\/isdeployed>/);
+  });
+
+  for (const typed of ["cleanup", "yes", "DEPLOY", ""]) {
+    it(`changes nothing when the person types ${JSON.stringify(typed)} instead of CLEANUP`, () => {
+      const p = project();
+      const result = cli(
+        p,
+        ["cleanup", "--approved"],
+        fakeTerminal([typed], p.env),
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Not confirmed\. Nothing was changed\./);
+      assert.equal(existsSync(join(p.dir, "calls.json")), false);
+    });
+  }
 });
 
 describe("sandbox only", () => {
@@ -465,6 +547,47 @@ describe("run", () => {
     assert.equal(call?.body, JSON.stringify({ probe: "one" }));
   });
 
+  it("prints and drafts the output with every object's keys sorted, so it can be copied as the expectation", () => {
+    const p = project();
+    withProbe(p);
+    p.script(
+      ...ok({
+        // Parsed from text, so Biome's sorted-keys action cannot sort it.
+        result: JSON.parse(
+          '{"z": 1, "a": [{"y": 1, "b": 2}], "m": {"k": 1, "c": 2}}',
+        ),
+        version: "2026.2",
+      }),
+    );
+    const result = cli(p, ["run", "one", "--draft"]);
+    assert.equal(result.status, 0, result.all);
+    const sorted = `{
+  "a": [
+    {
+      "b": 2,
+      "y": 1
+    }
+  ],
+  "m": {
+    "c": 2,
+    "k": 1
+  },
+  "z": 1
+}`;
+    assert.ok(
+      result.stdout.includes(`"result": ${sorted.replaceAll("\n", "\n  ")}`),
+      result.stdout,
+    );
+    assert.ok(
+      result.stdout.indexOf('"result"') < result.stdout.indexOf('"version"'),
+    );
+    const draft = readFileSync(
+      join(p.dir, "docs", "verification", "results", "one.md"),
+      "utf8",
+    );
+    assert.ok(draft.includes(sorted), draft);
+  });
+
   it("calls the default runner, and the one named by SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const p = project();
     withProbe(p);
@@ -472,7 +595,7 @@ describe("run", () => {
     assert.equal(cli(p, ["run", "one"]).status, 0);
     assert.match(
       p.requests()[1]?.url ?? "",
-      /script=customscript_suitescript_verify_runner&deploy=customdeploy_suitescript_verify_runner$/,
+      /script=customscript_suitescript_verify_rl&deploy=customdeploy_suitescript_verify_rl$/,
     );
     write(
       p.dir,
@@ -483,7 +606,7 @@ describe("run", () => {
     assert.equal(cli(p, ["run", "one"]).status, 0);
     assert.match(
       p.requests().at(-1)?.url ?? "",
-      /script=customscript_my_project_runner&deploy=customdeploy_my_project_runner$/,
+      /script=customscript_my_project_rl&deploy=customdeploy_my_project_rl$/,
     );
   });
 
@@ -523,7 +646,7 @@ describe("run", () => {
     withProbe(p, `${restlet}\n * @writes`, "writer");
     p.script(...ok({ result: {}, version: "1" }));
     const client = cli(p, ["run", "client"]).stderr;
-    assert.match(client, /RESTlet probes/);
+    assert.match(client, /RESTlet and Suitelet probes/);
     assert.doesNotMatch(client, /docs\/verification/);
     assert.match(cli(p, ["run", "undeclared"]).stderr, /undeclared/);
     assert.match(cli(p, ["run", "writer"]).stderr, /@writes/);
@@ -584,7 +707,7 @@ describe("run", () => {
     p.script(...ok({ error: "refused: the runner only runs in a sandbox" }));
     const result = cli(p, ["run", "one"]);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /The runner refused/);
+    assert.match(result.stderr, /The runner reported an error: refused/);
   });
 
   describe("drift against expect.json", () => {
@@ -606,6 +729,39 @@ describe("run", () => {
       const result = cli(p, ["run", "one"]);
       assert.equal(result.status, 2);
       assert.match(result.stdout, /DRIFT/);
+    });
+
+    it("names what differs as dotted paths, at most ten", () => {
+      const p = project();
+      withProbe(p);
+      write(
+        p.dir,
+        "verification/probes/one.expect.json",
+        '{"a": 1, "b": {"c": 2, "d": [1]}, "gone": true}',
+      );
+      p.script(
+        ...ok({
+          result: { a: 1, b: { c: 3, d: [2] }, extra: 0 },
+          version: "2026.2",
+        }),
+      );
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /DRIFT: the output differs from one\.expect\.json at result\.b\.c, result\.b\.d, result\.extra, result\.gone\./,
+      );
+      p.script(...ok({ result: "changed", version: "2026.2" }));
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /differs from one\.expect\.json at result\./,
+      );
+      const many = Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`k${i + 10}`, i]),
+      );
+      p.script(...ok({ result: { ...many, a: 1 }, version: "2026.2" }));
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /at result\.b, result\.gone, result\.k10, result\.k11, result\.k12, result\.k13, result\.k14, result\.k15, result\.k16, result\.k17 and 4 more\./,
+      );
     });
   });
 
@@ -803,12 +959,16 @@ describe("probe parameters", () => {
       envType: "SANDBOX",
       version: "1",
     };
-    const runner = factory(runtime, {
-      run: (params: unknown) => {
-        seen.push(params);
-        return "done";
+    const runner = factory(
+      runtime,
+      {},
+      {
+        run: (params: unknown) => {
+          seen.push(params);
+          return "done";
+        },
       },
-    });
+    );
     assert.equal(
       runner.post({ params: { id: "42" }, probe: "one" }).result,
       "done",
@@ -888,5 +1048,1500 @@ describe("extra probe tags", () => {
       assert.match(result.all, /SUITESCRIPT_VERIFY_EXTRA_TAGS/);
       assert.equal(result.all.includes(value), false);
     }
+  });
+});
+
+describe("@permission", () => {
+  const withTags = (p: Project, slug: string, lines: string[]) =>
+    write(
+      p.dir,
+      `verification/probes/${slug}.js`,
+      probeSource(
+        (lines[0]?.startsWith("@scriptType") ? lines : [restlet, ...lines])
+          .map((l) => ` * ${l}`)
+          .join("\n"),
+      ),
+    );
+  const rolePermissions = (p: Project) =>
+    [
+      ...(
+        calls(p).objects.find((xml) => xml.startsWith("<role")) ?? ""
+      ).matchAll(
+        /<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>/g,
+      ),
+    ].map((match) => `${match[1]} ${match[2]}`);
+
+  it("adds each permission declared by RESTlet and Suitelet probes to the role once, after the minimum", () => {
+    const p = project();
+    withTags(p, "one", [
+      "@permission TRAN_SALESORD VIEW",
+      "@permission LIST_CUSTJOB VIEW",
+    ]);
+    withTags(p, "two", [
+      "@scriptType Suitelet",
+      "@permission LIST_CUSTJOB VIEW",
+      "@permission LIST_EMPLOYEE VIEW",
+      "@permission ADMI_RESTWEBSERVICES VIEW",
+    ]);
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 0, result.all);
+    assert.deepEqual(rolePermissions(p), [
+      "ADMI_LOGIN_OAUTH2 FULL",
+      "ADMI_RESTWEBSERVICES FULL",
+      "LIST_CUSTJOB VIEW",
+      "LIST_EMPLOYEE VIEW",
+      "TRAN_SALESORD VIEW",
+    ]);
+  });
+
+  it("lets a probe with a valid declaration run", () => {
+    const p = project();
+    withTags(p, "one", ["@permission LIST_CUSTJOB VIEW"]);
+    p.script(...ok({ probe: "one", result: { ok: true }, version: "1" }));
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 0, result.all);
+  });
+
+  it("refuses a malformed tag, an unknown key or level, or a level above VIEW, at run and deploy, before anything is sent", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const line of [
+      "@permission",
+      "@permission LIST_CUSTJOB",
+      "@permission LIST_CUSTJOB VIEW extra",
+      "@permission LIST_NOT_A_KEY VIEW",
+      "@permission list_custjob VIEW",
+      "@permission customrecord_thing VIEW",
+      "@permission LIST_CUSTJOB READ",
+      "@permission LIST_CUSTJOB view",
+      "@permission LIST_CUSTJOB CREATE",
+      "@permission LIST_CUSTJOB EDIT",
+      "@permission LIST_CUSTJOB FULL",
+    ]) {
+      withTags(p, "one", [line]);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, line);
+      assert.match(run.stderr, /one has invalid tags/, line);
+      assert.match(run.stderr, /@permission/, line);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, line);
+      assert.match(deploy.stderr, /- one: @permission/, line);
+    }
+    assert.deepEqual(p.requests(), []);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+});
+
+/** Loads a generated script with a stubbed `define`, handing its factory the given modules. */
+function load<T>(source: string, ...modules: unknown[]): T {
+  let factory: ((...m: unknown[]) => T) | undefined;
+  new Function("define", source)((_deps: string[], f: typeof factory) => {
+    factory = f;
+  });
+  if (!factory) throw new Error("no define");
+  return factory(...modules);
+}
+
+const sandbox = {
+  EnvType: { PRODUCTION: "PRODUCTION", SANDBOX: "SANDBOX" },
+  envType: "SANDBOX",
+  version: "2026.2",
+};
+
+describe("Suitelet probes", () => {
+  const suitelet = "@scriptType Suitelet";
+  const withProbe = (p: Project, tags: string, slug: string) =>
+    write(p.dir, `verification/probes/${slug}.js`, probeSource(tags));
+  const hostObject = (p: Project) =>
+    calls(p).objects.find((o) => o.startsWith("<suitelet")) ?? "";
+
+  it("deploys the Suitelet host beside the runner, with only Suitelet probes in its list", () => {
+    const p = project();
+    withProbe(p, restlet, "one");
+    withProbe(p, suitelet, "page");
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /Probes in the runner: one\n/);
+    assert.match(result.stdout, /Probes in the Suitelet host: page\n/);
+    const call = calls(p);
+    assert.deepEqual(
+      call.files
+        .map((f) => f.replaceAll("\\", "/"))
+        .filter((f) => f.endsWith(".js"))
+        .sort(),
+      [
+        "SuiteScripts/suitescript-verify/probes/one.js",
+        "SuiteScripts/suitescript-verify/probes/page.js",
+        "SuiteScripts/suitescript-verify/restlet.js",
+        "SuiteScripts/suitescript-verify/suitelet.js",
+      ],
+    );
+    const host = call.suitelet.join("");
+    assert.match(host, /"\.\/probes\/page"/);
+    assert.doesNotMatch(host, /"\.\/probes\/one"/);
+    assert.match(host, /@NScriptType Suitelet/);
+    assert.match(host, /EnvType\.SANDBOX/);
+    assert.doesNotMatch(host, /\beval\b|new Function|require\(/);
+    assert.doesNotMatch(call.runner.join(""), /"\.\/probes\/page"/);
+  });
+
+  it("gives the host a deployment never available without login, for the runner's role only, released", () => {
+    const p = project();
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const host = hostObject(p);
+    assert.match(
+      host,
+      /<suitelet scriptid="customscript_suitescript_verify_sl">/,
+    );
+    assert.match(host, /scriptid="customdeploy_suitescript_verify_sl"/);
+    assert.match(host, /<name>ssv suitelet suitescript_verify<\/name>/);
+    assert.match(host, /<title>ssv suitelet suitescript_verify<\/title>/);
+    assert.match(
+      host,
+      /<description>[^<]*suitescript-verify[^<]*<\/description>/,
+    );
+    assert.match(host, /\[\/SuiteScripts\/suitescript-verify\/suitelet\.js\]/);
+    assert.match(host, /<isonline>F<\/isonline>/);
+    assert.match(host, /<allroles>F<\/allroles>/);
+    assert.match(host, /<audslctrole>\[customrole_[a-z0-9_]+\]<\/audslctrole>/);
+    assert.doesNotMatch(host, /<allemployees>T|<allpartners>T/);
+    assert.match(host, /<status>RELEASED<\/status>/);
+    assert.match(host, /<isdeployed>T<\/isdeployed>/);
+    assert.match(calls(p).suitelet.join(""), /new Map\(\[\s*\]\)/);
+  });
+
+  it("switches the host off in cleanup, with the runner", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    assert.equal(cli(p, ["cleanup"]).status, 0);
+    const objects = calls(p).objects.join("");
+    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 2);
+    assert.doesNotMatch(objects, /<isdeployed>T/);
+  });
+
+  it("refuses a bad tag on a Suitelet probe at deploy", () => {
+    const p = project();
+    withProbe(p, `${suitelet}\n * @param 1bad x`, "page");
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /page: @param/);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+
+  it("runs a Suitelet probe through the runner and reports its result and script type", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(
+      ...ok({
+        probe: "page",
+        result: { ok: true },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      }),
+    );
+    const result = cli(p, ["run", "page"]);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /"scriptType": "Suitelet"/);
+    assert.match(result.stdout, /"ok": true/);
+    const [, call] = p.requests();
+    assert.match(call?.url ?? "", /script=customscript_suitescript_verify_rl&/);
+    assert.equal(call?.body, JSON.stringify({ probe: "page" }));
+  });
+
+  it("compares a Suitelet probe's result with its expected output", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    write(p.dir, "verification/probes/page.expect.json", '{"ok": true}');
+    const answer = { probe: "page", scriptType: "Suitelet", version: "1" };
+    p.script(...ok({ ...answer, result: { ok: true } }));
+    assert.match(cli(p, ["run", "page"]).stdout, /Matches the expected output/);
+    p.script(...ok({ ...answer, result: { ok: false } }));
+    const drift = cli(p, ["run", "page"]);
+    assert.equal(drift.status, 2);
+    assert.match(drift.stdout, /DRIFT/);
+  });
+
+  describe("a probe that writes its own response", () => {
+    const own = (response: Record<string, unknown>) =>
+      ok({ probe: "page", response, scriptType: "Suitelet", version: "1" });
+
+    it("reports status, headers and body, with cookies but sv_* and credential-like headers redacted and the body cut at 64 KB, even from a runner that did not", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: "y".repeat(70 * 1024),
+          headers: {
+            Authorization: "Bearer abc123",
+            "Content-Disposition":
+              "attachment; filename=\"abc123.pdf\"; filename*=UTF-8''abc123.pdf",
+            "Content-Type": "text/html",
+            "Set-Cookie": ["JSESSIONID=abc123; Path=/", "sv_flavor=sweet"],
+            "X-Api-Token": "abc123",
+            "X-Hmac": "abc123",
+            "X-Signature": "abc123",
+          },
+          status: 200,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 0, result.all);
+      assert.equal(result.all.includes("abc123"), false);
+      const { response } = JSON.parse(result.stdout);
+      assert.deepEqual(response.headers, {
+        authorization: "<redacted>",
+        "content-disposition":
+          "attachment; filename=<redacted>; filename*=<redacted>",
+        "content-type": "text/html",
+        "set-cookie": ["JSESSIONID=<redacted>", "sv_flavor=sweet"],
+        "x-api-token": "<redacted>",
+        "x-hmac": "<redacted>",
+        "x-signature": "<redacted>",
+      });
+      assert.equal(response.body, "y".repeat(64 * 1024));
+      assert.equal(response.truncated, true);
+      assert.equal(response.status, 200);
+    });
+
+    it("drops NetSuite's HTML trailer, the host's X-SSV- headers and header case variants even from a runner that did not", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: `<p>hello</p>${trailer}`,
+          headers: {
+            "Content-Type": "text/html; charset=UTF-8",
+            "content-type": "text/html; charset=UTF-8",
+            "Set-Cookie": "JSESSIONID=abc123; Path=/",
+            "set-cookie": "JSESSIONID=abc123; Path=/",
+            "X-SSV-Headers": "[]",
+            "x-ssv-mode": "own",
+          },
+          status: 200,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 0, result.all);
+      assert.deepEqual(JSON.parse(result.stdout).response, {
+        body: "<p>hello</p>",
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "set-cookie": "JSESSIONID=<redacted>",
+        },
+        status: 200,
+      });
+    });
+
+    it("refuses to print a response that still looks like an identifier", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(
+        ...own({
+          body: "",
+          headers: { "X-Link": "https://x.app.netsuite.com/app/center" },
+          status: 200,
+        }),
+      );
+      const result = cli(p, ["run", "page"]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Refusing to print or record the output/);
+    });
+
+    it("compares status, body and every reported header with the expected output, by lower-cased name", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      write(
+        p.dir,
+        "verification/probes/page.expect.json",
+        JSON.stringify({
+          body: "<p>hi</p>",
+          headers: { "Content-Type": "text/html", "X-Probe": "1" },
+          status: 200,
+        }),
+      );
+      const answer = {
+        body: "<p>hi</p>",
+        headers: { "content-type": "text/html", "x-probe": "1" },
+        status: 200,
+      };
+      p.script(...own(answer));
+      const same = cli(p, ["run", "page"]);
+      assert.equal(same.status, 0, same.all);
+      assert.match(same.stdout, /Matches the expected output/);
+      for (const changed of [
+        { ...answer, body: "<p>bye</p>" },
+        { ...answer, status: 302 },
+        { ...answer, headers: { ...answer.headers, "x-probe": "2" } },
+        { ...answer, headers: { ...answer.headers, "x-other": "1" } },
+        { ...answer, headers: { ...answer.headers, date: "today" } },
+      ]) {
+        p.script(...own(changed));
+        const drift = cli(p, ["run", "page"]);
+        assert.equal(drift.status, 2, JSON.stringify(changed));
+        assert.match(drift.stdout, /DRIFT/);
+      }
+      p.script(
+        ...own({
+          ...answer,
+          headers: { "content-type": "text/html", "x-other": "1" },
+        }),
+      );
+      assert.match(
+        cli(p, ["run", "page"]).stdout,
+        /differs from page\.expect\.json at response\.headers\.x-other, response\.headers\.x-probe\./,
+      );
+    });
+
+    it("records the response in a draft results page", () => {
+      const p = project();
+      withProbe(p, suitelet, "page");
+      p.script(...own({ body: "<p>hi</p>", headers: {}, status: 200 }));
+      assert.equal(cli(p, ["run", "page", "--draft"]).status, 0);
+      const text = readFileSync(
+        join(p.dir, "docs", "verification", "results", "page.md"),
+        "utf8",
+      );
+      assert.match(text, /"body": "<p>hi<\/p>"/);
+      assert.match(text, /"status": 200/);
+    });
+  });
+
+  it("drafts a results page that names the method as a deployed Suitelet called by the runner", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(...ok({ result: 1, scriptType: "Suitelet", version: "2026.2" }));
+    assert.equal(cli(p, ["run", "page", "--draft"]).status, 0);
+    const text = readFileSync(
+      join(p.dir, "docs", "verification", "results", "page.md"),
+      "utf8",
+    );
+    assert.match(
+      text,
+      /\*\*Method:\*\* deployed Suitelet \(the suitescript-verify Suitelet host, called by the runner\)/,
+    );
+  });
+
+  it("reports a failed host call the runner saw, without crashing", () => {
+    const p = project();
+    withProbe(p, suitelet, "page");
+    p.script(
+      ...ok({ error: "the Suitelet host answered HTTP 500: Internal error" }),
+    );
+    const result = cli(p, ["run", "page"]);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: the Suitelet host answered HTTP 500: Internal error/,
+    );
+  });
+
+  describe("the generated runner", () => {
+    type Runner = {
+      post: (b: unknown) => {
+        error?: string;
+        probe?: string;
+        response?: unknown;
+        result?: unknown;
+        scriptType?: string;
+        version?: string;
+      };
+    };
+    const runnerFor = (
+      p: Project,
+      requestSuitelet: (options: unknown) => unknown,
+    ) => {
+      withProbe(p, restlet, "one");
+      withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      return load<Runner>(
+        calls(p).runner.join(""),
+        sandbox,
+        { requestSuitelet },
+        { run: () => "restlet" },
+      );
+    };
+
+    it("calls the host with requestSuitelet, the host's ids and the probe and parameters as urlParams", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      const runner = runnerFor(p, (options) => {
+        seen.push(options);
+        return {
+          body: JSON.stringify({ probe: "page", result: { ok: 1 } }),
+          code: 200,
+          headers: { "X-SSV-Mode": "wrapped" },
+        };
+      });
+      assert.deepEqual(runner.post({ params: { id: "42" }, probe: "page" }), {
+        probe: "page",
+        result: { ok: 1 },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      assert.deepEqual(seen, [
+        {
+          deploymentId: "customdeploy_suitescript_verify_sl",
+          scriptId: "customscript_suitescript_verify_sl",
+          urlParams: { params: JSON.stringify({ id: "42" }), probe: "page" },
+        },
+      ]);
+      assert.equal(runner.post({ probe: "one" }).scriptType, "RESTlet");
+    });
+
+    it("checks a Suitelet probe's parameters before calling the host", () => {
+      const p = project();
+      let count = 0;
+      const runner = runnerFor(p, () => {
+        count++;
+        return { body: "{}", code: 200 };
+      });
+      for (const params of [{ id: "x" }, { extra: "1", id: "1" }, {}]) {
+        assert.match(
+          runner.post({ params, probe: "page" }).error ?? "",
+          /param/,
+        );
+      }
+      assert.equal(count, 0);
+      assert.equal(runner.post({ probe: "nope" }).error, "unknown probe");
+    });
+
+    it("reports a thrown error, a non-200 status, a missing marker and a non-JSON body, never throwing", () => {
+      const p = project();
+      const wrapped = { "x-ssv-mode": "wrapped" };
+      const answers: (() => unknown)[] = [
+        () => {
+          const e = new Error("An unexpected SuiteScript error has occurred");
+          e.name = "UNEXPECTED_ERROR";
+          throw e;
+        },
+        () => ({ body: "Internal error", code: 500 }),
+        () => ({ body: '{"result":"forged"}', code: 200, headers: {} }),
+        () => ({ body: "<html>login</html>", code: 200, headers: wrapped }),
+        () => ({
+          body: JSON.stringify({ error: "unknown probe" }),
+          code: 200,
+          headers: wrapped,
+        }),
+      ];
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]?.());
+      const errors = answers.map(
+        () => runner.post({ params: { id: "1" }, probe: "page" }).error,
+      );
+      assert.deepEqual(errors, [
+        "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected SuiteScript error has occurred",
+        "the Suitelet host answered HTTP 500: Internal error",
+        'the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): {"result":"forged"}',
+        "the Suitelet host's answer was not JSON: <html>login</html>",
+        "the Suitelet host refused: unknown probe",
+      ]);
+    });
+
+    it("reports a probe's own response as status, headers and body, cutting the body", () => {
+      const p = project();
+      const big = "x".repeat(70 * 1024);
+      const answers = [
+        {
+          body: "<p>hi</p>",
+          code: 201,
+          headers: {
+            "Content-Type": "text/html",
+            "X-SSV-Headers": JSON.stringify([{ name: "X-Probe", value: "1" }]),
+            "X-SSV-Mode": "own",
+          },
+        },
+        { body: big, code: 200, headers: { "x-ssv-mode": ["own"] } },
+      ];
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]);
+      assert.deepEqual(runner.post({ params: { id: "1" }, probe: "page" }), {
+        probe: "page",
+        response: {
+          body: "<p>hi</p>",
+          headers: { "content-type": "text/html", "x-probe": "1" },
+          status: 201,
+        },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      const cut = runner.post({ params: { id: "1" }, probe: "page" });
+      assert.deepEqual(cut.response, {
+        body: "x".repeat(64 * 1024),
+        headers: {},
+        status: 200,
+        truncated: true,
+      });
+    });
+
+    describe("reports the headers that are safe to commit", () => {
+      /** The headers the runner reports for an own answer with these platform headers and, if given, this X-SSV-Headers report. */
+      const reported = (
+        platform: Record<string, unknown>,
+        probe?: { name: string; value: string }[] | string,
+      ) => {
+        const p = project();
+        const runner = runnerFor(p, () => ({
+          body: "hi",
+          code: 200,
+          headers: {
+            ...platform,
+            "X-SSV-Mode": "own",
+            ...(probe === undefined
+              ? {}
+              : {
+                  "X-SSV-Headers":
+                    typeof probe === "string" ? probe : JSON.stringify(probe),
+                }),
+          },
+        }));
+        const { response } = runner.post({
+          params: { id: "1" },
+          probe: "page",
+        });
+        return (response as { headers: Record<string, unknown> }).headers;
+      };
+      /** Platform headers of one call: per-call ids, routing, a session cookie and an unknown NetSuite header. */
+      const perCall = {
+        "Akamai-GRN": "0.1",
+        Date: "Tue, 17 Nov 2026 10:00:00 GMT",
+        "Set-Cookie": "JSESSIONID=abc123; Path=/; Secure",
+        Via: "1.1 edge002",
+        "X-Cache": "TCP_MISS from edge-b",
+        "X-N-OperationId": "op-2",
+        "x-ns-foo": "bar",
+      };
+
+      it("keeps only the platform headers that describe the content, one lower-cased key each", () => {
+        assert.deepEqual(
+          reported(
+            {
+              ...perCall,
+              "Cache-Control": "no-store",
+              "Content-Disposition": "inline",
+              "Content-Encoding": "gzip",
+              "Content-Language": "en",
+              "Content-Type": "text/plain",
+              "content-language": "fr",
+              "content-type": "text/plain",
+            },
+            [],
+          ),
+          {
+            "cache-control": "no-store",
+            "content-disposition": "inline",
+            "content-encoding": "gzip",
+            "content-language": ["en", "fr"],
+            "content-type": "text/plain",
+          },
+        );
+      });
+
+      it("keeps every header the probe set, with both values of two addHeader calls of one name", () => {
+        assert.deepEqual(
+          reported({ ...perCall, "X-Sv-Multi": "a" }, [
+            { name: "X-Sv-Multi", value: "a" },
+            { name: "X-Sv-Multi", value: "b" },
+            { name: "Date", value: "today" },
+          ]),
+          { date: "today", "x-sv-multi": ["a", "b"] },
+        );
+      });
+
+      it("redacts the value of a probe header whose name looks like a credential", () => {
+        const names = [
+          "Authorization",
+          "Proxy-Authorization",
+          "Cookie",
+          "X-Api-Token",
+          "X-Client-Secret",
+          "X-Session-Id",
+          "X-Password",
+          "X-Auth-User",
+          "X-API-KEY",
+          "X-Signature",
+          "X-Hmac",
+          "X-Credentials",
+          "X-Nonce",
+          "X-Jwt",
+          "X-Csrf",
+        ];
+        assert.deepEqual(
+          reported(
+            {},
+            names.map((name) => ({ name, value: "s3cr3t" })),
+          ),
+          Object.fromEntries(
+            names.map((name) => [name.toLowerCase(), "<redacted>"]),
+          ),
+        );
+      });
+
+      it("redacts the file name in a Content-Disposition, whether the platform or the probe set it", () => {
+        assert.deepEqual(
+          reported({
+            "Content-Disposition": 'attachment; filename="Acme invoice.pdf"',
+          }),
+          { "content-disposition": "attachment; filename=<redacted>" },
+        );
+        assert.deepEqual(
+          reported({}, [
+            {
+              name: "Content-Disposition",
+              value: "attachment; filename*=UTF-8''Acme%20invoice.pdf; size=3",
+            },
+          ]),
+          {
+            "content-disposition": "attachment; filename*=<redacted>; size=3",
+          },
+        );
+      });
+
+      it("reports only the probe's cookies, redacting all but sv_*", () => {
+        assert.deepEqual(
+          reported(perCall, [
+            { name: "Set-Cookie", value: "sv_flavor=sweet; Path=/" },
+            { name: "Set-Cookie", value: "other=x; Path=/" },
+          ]),
+          { "set-cookie": ["sv_flavor=sweet; Path=/", "other=<redacted>"] },
+        );
+      });
+
+      it("replaces the platform's value of a name the probe set", () => {
+        assert.deepEqual(
+          reported({ "Content-Type": "text/html;charset=utf-8" }, [
+            { name: "content-type", value: "text/plain" },
+          ]),
+          { "content-type": "text/plain" },
+        );
+      });
+
+      it("falls back to the allowlisted platform headers when the report is missing or not valid JSON, and never reports it", () => {
+        for (const probe of [undefined, "not json", '{"name":"x"}']) {
+          assert.deepEqual(
+            reported(
+              { ...perCall, "Content-Type": "text/plain", "X-Sv-Multi": "a" },
+              probe,
+            ),
+            { "content-type": "text/plain" },
+            String(probe),
+          );
+        }
+      });
+    });
+
+    it("strips NetSuite's trailing comments from an own HTML body before cutting it, and nothing else", () => {
+      const p = project();
+      const answers = [
+        ["text/html; charset=UTF-8", `<p>hello</p>${trailer}`],
+        ["text/html", `${"y".repeat(64 * 1024)}${trailer}`],
+        ["text/plain", `<p>hello</p>${trailer}`],
+        ["text/html", "<!-- keep --><p>hello</p><!-- this too -->\n<b>end</b>"],
+      ].map(([type, body]) => ({
+        body,
+        code: 200,
+        headers: { "Content-Type": type, "X-SSV-Mode": "own" },
+      }));
+      let next = 0;
+      const runner = runnerFor(p, () => answers[next++]);
+      const bodies = answers.map(() => {
+        const { response } = runner.post({
+          params: { id: "1" },
+          probe: "page",
+        });
+        return response as { body: string; truncated?: true };
+      });
+      assert.deepEqual(bodies[0], {
+        body: "<p>hello</p>",
+        headers: { "content-type": "text/html; charset=UTF-8" },
+        status: 200,
+      });
+      assert.equal(bodies[1]?.body, "y".repeat(64 * 1024));
+      assert.equal(bodies[1]?.truncated, undefined);
+      assert.equal(bodies[2]?.body, `<p>hello</p>${trailer}`);
+      assert.equal(
+        bodies[3]?.body,
+        "<!-- keep --><p>hello</p><!-- this too -->\n<b>end</b>",
+      );
+    });
+  });
+
+  describe("the generated Suitelet host", () => {
+    type Host = { onRequest: (context: unknown) => void };
+    type Context = {
+      request: Record<string, unknown>;
+      response: Record<
+        | "addHeader"
+        | "getHeader"
+        | "sendRedirect"
+        | "setHeader"
+        | "write"
+        | "writePage",
+        (options: unknown) => unknown
+      > & { headers: Record<string, unknown> };
+    };
+    const hostFor = (
+      p: Project,
+      run: (params: unknown, context: Context) => unknown,
+    ) => {
+      withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      return (runtime: unknown) =>
+        load<Host>(calls(p).suitelet.join(""), runtime, { run });
+    };
+    /** Calls the host with a fake server response that records every call it gets, in order. */
+    const serve = (
+      host: Host,
+      parameters: Record<string, string>,
+      request: Record<string, unknown> = {},
+      fails?: string,
+    ) => {
+      const seen: [string, unknown][] = [];
+      const record =
+        (method: string) =>
+        (arg: unknown): undefined => {
+          if (method === fails) {
+            throw Object.assign(new Error("cannot write a page now"), {
+              name: "SSS_INVALID_PAGE",
+            });
+          }
+          seen.push([method, arg]);
+        };
+      host.onRequest({
+        request: { method: "GET", parameters, ...request },
+        response: Object.fromEntries(
+          [
+            "addHeader",
+            "sendRedirect",
+            "setHeader",
+            "write",
+            "writeFile",
+            "writeLine",
+            "writePage",
+          ].map((method) => [method, record(method)]),
+        ),
+      });
+      const headers = seen.filter(([m]) => m.endsWith("Header"));
+      const marker = headers
+        .map(([, arg]) => arg as { name: string; value: string })
+        .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
+        .map(({ value }) => value);
+      return { marker, seen };
+    };
+    const call = (host: Host, parameters: Record<string, string>) => {
+      const { marker, seen } = serve(host, parameters);
+      assert.deepEqual(marker, ["wrapped"]);
+      return JSON.parse(
+        seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) =>
+            typeof o === "string" ? o : (o as { output: string }).output,
+          )
+          .join(""),
+      );
+    };
+
+    it("returns the probe's value, or THROWS, for a known probe with valid parameters", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      let fail = false;
+      const host = hostFor(p, (params) => {
+        seen.push(params);
+        if (fail) {
+          throw Object.assign(new Error("boom"), { name: "TypeError" });
+        }
+        return { got: params };
+      })(sandbox);
+      const params = JSON.stringify({ id: "7" });
+      assert.deepEqual(call(host, { params, probe: "page" }), {
+        probe: "page",
+        result: { got: { id: "7" } },
+        scriptType: "Suitelet",
+        version: "2026.2",
+      });
+      fail = true;
+      assert.equal(
+        call(host, { params, probe: "page" }).result,
+        "THROWS: TypeError: boom",
+      );
+      assert.deepEqual(seen, [{ id: "7" }, { id: "7" }]);
+    });
+
+    it("refuses outside a sandbox, an unknown probe and invalid parameters, without running the probe", () => {
+      const p = project();
+      let ran = 0;
+      const make = hostFor(p, () => ran++);
+      const prod = make({ ...sandbox, envType: "PRODUCTION" });
+      assert.match(
+        call(prod, { params: '{"id":"1"}', probe: "page" }).error,
+        /sandbox/,
+      );
+      const host = make(sandbox);
+      assert.equal(call(host, { probe: "nope" }).error, "unknown probe");
+      for (const params of [
+        '{"id":"x"}',
+        '{"id":"1","extra":"2"}',
+        "{}",
+        '{"id":1}',
+        "not json",
+        "[]",
+      ]) {
+        assert.match(call(host, { params, probe: "page" }).error, /param/);
+      }
+      assert.equal(ran, 0);
+    });
+
+    const params = JSON.stringify({ id: "7" });
+
+    it("replays a probe's own response after it returns nothing, behind the own marker", () => {
+      const p = project();
+      const reads: unknown[] = [];
+      const host = hostFor(p, (_params, { response }) => {
+        response.setHeader({ name: "X-Probe", value: "1" });
+        reads.push(response.getHeader({ name: "x-probe" }));
+        response.write({ output: "<p>hello</p>" });
+        response.addHeader({ name: "Set-Cookie", value: "sv_a=1; Path=/" });
+        reads.push(response.headers);
+      })(sandbox);
+      const { marker, seen } = serve(host, { params, probe: "page" });
+      assert.deepEqual(marker, ["own"]);
+      assert.deepEqual(seen, [
+        ["setHeader", { name: "X-SSV-Mode", value: "own" }],
+        [
+          "setHeader",
+          {
+            name: "X-SSV-Headers",
+            value: JSON.stringify([
+              { name: "X-Probe", value: "1" },
+              { name: "Set-Cookie", value: "sv_a=1; Path=/" },
+            ]),
+          },
+        ],
+        ["setHeader", { name: "X-Probe", value: "1" }],
+        ["write", { output: "<p>hello</p>" }],
+        ["addHeader", { name: "Set-Cookie", value: "sv_a=1; Path=/" }],
+      ]);
+      assert.deepEqual(reads, [
+        "1",
+        { "Set-Cookie": "sv_a=1; Path=/", "X-Probe": "1" },
+      ]);
+    });
+
+    it("reports the probe's headers in X-SSV-Headers, setHeader replacing a name's values and addHeader appending", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.addHeader({ name: "X-Sv-Multi", value: "a" });
+        response.addHeader({ name: "x-sv-multi", value: "b" });
+        response.addHeader({ name: "X-Sv-Once", value: "old" });
+        response.setHeader({ name: "X-SV-ONCE", value: "new" });
+        response.setHeader({ name: "Set-Cookie", value: "sv_single=one" });
+        response.write({ output: "hi" });
+      })(sandbox);
+      const { seen } = serve(host, { params, probe: "page" });
+      const reported = seen
+        .map(([, arg]) => arg as { name?: string; value?: string })
+        .find(({ name }) => name === "X-SSV-Headers");
+      assert.deepEqual(JSON.parse(reported?.value ?? ""), [
+        { name: "X-Sv-Multi", value: "a" },
+        { name: "X-Sv-Multi", value: "b" },
+        { name: "X-Sv-Once", value: "new" },
+        { name: "Set-Cookie", value: "sv_single=one" },
+      ]);
+    });
+
+    it("refuses a probe that both writes a response and returns a value, replaying nothing", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.write({ output: "partial" });
+        return { ok: true };
+      })(sandbox);
+      assert.match(
+        call(host, { params, probe: "page" }).error,
+        /both wrote a response and returned a value/,
+      );
+      const { seen } = serve(host, { params, probe: "page" });
+      assert.equal(JSON.stringify(seen).includes("partial"), false);
+    });
+
+    it("drops everything a probe wrote when it throws, before or after writing", () => {
+      for (const writeFirst of [false, true]) {
+        const p = project();
+        const host = hostFor(p, (_params, { response }) => {
+          if (writeFirst) {
+            response.setHeader({ name: "X-Probe", value: "1" });
+            response.write({ output: "partial" });
+          }
+          throw Object.assign(new Error("boom"), { name: "TypeError" });
+        })(sandbox);
+        assert.equal(
+          call(host, { params, probe: "page" }).result,
+          "THROWS: TypeError: boom",
+        );
+        const { seen } = serve(host, { params, probe: "page" });
+        assert.equal(/partial|X-Probe/.test(JSON.stringify(seen)), false);
+      }
+    });
+
+    it("answers THROWS behind the wrapped marker when the replay fails part-way, never as own output", () => {
+      for (const writeFirst of [false, true]) {
+        const p = project();
+        const host = hostFor(p, (_params, { response }) => {
+          response.setHeader({ name: "X-Probe", value: "1" });
+          if (writeFirst) response.write({ output: "partial" });
+          response.writePage({ pageObject: {} });
+        })(sandbox);
+        const { marker, seen } = serve(
+          host,
+          { params, probe: "page" },
+          {},
+          "writePage",
+        );
+        assert.equal(marker.at(-1), "wrapped");
+        const writes = seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) => (o as { output: string }).output);
+        const answer = writes.at(-1) ?? "";
+        assert.deepEqual(JSON.parse(answer), {
+          probe: "page",
+          result: "THROWS: SSS_INVALID_PAGE: cannot write a page now",
+          scriptType: "Suitelet",
+          version: "2026.2",
+        });
+        // What was written before the failure cannot be taken back, so the
+        // runner reads partial output plus the answer as a body that is not
+        // JSON: an error, never a result or own output.
+        assert.equal(writes.join("").startsWith("partial"), writeFirst);
+      }
+    });
+
+    it("refuses a redirect as the probe's error, since requestSuitelet follows it, replaying nothing", () => {
+      const p = project();
+      const host = hostFor(p, (_params, { response }) => {
+        response.setHeader({ name: "X-Probe", value: "1" });
+        response.sendRedirect({ identifier: "x", type: "SUITELET" });
+      })(sandbox);
+      assert.match(
+        call(host, { params, probe: "page" }).result,
+        /^THROWS: SSV_REDIRECT_REFUSED: .*requestSuitelet follows redirects/,
+      );
+      const { seen } = serve(host, { params, probe: "page" });
+      assert.equal(/X-Probe|sendRedirect/.test(JSON.stringify(seen)), false);
+    });
+
+    it("refuses a probe's attempt to set the marker or any X-SSV- header, whatever the case or call", () => {
+      for (const reserved of [" x-ssv-MODE", "X-SSV-Headers", "x-ssv-other"]) {
+        const p = project();
+        let caught = 0;
+        let swallow = false;
+        const host = hostFor(p, (_params, { response }) => {
+          for (const method of ["setHeader", "addHeader"] as const) {
+            try {
+              response[method]({ name: reserved, value: "wrapped" });
+            } catch (e) {
+              caught++;
+              if (!swallow) throw e;
+            }
+          }
+          response.write({ output: '{"result":"forged"}' });
+        })(sandbox);
+        assert.match(
+          call(host, { params, probe: "page" }).result,
+          /^THROWS: SSV_RESERVED_HEADER: .*X-SSV-/,
+          reserved,
+        );
+        swallow = true;
+        const { marker, seen } = serve(host, { params, probe: "page" });
+        assert.deepEqual(marker, ["own"]);
+        assert.deepEqual(seen.slice(1), [
+          ["setHeader", { name: "X-SSV-Headers", value: "[]" }],
+          ["write", { output: '{"result":"forged"}' }],
+        ]);
+        assert.equal(caught, 3);
+      }
+    });
+
+    it("shows the probe only the method and its declared parameters, never headers, cookies or body", () => {
+      const p = project();
+      const views: unknown[] = [];
+      const host = hostFor(p, (params, { request }) => {
+        views.push(request, Object.isFrozen(request), params);
+        return 1;
+      })(sandbox);
+      serve(
+        host,
+        { params, probe: "page" },
+        {
+          body: "secret-body",
+          clientIpAddress: "10.0.0.1",
+          getHeader: () => "x",
+          headers: { cookie: "JSESSIONID=abc" },
+          method: "POST",
+          url: "/app/site/hosting/scriptlet.nl",
+        },
+      );
+      assert.deepEqual(views, [
+        { method: "POST", parameters: { id: "7" } },
+        true,
+        { id: "7" },
+      ]);
+    });
+  });
+});
+
+const packageVersion = (
+  JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
+
+describe("the self-check", () => {
+  const levels = { CREATE: 2, EDIT: 3, FULL: 4, NONE: 0, VIEW: 1 };
+  /** A runtime whose current user runs as `role`, holding `held` (a permission key to a level). */
+  const runtimeFor = (
+    held: Record<string, number>,
+    role = "customrole_suitescript_verify",
+    env = sandbox,
+  ) => ({
+    ...env,
+    getCurrentUser: () => ({
+      getPermission: ({ name }: { name: string }) => held[name] ?? 0,
+      roleId: role,
+    }),
+    Permission: levels,
+  });
+  const deployed = (p: Project) => {
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource(`${restlet}\n * @permission LIST_EMPLOYEE VIEW`),
+    );
+    write(
+      p.dir,
+      "verification/probes/page.js",
+      probeSource("@scriptType Suitelet"),
+    );
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return calls(p);
+  };
+  const full = { ADMI_LOGIN_OAUTH2: 4, ADMI_RESTWEBSERVICES: 4 };
+
+  describe("the generated Suitelet host", () => {
+    const ask = (source: string, runtime: unknown) => {
+      const written: string[] = [];
+      let ran = 0;
+      load<{ onRequest: (c: unknown) => void }>(source, runtime, {
+        run: () => ran++,
+      }).onRequest({
+        request: { method: "GET", parameters: { selfCheck: "1" } },
+        response: {
+          setHeader: () => undefined,
+          write: (o: { output: string } | string) =>
+            written.push(typeof o === "string" ? o : o.output),
+        },
+      });
+      assert.equal(ran, 0);
+      return JSON.parse(written.join(""));
+    };
+
+    it("answers the reserved self-check with the sandbox check, the package version, the build and its probes, running none", () => {
+      const p = project();
+      const host = deployed(p).suitelet.join("");
+      const { build } = ask(host, sandbox).selfCheck;
+      assert.match(build, /^[0-9a-f]{12}$/);
+      assert.deepEqual(ask(host, sandbox), {
+        selfCheck: {
+          build,
+          packageVersion,
+          probes: ["page"],
+          sandbox: true,
+        },
+      });
+      assert.deepEqual(ask(host, { ...sandbox, envType: "PRODUCTION" }), {
+        selfCheck: { sandbox: false },
+      });
+    });
+  });
+
+  describe("the generated runner", () => {
+    type Runner = { post: (b: unknown) => Record<string, unknown> };
+    const runnerFrom = (
+      source: string,
+      runtime: unknown,
+      requestSuitelet: (o: unknown) => unknown,
+    ) => {
+      let ran = 0;
+      const runner = load<Runner>(
+        source,
+        runtime,
+        { requestSuitelet },
+        {
+          run: () => ran++,
+        },
+      );
+      return { ran: () => ran, runner };
+    };
+    const hostAnswer = {
+      body: JSON.stringify({
+        selfCheck: { packageVersion, probes: ["page"], sandbox: true },
+      }),
+      code: 200,
+      headers: {},
+    };
+
+    it("answers the reserved self-check with the sandbox check, its role, each written permission's held level, the deployed version and probes, and the host's answer", () => {
+      const p = project();
+      const seen: unknown[] = [];
+      const { ran, runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtimeFor({ ...full, LIST_EMPLOYEE: 1 }),
+        (options) => {
+          seen.push(options);
+          return hostAnswer;
+        },
+      );
+      const answer = runner.post({ selfCheck: true }) as {
+        selfCheck: { build: string };
+      };
+      const { build } = answer.selfCheck;
+      assert.match(build, /^[0-9a-f]{12}$/);
+      assert.deepEqual(answer, {
+        selfCheck: {
+          build,
+          host: { packageVersion, probes: ["page"], sandbox: true },
+          packageVersion,
+          permissions: {
+            ADMI_LOGIN_OAUTH2: "FULL",
+            ADMI_RESTWEBSERVICES: "FULL",
+            LIST_EMPLOYEE: "VIEW",
+          },
+          probes: ["one", "page"],
+          role: "customrole_suitescript_verify",
+          sandbox: true,
+          version: "2026.2",
+        },
+      });
+      assert.deepEqual(seen, [
+        {
+          deploymentId: "customdeploy_suitescript_verify_sl",
+          scriptId: "customscript_suitescript_verify_sl",
+          urlParams: { selfCheck: "1" },
+        },
+      ]);
+      assert.equal(ran(), 0);
+    });
+
+    it("bakes one build fingerprint into the runner and the host, which changes when a probe's code changes", () => {
+      const p = project();
+      const build = () => {
+        const call = calls(p);
+        const { runner } = runnerFrom(
+          call.runner.join(""),
+          runtimeFor(full),
+          () => hostAnswer,
+        );
+        const fromRunner = (
+          runner.post({ selfCheck: true }).selfCheck as { build: string }
+        ).build;
+        const fromHost = /build: "([0-9a-f]{12})"/.exec(
+          call.suitelet.join(""),
+        )?.[1];
+        assert.equal(fromHost, fromRunner);
+        return fromRunner;
+      };
+      deployed(p);
+      const first = build();
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      assert.equal(build(), first);
+      write(
+        p.dir,
+        "verification/probes/page.js",
+        probeSource("@scriptType Suitelet").replace("ok: true", "ok: false"),
+      );
+      assert.equal(cli(p, ["deploy"]).status, 0);
+      assert.notEqual(build(), first);
+    });
+
+    it("reports a permission the role lacks, or cannot read, as it found it", () => {
+      const p = project();
+      const runtime = runtimeFor({ ADMI_LOGIN_OAUTH2: 4 });
+      const user = runtime.getCurrentUser();
+      runtime.getCurrentUser = () => ({
+        ...user,
+        getPermission: ({ name }: { name: string }) => {
+          if (name === "LIST_EMPLOYEE") {
+            throw Object.assign(new Error("bad key"), { name: "SSS_X" });
+          }
+          return user.getPermission({ name });
+        },
+      });
+      const { runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtime,
+        () => hostAnswer,
+      );
+      const answer = runner.post({ selfCheck: true }).selfCheck as {
+        permissions: unknown;
+      };
+      assert.deepEqual(answer.permissions, {
+        ADMI_LOGIN_OAUTH2: "FULL",
+        ADMI_RESTWEBSERVICES: "NONE",
+        LIST_EMPLOYEE: "UNREADABLE: SSS_X: bad key",
+      });
+    });
+
+    it("reports a host that does not answer, never throwing", () => {
+      const p = project();
+      const source = deployed(p).runner.join("");
+      for (const [reply, error] of [
+        [
+          () => {
+            throw Object.assign(new Error("An unexpected error"), {
+              name: "UNEXPECTED_ERROR",
+            });
+          },
+          "the Suitelet host call failed: UNEXPECTED_ERROR: An unexpected error",
+        ],
+        [
+          () => ({ body: "Server error", code: 500 }),
+          "the Suitelet host answered HTTP 500: Server error",
+        ],
+        [
+          () => ({ body: "<html>login</html>", code: 200 }),
+          "the Suitelet host's answer was not JSON: <html>login</html>",
+        ],
+        [
+          () => ({ body: '{"error":"unknown probe"}', code: 200 }),
+          'the Suitelet host has no self-check: {"error":"unknown probe"}',
+        ],
+      ] as const) {
+        const { runner } = runnerFrom(source, runtimeFor(full), reply);
+        const answer = runner.post({ selfCheck: true }).selfCheck as {
+          host: unknown;
+          sandbox: boolean;
+        };
+        assert.deepEqual(answer.host, { error });
+        assert.equal(answer.sandbox, true);
+      }
+    });
+
+    it("answers only the sandbox check outside a sandbox", () => {
+      const p = project();
+      let called = 0;
+      const { runner } = runnerFrom(
+        deployed(p).runner.join(""),
+        runtimeFor(full, "customrole_suitescript_verify", {
+          ...sandbox,
+          envType: "PRODUCTION",
+        }),
+        () => {
+          called++;
+          return hostAnswer;
+        },
+      );
+      assert.deepEqual(runner.post({ selfCheck: true }), {
+        selfCheck: { sandbox: false },
+      });
+      assert.equal(called, 0);
+    });
+  });
+});
+
+describe("doctor calls the self-check", () => {
+  const step = /The deployed runner passes its self-check/;
+  const lineOf = (out: string) =>
+    out.split("\n").find((l) => /^(ok|FAIL) /.test(l) && step.test(l)) ?? "";
+  const withProbes = (p: Project) => {
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource(`${restlet}\n * @permission LIST_EMPLOYEE VIEW`),
+    );
+    write(
+      p.dir,
+      "verification/probes/page.js",
+      probeSource("@scriptType Suitelet"),
+    );
+  };
+  const deployedProject = () => {
+    const p = project();
+    withProbes(p);
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return p;
+  };
+  /** The build fingerprint the last deploy baked into the runner. */
+  const builtAs = (p: Project) =>
+    /build: "([0-9a-f]{12})"/.exec(calls(p).runner.join(""))?.[1] ?? "";
+  const healthy = (p: Project) => ({
+    build: builtAs(p),
+    host: {
+      build: builtAs(p),
+      packageVersion,
+      probes: ["page"],
+      sandbox: true,
+    },
+    packageVersion,
+    permissions: {
+      ADMI_LOGIN_OAUTH2: "FULL",
+      ADMI_RESTWEBSERVICES: "FULL",
+      LIST_EMPLOYEE: "VIEW",
+    },
+    probes: ["one", "page"],
+    role: "customrole_suitescript_verify",
+    sandbox: true,
+    version: "2026.2",
+  });
+  /** Runs doctor and checks it printed no identifier. */
+  const doctor = (p: Project) => {
+    const out = cli(p, ["doctor"]).all;
+    for (const id of [
+      "1234567",
+      clientId,
+      "cert-runner-id",
+      "cert-sdf-id",
+      "tok-abc",
+      "netsuite.com",
+    ]) {
+      assert.equal(out.includes(id), false, id);
+    }
+    return out;
+  };
+
+  it("passes when the deployed version, probes, host and role match the project, asking through the token flow run uses", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: healthy(p) }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^ok {3}/);
+    const [token, call] = p.requests();
+    assert.match(token?.url ?? "", /\/oauth2\/v1\/token$/);
+    assert.match(call?.url ?? "", /script=customscript_suitescript_verify_rl&/);
+    assert.equal(call?.body, JSON.stringify({ selfCheck: true }));
+  });
+
+  it("says to deploy first before any deploy", () => {
+    const p = project();
+    withProbes(p);
+    p.script(
+      { body: { error: "invalid_grant" }, status: 400 },
+      { body: {}, status: 200 },
+    );
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Deploy first/);
+  });
+
+  it("says to redeploy when the deployed version, probe list or host differs", () => {
+    for (const [change, why] of [
+      [{ packageVersion: "0.0.1" }, /version 0\.0\.1/],
+      [{ probes: ["one"] }, /probes/],
+      [
+        { host: { error: "the Suitelet host answered HTTP 500: x" } },
+        /HTTP 500/,
+      ],
+      [
+        { host: { packageVersion, probes: [], sandbox: true } },
+        /Suitelet host/,
+      ],
+    ] as const) {
+      const p = deployedProject();
+      p.script(...ok({ selfCheck: { ...healthy(p), ...change } }));
+      const out = doctor(p);
+      assert.match(lineOf(out), /^FAIL /, String(why));
+      assert.match(out, /Maintainer's own step: Redeploy/, String(why));
+      assert.match(out, why);
+    }
+  });
+
+  it("says to redeploy a runner or host of the same version built from other templates or probes, naming the builds", () => {
+    for (const change of [
+      (answer: ReturnType<typeof healthy>) => {
+        answer.build = "abcdef0abcde";
+      },
+      (answer: ReturnType<typeof healthy>) => {
+        answer.host.build = "abcdef0abcde";
+      },
+    ]) {
+      const p = deployedProject();
+      const answer = healthy(p);
+      change(answer);
+      p.script(...ok({ selfCheck: answer }));
+      const out = doctor(p);
+      assert.match(lineOf(out), /^FAIL /);
+      assert.match(out, /Maintainer's own step: Redeploy/);
+      assert.match(out, /abcdef0abcde/);
+      assert.ok(out.includes(builtAs(p)), out);
+      assert.ok(out.includes(packageVersion), out);
+    }
+  });
+
+  it("says a runner or host deployed before build fingerprints has none, never `build undefined`", () => {
+    const p = deployedProject();
+    const { build: _runner, ...answer } = healthy(p);
+    const { build: _host, ...host } = answer.host;
+    p.script(...ok({ selfCheck: { ...answer, host } }));
+    const out = doctor(p);
+    assert.match(out, /Maintainer's own step: Redeploy/);
+    assert.doesNotMatch(out, /undefined/);
+    assert.match(
+      out,
+      /the deployed runner is version \S+ with no build fingerprint \(deployed by an older build\)/,
+    );
+    assert.match(
+      out,
+      /the Suitelet host is version \S+ with no build fingerprint \(deployed by an older build\)/,
+    );
+  });
+
+  it("says to redeploy a runner that has no self-check", () => {
+    const p = deployedProject();
+    p.script(...ok({ error: "unknown probe", known: ["one"] }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Redeploy/);
+  });
+
+  it("reports drift when the role lacks a permission the deploy wrote", () => {
+    const p = deployedProject();
+    const answer = healthy(p);
+    answer.permissions.LIST_EMPLOYEE = "NONE";
+    p.script(...ok({ selfCheck: answer }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Maintainer's own step: Drift/);
+    assert.match(out, /LIST_EMPLOYEE/);
+    assert.doesNotMatch(out, /ADMI_LOGIN_OAUTH2 \(/);
+  });
+
+  it("fails when the runner runs as another role or outside a sandbox", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: { ...healthy(p), role: "customrole_other" } }));
+    assert.match(doctor(p), /customrole_other/);
+    p.script(...ok({ selfCheck: { sandbox: false } }));
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /sandbox/);
+  });
+
+  it("refuses to print an answer that looks like an identifier", () => {
+    const p = deployedProject();
+    p.script(
+      ...ok({
+        selfCheck: {
+          ...healthy(p),
+          host: { error: "failed at 7654321-sb2.app.netsuite.com" },
+        },
+      }),
+    );
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.equal(out.includes("7654321"), false);
+  });
+
+  it("calls nothing before the runner's settings pass", () => {
+    const p = deployedProject();
+    p.script(...ok({ selfCheck: healthy(p) }));
+    const out = cli(p, ["doctor"], {
+      SUITESCRIPT_VERIFY_PRIVATE_KEY_PATH: join(p.dir, "missing.pem"),
+    }).all;
+    assert.match(lineOf(out), /^FAIL /);
+    assert.deepEqual(p.requests(), []);
   });
 });

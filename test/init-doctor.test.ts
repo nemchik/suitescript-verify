@@ -15,6 +15,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
+import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
 const bin = join(
@@ -24,6 +26,8 @@ const bin = join(
   "bin",
   "suitescript-verify.js",
 );
+/** Preloaded into every run, so a doctor whose settings pass calls a fake NetSuite, never a network. */
+const fakeNetsuite = `--import=${pathToFileURL(join(import.meta.dirname, "fixtures", "fake-netsuite.mjs")).href}`;
 const temps: string[] = [];
 after(() => {
   for (const dir of temps) rmSync(dir, { force: true, recursive: true });
@@ -42,6 +46,9 @@ function cli(
     HOME: home,
     USERPROFILE: home,
     ...extraEnv,
+    NODE_OPTIONS: [fakeNetsuite, extraEnv.NODE_OPTIONS]
+      .filter(Boolean)
+      .join(" "),
   };
   delete env.SUITECLOUD_CLI_ACCEPT_LICENSE;
   for (const name of Object.keys(env)) {
@@ -261,6 +268,49 @@ describe("init", () => {
     assert.ok(existsSync(join(project, "elsewhere", ".env")));
     assert.ok(existsSync(join(project, "elsewhere", "sdf")));
   });
+
+  it("asks at a terminal where results live and saves the answer", () => {
+    const project = empty();
+    const result = cli(["init"], project, fakeTerminal(["notes/checks"]));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      /Where should results pages live in this project\? \[docs\/verification\/results\]/,
+    );
+    assert.match(
+      readFileSync(join(project, "verification", ".env"), "utf8"),
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=notes\/checks$/m,
+    );
+    assert.ok(existsSync(join(project, "notes", "checks")));
+    assert.equal(existsSync(join(project, "docs")), false);
+  });
+
+  it("takes the suggested results folder when the person just presses Enter", () => {
+    const project = empty();
+    const result = cli(["init"], project, fakeTerminal([""]));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      readFileSync(join(project, "verification", ".env"), "utf8"),
+      /^SUITESCRIPT_VERIFY_RESULTS_DIR=docs\/verification\/results$/m,
+    );
+    assert.ok(existsSync(join(project, "docs", "verification", "results")));
+  });
+
+  it("does not ask at a terminal when the flag or the .env already chose", () => {
+    const flagged = empty();
+    const result = cli(
+      ["init", "--results-dir", "notes/checks"],
+      flagged,
+      fakeTerminal([]),
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /Where should results pages live/);
+    const set = empty();
+    write(set, "verification/.env", "SUITESCRIPT_VERIFY_RESULTS_DIR=kept\n");
+    const kept = cli(["init"], set, fakeTerminal([]));
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.doesNotMatch(kept.stdout, /Where should results pages live/);
+  });
 });
 
 describe("doctor", () => {
@@ -293,6 +343,15 @@ describe("doctor", () => {
       assert.equal(status(result.stdout, name), "FAIL", String(name));
     }
     assert.match(result.stdout, /Maintainer's own/);
+    const failed = steps(result.stdout).filter((l) => l.startsWith("FAIL"));
+    const own = result.stdout.match(/Maintainer's own step:/g) ?? [];
+    assert.ok(own.length > 1 && own.length < failed.length, result.stdout);
+    assert.ok(
+      result.stdout.includes(
+        `\n${failed.length} checks failed; ${own.length} are the maintainer's own steps: relay each next step to the maintainer and wait.`,
+      ),
+      result.stdout,
+    );
   });
 
   it("passes the CLI step when the CLI is installed", () => {

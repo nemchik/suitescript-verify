@@ -19,6 +19,10 @@ _Avoid_: Second runner, probe Suitelet
 **Suitelet host**:
 The script host for Suitelet probes.
 
+**Self-check**:
+The runner's reserved, read-only answer about its own deployment: whether the account is a sandbox, the role it runs as and what that role holds, the package version and probes it was deployed with, and whether its script hosts answer. It proves the whole chain without a probe.
+_Avoid_: Probe-zero, health check
+
 **Results page**:
 The document in a downstream project that records one verification: the test, the NetSuite version, the output, the explanation and the decision.
 

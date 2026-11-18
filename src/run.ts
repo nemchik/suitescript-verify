@@ -1,20 +1,34 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Config } from "./config.ts";
-import { clientAssertion, restletUrl, scrub, tokenUrl } from "./netsuite.ts";
+import {
+  clientAssertion,
+  type KnownIds,
+  restletUrl,
+  scrub,
+  tokenUrl,
+} from "./netsuite.ts";
 import {
   anchored,
-  isRestlet,
+  differingPaths,
+  isRunnable,
   isSlug,
+  listDifferences,
   listProbes,
-  matchesExpect,
   type Probe,
   read,
   readExpect,
+  sortKeys,
   tagProblems,
 } from "./probes.ts";
+import {
+  ownResponse,
+  responseDifferences,
+  withOwnResponse,
+} from "./response.ts";
 import { resultsDraft } from "./results.ts";
 import {
+  type Creds,
   positionals,
   requireResultsDir,
   requireSandbox,
@@ -85,6 +99,80 @@ function validateParams(probe: Probe, args: string[]): Record<string, string> {
   );
 }
 
+/** The configured ids the scrubber replaces with placeholders. */
+export const knownIds = (creds: Creds): KnownIds => ({
+  account: creds.account,
+  certificateId: creds.certificateId,
+  clientId: creds.clientId,
+  sdfCertificateId: creds.sdfCertificateId,
+});
+
+/**
+ * Gets a token with the runner's certificate (OAuth 2.0 client credentials)
+ * and posts `body` to the deployed runner. Returns the runner's answer as text;
+ * a failed token request, a failed call or a non-OK status is a UsageError
+ * whose message is scrubbed of the configured ids.
+ */
+export async function callRunner(
+  creds: Creds,
+  runnerId: string,
+  body: unknown,
+): Promise<string> {
+  const safe = (text: string) => scrub(text, knownIds(creds)).text;
+  const endpoint = tokenUrl(creds.account);
+  const assertion = clientAssertion({
+    certificateId: creds.certificateId,
+    clientId: creds.clientId,
+    privateKeyPem: readFileSync(creds.privateKeyPath, "utf8"),
+    tokenEndpoint: endpoint,
+  });
+  try {
+    const tokenResponse = await fetch(endpoint, {
+      body: new URLSearchParams({
+        client_assertion: assertion,
+        client_assertion_type:
+          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        grant_type: "client_credentials",
+      }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+    const tokenBody = (await tokenResponse.json().catch(() => ({}))) as {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!tokenResponse.ok || !tokenBody.access_token) {
+      throw new UsageError(
+        safe(
+          `Token request failed: HTTP ${tokenResponse.status} ${tokenBody.error ?? ""} ${tokenBody.error_description ?? ""}`.trim(),
+        ),
+      );
+    }
+    const response = await fetch(restletUrl(creds.account, runnerId), {
+      body: JSON.stringify(body),
+      headers: {
+        authorization: `Bearer ${tokenBody.access_token}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new UsageError(
+        `The runner call failed: HTTP ${response.status}
+${safe(text.slice(0, 500))}`,
+      );
+    }
+    return text;
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    throw new UsageError(
+      safe(`The request failed: ${(error as Error).message}`),
+    );
+  }
+}
+
 /**
  * Runs one probe, by name from the fixed list in the probes folder, through
  * the deployed runner. Nothing from a request or an argument is ever run as
@@ -110,9 +198,9 @@ export async function runProbe(
       `Unknown probe "${name}". Known: ${probes.map((p) => p.slug).join(", ") || "(none)"}`,
     );
   }
-  if (!isRestlet(probe)) {
+  if (!isRunnable(probe)) {
     throw new UsageError(
-      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet probes (declare @scriptType Restlet); ask the user to run it by hand in a sandbox console.`,
+      `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet and Suitelet probes (declare @scriptType Restlet or @scriptType Suitelet); ask the user to run it by hand in a sandbox console.`,
     );
   }
   if (probe.writes) {
@@ -124,94 +212,54 @@ export async function runProbe(
   if (!existsSync(creds.privateKeyPath)) {
     throw new UsageError("The runner private key file does not exist.");
   }
-  const known = {
-    account: creds.account,
-    certificateId: creds.certificateId,
-    clientId: creds.clientId,
-    sdfCertificateId: creds.sdfCertificateId,
-  };
-  const safe = (text: string) => scrub(text, known).text;
+  const known = knownIds(creds);
 
-  const endpoint = tokenUrl(creds.account);
-  const assertion = clientAssertion({
-    certificateId: creds.certificateId,
-    clientId: creds.clientId,
-    privateKeyPem: readFileSync(creds.privateKeyPath, "utf8"),
-    tokenEndpoint: endpoint,
-  });
-  let text: string;
-  try {
-    const tokenResponse = await fetch(endpoint, {
-      body: new URLSearchParams({
-        client_assertion: assertion,
-        client_assertion_type:
-          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-        grant_type: "client_credentials",
-      }),
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      method: "POST",
-    });
-    const tokenBody = (await tokenResponse.json().catch(() => ({}))) as {
-      access_token?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!tokenResponse.ok || !tokenBody.access_token) {
-      throw new UsageError(
-        safe(
-          `Token request failed: HTTP ${tokenResponse.status} ${tokenBody.error ?? ""} ${tokenBody.error_description ?? ""}`.trim(),
-        ),
-      );
-    }
-    const response = await fetch(restletUrl(creds.account, config.runnerId), {
-      body: JSON.stringify(
-        probe.params.length > 0
-          ? { params, probe: probe.slug }
-          : { probe: probe.slug },
-      ),
-      headers: {
-        authorization: `Bearer ${tokenBody.access_token}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-    });
-    text = await response.text();
-    if (!response.ok) {
-      throw new UsageError(
-        `The runner call failed: HTTP ${response.status}\n${safe(text.slice(0, 500))}`,
-      );
-    }
-  } catch (error) {
-    if (error instanceof UsageError) throw error;
-    throw new UsageError(
-      safe(`The request failed: ${(error as Error).message}`),
-    );
-  }
+  const text = await callRunner(
+    creds,
+    config.runnerId,
+    probe.params.length > 0
+      ? { params, probe: probe.slug }
+      : { probe: probe.slug },
+  );
 
-  const scrubbed = scrub(text, known);
+  const scrubbed = scrub(withOwnResponse(text), known);
   if (scrubbed.problems.length > 0) {
     throw new UsageError(
       `Refusing to print or record the output: ${scrubbed.problems.join("; ")}. Review it by hand.`,
     );
   }
-  let body: { error?: string; result?: unknown; version?: string };
+  let body: {
+    error?: string;
+    response?: unknown;
+    result?: unknown;
+    version?: string;
+  };
   try {
     body = JSON.parse(scrubbed.text);
   } catch {
     throw new UsageError("The runner's answer was not JSON.");
   }
-  if (body.error) throw new UsageError(`The runner refused: ${body.error}`);
-  console.log(JSON.stringify(body, null, 2));
+  if (body.error) {
+    throw new UsageError(`The runner reported an error: ${body.error}`);
+  }
+  // A Suitelet probe that wrote its own response is reported as that response, not a result.
+  const own = "response" in body ? ownResponse(body.response) : undefined;
+  if (own) body.response = own;
+  // Sorted as an expectation is written, so the printed output can be copied as one.
+  console.log(JSON.stringify(sortKeys(body), null, 2));
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
   if (expected !== undefined) {
-    if (matchesExpect(body.result, expected)) {
+    const differences = own
+      ? responseDifferences(own, expected)
+      : differingPaths(body.result, expected, "result");
+    if (differences.length === 0) {
       console.log("\nMatches the expected output.");
     } else {
       status = 2;
       console.log(
-        `\nDRIFT: the output differs from ${probe.slug}.expect.json. The platform changed, or the expectation is wrong.`,
+        `\nDRIFT: the output differs from ${probe.slug}.expect.json at ${listDifferences(differences)}. The platform changed, or the expectation is wrong.`,
       );
     }
   }
@@ -226,7 +274,7 @@ export async function runProbe(
       const draft = scrub(
         resultsDraft({
           date: new Date().toISOString().slice(0, 10),
-          output: body.result,
+          output: sortKeys(own ?? body.result),
           probe,
           probeFile,
           resultsDir,

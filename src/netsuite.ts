@@ -1,21 +1,42 @@
 import { createPrivateKey, sign } from "node:crypto";
-import { defaultRunnerId } from "./config.ts";
 
-/** The names a runner takes from its id: the script, the deployment, the File Cabinet folder and the title shown in the account. */
-export const runnerNames = (runnerId: string) => ({
-  deployId: `customdeploy_${runnerId}_runner`,
+/** The script types deployed for a runner id: the runner (`rl`) and the Suitelet host (`sl`). */
+export type ScriptType = "rl" | "sl";
+
+const scriptFiles = {
+  rl: { file: "restlet.js", title: "ssv runner" },
+  sl: { file: "suitelet.js", title: "ssv suitelet" },
+} as const;
+
+/**
+ * The names a script of `type` takes from the runner id: the script and
+ * deployment ids (ending in the type), the File Cabinet folder the runner and
+ * its hosts share, the script file and the name shown in the account (at most
+ * 37 characters). Each fits the platform's 40 characters with an id of up to
+ * 24.
+ */
+export const scriptNames = (runnerId: string, type: ScriptType) => ({
+  deployId: `customdeploy_${runnerId}_${type}`,
+  file: scriptFiles[type].file,
   folder: runnerId.replaceAll("_", "-"),
-  scriptId: `customscript_${runnerId}_runner`,
-  // A runner of another id says so, so two runners in one account can be told apart.
-  title:
-    runnerId === defaultRunnerId
-      ? "suitescript-verify runner"
-      : `suitescript-verify runner (${runnerId})`,
+  scriptId: `customscript_${runnerId}_${type}`,
+  title: `${scriptFiles[type].title} ${runnerId}`,
 });
 
-/** The id of the runner that wrote an object file, from its name; undefined for any other file. */
-export const runnerIdOfObjectFile = (file: string) =>
-  /^customscript_([a-z0-9_]+)_runner.xml$/.exec(file)?.[1];
+/**
+ * The runner a generated object file belongs to, from its name: its id, and
+ * whether 1.x wrote it (the `_runner` suffix). The runner's own object (`_rl`)
+ * and its Suitelet host's (`_sl`) both belong to it. Undefined for any other
+ * file.
+ */
+export function runnerOfObjectFile(
+  file: string,
+): { id: string; legacy: boolean } | undefined {
+  const match = /^customscript_([a-z0-9_]+)_(rl|sl|runner)\.xml$/.exec(file);
+  return match?.[1] === undefined
+    ? undefined
+    : { id: match[1], legacy: match[2] === "runner" };
+}
 
 const host = (account: string) =>
   account.trim().toLowerCase().replace(/_/g, "-");
@@ -24,7 +45,7 @@ export const tokenUrl = (account: string) =>
   `https://${host(account)}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token`;
 
 export const restletUrl = (account: string, runnerId: string) => {
-  const { deployId, scriptId } = runnerNames(runnerId);
+  const { deployId, scriptId } = scriptNames(runnerId, "rl");
   return `https://${host(account)}.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=${scriptId}&deploy=${deployId}`;
 };
 
@@ -66,11 +87,11 @@ export function clientAssertion(options: {
 const identifierPatterns: Array<[string, RegExp]> = [
   ["an account number", /\b\d{5,8}[_-](?:SB|RP|TSTDRV)\w*\b/i],
   ["an account number", /\bTSTDRV\d+\b/i],
-  ["a NetSuite host", /[a-z0-9-]+\.[a-z0-9.-]*netsuite\.com/i],
+  ["a NetSuite host", /(?<![a-z0-9.-])[a-z0-9-]+\.[a-z0-9.-]*netsuite\.com/i],
   ["a JWT", /\beyJ[\w-]{10,}\.[\w-]{10,}\./],
   ["a long hex token", /\b[a-f0-9]{40,}\b/i],
   ["a PEM block", /-----BEGIN [A-Z ]+-----/],
-  ["an email address", /[\w.+-]+@[\w-]+\.[\w.-]+/],
+  ["an email address", /(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.-]+/],
 ];
 
 export interface KnownIds {

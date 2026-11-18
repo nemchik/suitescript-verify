@@ -58,8 +58,8 @@ function checklist(config: Config): string {
   const v = config.values;
   return [
     "In the sandbox, in one visit (Setup > Integration):",
-    "  1. Create an integration record. Enable the Client Credentials (Machine to Machine) grant, the token-based authentication flags, and the RESTlets and REST Web Services scopes. Keep its client id for the next step; it is shown once.",
-    `  2. Create the runner's role with its name, its id and only the permission Log in using OAuth 2.0 Access Tokens (Full), and assign it to yourself: name "ssv runner role ${config.runnerId}", id ${config.roleId}. A role without it is not in the mapping's role list; the first deploy takes the role over and writes the rest.`,
+    "  1. Create an integration record. Check Token-based Authentication and TBA: issuetoken Endpoint (both were checked in a working setup; whether the second is needed is not settled), the Client Credentials (Machine To Machine) Grant, and the RESTlets and REST Web Services scopes. Copy its client id now; it is shown only once, at creation, and setup asks for it later.",
+    `  2. Create the runner's role with its name, its id and only the permission Log in using OAuth 2.0 Access Tokens (Full): name "ssv runner role ${config.runnerId}", id ${config.roleId}; type ${config.roleId.slice("customrole".length)} in the ID field (NetSuite adds customrole). Then assign it to yourself on your employee record (Access > Roles). A role without the permission is not in the mapping's role list; the first deploy takes the role over and writes the rest.`,
     "  3. Map the certificates (Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup), each to that integration record:",
     `     runner certificate ${publicCertificate(v[names.privateKeyPath])} -> the role ${config.roleId}`,
     `     SDF certificate ${publicCertificate(v[names.sdfPrivateKeyPath])} -> a role that can deploy (Administrator in a sandbox), never the runner's role`,

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { differingPaths } from "./probes.ts";
 
 /**
  * The response a Suitelet probe wrote itself, as the runner reports it. The
@@ -157,8 +158,6 @@ const comparable = (value: unknown) => {
   return { ...rest, headers: Object.fromEntries(kept) };
 };
 
-/** Whether a probe's own response matches its expected output. */
-export const matchesExpectedResponse = (
-  response: OwnResponse,
-  expected: unknown,
-) => isDeepStrictEqual(comparable(response), comparable(expected));
+/** Where a probe's own response differs from its expected output, as dotted paths under `response`; empty when it matches. */
+export const responseDifferences = (response: OwnResponse, expected: unknown) =>
+  differingPaths(comparable(response), comparable(expected), "response");

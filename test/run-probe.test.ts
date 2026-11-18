@@ -689,6 +689,39 @@ describe("run", () => {
       assert.equal(result.status, 2);
       assert.match(result.stdout, /DRIFT/);
     });
+
+    it("names what differs as dotted paths, at most ten", () => {
+      const p = project();
+      withProbe(p);
+      write(
+        p.dir,
+        "verification/probes/one.expect.json",
+        '{"a": 1, "b": {"c": 2, "d": [1]}, "gone": true}',
+      );
+      p.script(
+        ...ok({
+          result: { a: 1, b: { c: 3, d: [2] }, extra: 0 },
+          version: "2026.2",
+        }),
+      );
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /DRIFT: the output differs from one\.expect\.json at result\.b\.c, result\.b\.d, result\.extra, result\.gone\./,
+      );
+      p.script(...ok({ result: "changed", version: "2026.2" }));
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /differs from one\.expect\.json at result\./,
+      );
+      const many = Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`k${i + 10}`, i]),
+      );
+      p.script(...ok({ result: { ...many, a: 1 }, version: "2026.2" }));
+      assert.match(
+        cli(p, ["run", "one"]).stdout,
+        /at result\.b, result\.gone, result\.k10, result\.k11, result\.k12, result\.k13, result\.k14, result\.k15, result\.k16, result\.k17 and 4 more\./,
+      );
+    });
   });
 
   describe("--draft", () => {
@@ -1306,6 +1339,16 @@ describe("Suitelet probes", () => {
         assert.equal(drift.status, 2, JSON.stringify(changed));
         assert.match(drift.stdout, /DRIFT/);
       }
+      p.script(
+        ...own({
+          ...answer,
+          headers: { "content-type": "text/html", "x-other": "1" },
+        }),
+      );
+      assert.match(
+        cli(p, ["run", "page"]).stdout,
+        /differs from page\.expect\.json at response\.headers\.x-other, response\.headers\.x-probe\./,
+      );
     });
 
     it("records the response in a draft results page", () => {

@@ -10,18 +10,19 @@ import {
 } from "./netsuite.ts";
 import {
   anchored,
+  differingPaths,
   isRunnable,
   isSlug,
+  listDifferences,
   listProbes,
-  matchesExpect,
   type Probe,
   read,
   readExpect,
   tagProblems,
 } from "./probes.ts";
 import {
-  matchesExpectedResponse,
   ownResponse,
+  responseDifferences,
   withOwnResponse,
 } from "./response.ts";
 import { resultsDraft } from "./results.ts";
@@ -248,16 +249,15 @@ export async function runProbe(
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
   if (expected !== undefined) {
-    if (
-      own
-        ? matchesExpectedResponse(own, expected)
-        : matchesExpect(body.result, expected)
-    ) {
+    const differences = own
+      ? responseDifferences(own, expected)
+      : differingPaths(body.result, expected, "result");
+    if (differences.length === 0) {
       console.log("\nMatches the expected output.");
     } else {
       status = 2;
       console.log(
-        `\nDRIFT: the output differs from ${probe.slug}.expect.json. The platform changed, or the expectation is wrong.`,
+        `\nDRIFT: the output differs from ${probe.slug}.expect.json at ${listDifferences(differences)}. The platform changed, or the expectation is wrong.`,
       );
     }
   }

@@ -208,8 +208,30 @@ export function readExpect(slug: string, dir: string): unknown {
   return existsSync(path) ? JSON.parse(read(path)) : undefined;
 }
 
-export const matchesExpect = (result: unknown, expected: unknown) =>
-  isDeepStrictEqual(result, expected);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Where two outputs differ, as sorted dotted paths under `path`: objects are compared key by key, anything else whole. */
+export function differingPaths(
+  actual: unknown,
+  expected: unknown,
+  path: string,
+): string[] {
+  if (isDeepStrictEqual(actual, expected)) return [];
+  if (!isRecord(actual) || !isRecord(expected)) return [path];
+  const keys = [
+    ...new Set([...Object.keys(actual), ...Object.keys(expected)]),
+  ].sort();
+  return keys.flatMap((key) =>
+    differingPaths(actual[key], expected[key], `${path}.${key}`),
+  );
+}
+
+/** The differing paths as one phrase, naming at most ten. */
+export const listDifferences = (paths: string[]) =>
+  paths.length > 10
+    ? `${paths.slice(0, 10).join(", ")} and ${paths.length - 10} more`
+    : paths.join(", ");
 
 /** What is wrong with a probe's tags, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [

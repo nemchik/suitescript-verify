@@ -2357,7 +2357,7 @@ describe("doctor calls the self-check", () => {
       assert.match(out, /Maintainer's own step: Redeploy/);
       assert.match(out, /abcdef0abcde/);
       assert.ok(out.includes(builtAs(p)), out);
-      assert.match(out, new RegExp(packageVersion.replaceAll(".", ".")));
+      assert.ok(out.includes(packageVersion), out);
     }
   });
 

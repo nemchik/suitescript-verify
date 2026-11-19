@@ -90,3 +90,5 @@ Use the same four lines after `/grill-with-docs`, `/to-spec` or `/implement`, wh
 ## Standing rules
 
 - Write files with the Write or Edit tool, never shell heredocs, and keep scripts in the scratchpad.
+- In `/implement-spec`, check each finished ticket branch with `git merge-tree --write-tree <integration> <ticket>` first. When it reports no conflicts, merge it yourself, run `npm test` and push. Spawn a merger subagent only for a conflict. A subagent per clean merge cost eleven agents and a context compaction on spec #27.
+- Repository maintenance lessons (release, build, toolchain, GitHub rules such as the five-branch push limit) are in `docs/maintaining.md`. Read it before a release, a bulk push or a toolchain change.

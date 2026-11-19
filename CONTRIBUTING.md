@@ -23,4 +23,5 @@ The README is the whole guide for a project that uses the package. People and ag
 - **Troubleshooting is by symptom:** each heading is what the person sees (the message or the failure), and the body gives the cause and the fix.
 - **Exactly three badges:** npm version, CI and license.
 - **Notes are plain bold lines** starting `**Note:**`, not blockquotes or GitHub alerts.
+- **A platform fact is settled only once a sandbox run showed it.** Write what the run observed, not the cause you infer from it ("the runner sees only the first value", not "`requestSuitelet` keeps only the first value"). Anything a run has not shown carries one sentence saying it is not yet confirmed; the pull request whose run settles it removes that sentence and names the NetSuite version.
 - **Past about 500 lines, stop.** Bring the maintainer a plan to split the README into shipped files before splitting it.

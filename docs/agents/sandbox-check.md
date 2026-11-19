@@ -6,14 +6,16 @@ A pull request that changes what runs in NetSuite (the runner, the Suitelet host
 
 1. On the pull request, post a comment ending in a `### Still to check in a sandbox` checklist: one box per behavior the fakes cannot show, each naming the expected output. A later comment's list replaces the earlier one.
 2. Give the maintainer the prompt below with `<PR>` and `<SHA>` filled in, plus any probes the checklist needs that the downstream project does not have yet.
-3. When the maintainer says the comment is posted, read it. Each failure or lesson candidate becomes a fix on a branch here (see the standing rules in `workflow.md`), and a reply on the pull request maps each finding to its change.
+3. When the maintainer says the comment is posted, read it. Each failure, package lesson and platform finding becomes a fix on a branch here.
+4. `/code-review` the fix branch before it merges into the pull request's branch. Four unreviewed fix passes on #46 let a wrong README claim through.
+5. Reply on the pull request, mapping each finding to its change.
 
 ## Prompt
 
 ```text
 Check suitescript-verify PR #<PR> at commit <SHA> in this project, then post one comment on that PR.
 
-1. Build the commit: in a clone of nemchik/suitescript-verify outside this project, check out <SHA>, then run `npm ci`, `npm run build` and `npm pack` (dist/ is not committed, so a git install has no built code). Install the .tgz as a dev dependency here. Never commit the `file:` path it writes.
+1. Build the commit: in a clone of nemchik/suitescript-verify outside this project, check out <SHA>, then run `npm ci`, `npm run build` and `npm pack` (dist/ is not committed, so a git install has no built code). Install the .tgz as a dev dependency here. Before any commit in this project, restore package.json and the lock file, since the install writes a `file:` path to a temporary tarball.
 2. Read the README at that commit and the pull request's latest "Still to check in a sandbox" list (`gh pr view <PR> --repo nemchik/suitescript-verify --comments`). Work through every box. Run `doctor` before and after each deploy.
 
 Rules:
@@ -24,7 +26,8 @@ Rules:
 
 The comment, posted with `gh pr comment <PR> --repo nemchik/suitescript-verify --body-file <file>` after I approve its text:
 - A table: one row per box, Pass or Fail, one line of redacted evidence.
-- Lesson candidates: for each failure or surprise, the symptom, how to reproduce it, and what the README or code should say.
+- Package lessons: each runner, deploy, probe or setup problem, with the symptom, how to reproduce it, and what the README or code should say.
+- Platform findings: how NetSuite itself behaved where it differs from the README, with the NetSuite version and the evidence.
 - Problems the README does not describe, even ones you worked around.
 Leave the merge decision to the maintainer and this repository's session.
 ```

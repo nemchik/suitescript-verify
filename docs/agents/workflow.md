@@ -91,6 +91,5 @@ Use the same four lines after `/grill-with-docs`, `/to-spec` or `/implement`, wh
 
 - Write files with the Write or Edit tool, never shell heredocs, and keep scripts in the scratchpad.
 - In `/implement-spec`, check each finished ticket branch with `git merge-tree --write-tree <integration> <ticket>` first. When it reports no conflicts, merge it yourself, run `npm test` and push. Spawn a merger subagent only for a conflict. A subagent per clean merge cost eleven agents and a context compaction on spec #27.
-- A sandbox check of a pull request runs in a downstream project's session, never here. Hand that session `docs/agents/sandbox-check.md` with its blanks filled.
-- Fixes from a sandbox check are reviewed like any change: `/code-review` the fix branch before it merges into the integration branch, then post the fixes on the pull request. Four unreviewed fix passes on #46 let a wrong README claim through.
+- Sandbox checks of a pull request: follow `docs/agents/sandbox-check.md` from the hand-off through reviewing the fixes, and give the downstream session its prompt.
 - Repository maintenance lessons (release, build, toolchain, GitHub rules such as the five-branch push limit) are in `docs/maintaining.md`. Read it before a release, a bulk push or a toolchain change.

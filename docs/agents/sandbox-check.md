@@ -19,7 +19,7 @@ Check suitescript-verify PR #<PR> at commit <SHA> in this project, then post one
 2. Read the README at that commit and the pull request's latest "Still to check in a sandbox" list (`gh pr view <PR> --repo nemchik/suitescript-verify --comments`). Work through every box. Run `doctor` before and after each deploy.
 
 Rules:
-- Only the sandbox. Read-only checks (SuiteQL on a role's permissions, for example) use the SB2 connector. Never production or its connector.
+- Only the sandbox. Read-only checks (SuiteQL on a role's permissions, for example) use the maintainer's NetSuite connector for that sandbox; ask which one if it is unclear. Never production or its connector.
 - I run everything that changes the account: `deploy --approved`, `cleanup`, `setup` / `setup-ci`, key pairs, certificates, mappings, roles and their permissions. Give me the exact command or screen steps, then wait for my result. You run dry runs, `doctor` and `run`.
 - Never set SUITECLOUD_CLI_ACCEPT_LICENSE.
 - No account number, URL, email, user, token, certificate id or record id in the comment: use placeholders such as `<account>`.

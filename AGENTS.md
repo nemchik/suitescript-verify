@@ -34,6 +34,8 @@ Source is TypeScript in `src/` and compiles to `dist/` (gitignored, published). 
 
 This package is the verification tooling, and the README is the whole guide that ships with each version: the method, setup, deploy, probes, settings and troubleshooting. Read it before changing the runner or a probe flow. Before editing the README, read "Writing the README" in `CONTRIBUTING.md`. Everything a downstream project needs must be in the published package, so do not move guidance into a file the package does not ship. When you hit a problem the README does not describe, add the lesson in the same pull request where its "Adding a lesson" section says, and correct an entry that proves wrong. Never run a real deploy or cleanup yourself, never create credentials, never touch production, and never put an account number, URL, user, token or real record id in the repository.
 
+For a sandbox check of a pull request, follow `docs/agents/sandbox-check.md` from the hand-off through reviewing the fixes, and give the downstream session its prompt.
+
 ## Releases
 
 Publishing uses npm trusted publishing (OIDC) from `.github/workflows/release.yml`; do not add an `NPM_TOKEN`.

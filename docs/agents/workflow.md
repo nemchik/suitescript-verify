@@ -10,9 +10,9 @@ The flow is grill, spec, tickets, implement, review, retro. The marked block bel
 - A question, a one-line fix or a small edit needs no skill.
 - **Small change:** `/grill-with-docs`, then `/implement`, in the same session. The build needs the grilling's reasoning, not a summary of it.
 - **Larger work:** `/grill-with-docs` → `/to-spec` → `/to-tickets` in one unbroken window. Don't `/clear` or `/compact` until `/to-tickets` is done. `/to-spec` may be skipped: `/to-tickets` can run straight from the grilling thread.
-    - Then build in a **fresh session**. The spec and tickets carry everything the build needs.
-    - Multi-ticket work: `/implement-spec` (the default).
-    - A single ticket, or when the user wants to steer each ticket: `/implement`, with `/clear` between tickets.
+  - Then build in a **fresh session**. The spec and tickets carry everything the build needs.
+  - Multi-ticket work: `/implement-spec` (the default).
+  - A single ticket, or when the user wants to steer each ticket: `/implement`, with `/clear` between tickets.
 - Work that won't fit one session even after grilling: `/wayfinder`. A question that needs runnable code to answer: `/prototype`.
 
 ### Approval words

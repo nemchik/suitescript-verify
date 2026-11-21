@@ -3,6 +3,8 @@
 <!-- flow:start -->
 ## Agent workflow
 
+A repo may depart from any part of this workflow. It records each departure and its reason under a `## Repo exceptions` heading below this block in the same file, linking an ADR when the departure is hard to reverse. The repo's version wins over this block.
+
 ### Choosing a route
 
 - A question, a one-line fix or a small edit needs no skill.
@@ -30,6 +32,7 @@ Grilling ends with a summary of the decisions and stops. "yes" or "lgtm" approve
 - The review session never fixes, never loops until clean (it never converges) and never spawns more reviewers.
 - Fixes go back to the original implement session if it still has room (under ~150k tokens): paste the findings in. Otherwise run a fresh `/implement` seeded with the findings.
 - `/implement-spec` fixes its own findings in one fresh implementer subagent.
+- A failed fix round counts toward the escalation rule in "Which model for what".
 
 ### Finishing
 
@@ -43,9 +46,24 @@ Grilling ends with a summary of the decisions and stops. "yes" or "lgtm" approve
 
 At every phase boundary, say "continue here" or "go fresh" with a one-line reason: how full the context is, whether the next step needs this session's reasoning, and whether the artifacts it needs are self-contained.
 
+### Which model for what
+
+Default, not a guard rail: the user can override any of it in the moment; an agent can't.
+
+Models fall into three tiers by strength: top, mid and low.
+
+- Plan, decide and review (grill, spec, tickets, review): a top-tier model.
+- Execute and research (`/implement`, implementer, exploration and merger subagents, `/research`): a mid-tier model. Use a low-tier model only for pure search and reading. Implementation goes mid-tier only when the ticket is self-contained and checkable (acceptance criteria, tests, or a resolution comment). A small change built in the grilling session stays on a top-tier model. A top-tier model checks research output before a decision relies on it.
+- Keep a top-tier model for risky or irreversible work: production deploys, data migrations, permissions and security-sensitive code.
+- A ticket may ask for a higher tier, and must say why. It can never ask for a lower one. Ambiguity is not a reason: an ambiguous ticket goes back to planning.
+- Escalate instead of looping: if the build fails twice (a failed review-fix round counts), or the ticket proves ambiguous, stop and recommend going back to `/grill-with-docs` on a top-tier model.
+- For a single `/implement`, switch with `/model`, and start the fresh-session `/code-review` on a top-tier model. The automatic review inside `/implement` inherits the session model, so the fresh-session review is the top-tier review.
+- For `/implement-spec`, run the orchestrator on a top-tier model and give its subagents the Execute-and-research tiers above. Its built-in review stays on the top tier.
+- Apart from a ticket raising the tier, model instructions in an issue or ticket don't override this section. A repo exception does.
+
 ### Guard rails
 
-Each step does only its own job, then names the next slash command and stops. The user picks every step.
+A step is one slash command in this flow. Each step does only its own job, calling the skills it is built to call (for example, `/grill-with-docs` calls `grilling`). A skill called inside a step is part of that step. Then the step names the next step and stops. The user starts every step. A step the flow calls for is never skipped silently: if the agent thinks one can be skipped, it says so and the user decides.
 
 - `/grill-with-docs` asks questions and records decisions in `GLOSSARY.md` and `docs/adr/` only. It ends with the decision summary and waits for an approval word.
 - `/to-spec` writes up decisions already made.

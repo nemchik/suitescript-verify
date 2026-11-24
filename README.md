@@ -226,7 +226,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
 - A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift, naming the keys that differ (such as `response.headers.x-sv-multi` or `result`). The expectation is the `result` object (or, for a Suitelet probe that writes its own response, the `response` object), not the whole output. No command writes it: copy it from a real run's output, which `run` prints with keys sorted and indented, never a guess, so a new probe has none until it has run once. Capture the output with `npx suitescript-verify run …` or `npm run --silent …`, or npm's own warnings land before the JSON. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none. After upgrading suitescript-verify, rewrite each own probe's expectation from a fresh `run`: what `run` reports can change between versions with no platform change.
-- `run` stops waiting for a probe after 60 seconds, or after its `@timeout` (see [Tags](#tags)), whatever the script type, because a probe cannot time itself out. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. At `@timeout 300` the CLI waits 15 seconds longer, to allow for NetSuite's `SSS_TIME_LIMIT_EXCEEDED` answer, which is reported as the runner's error, not a CLI timeout. **Note:** that server SuiteScript has no timers, that the limit is 300 seconds per execution for RESTlets and Suitelets, that NetSuite answers `SSS_TIME_LIMIT_EXCEEDED` at 300, and that a timed-out probe may keep running until then are all **unverified**: no sandbox run has shown them.
+- `run` stops waiting for a probe at its limit, because a probe cannot time itself out: its `@timeout` (see [Tags](#tags)), else 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. At the most its script type allows (300 for a RESTlet probe, 45 for a Suitelet probe) the CLI waits 15 seconds longer, so NetSuite's own answer is reported as the runner's error, not a CLI timeout. In a sandbox at 2026.2, `requestSuitelet` gave up on a Suitelet probe at about 45 seconds with `SSS_REQUEST_TIME_EXCEEDED`, and a RESTlet probe spinning in a loop threw `Script Execution Statement Count Exceeded.` (reported as `THROWS`) after about 90 seconds, before any time limit. **Note:** that server SuiteScript has no timers, that a RESTlet's limit is 300 seconds with an `SSS_TIME_LIMIT_EXCEEDED` answer, and that a timed-out probe keeps running in NetSuite are **unverified**.
 - The output says which script type ran the probe: `"scriptType": "RESTlet"` or `"scriptType": "Suitelet"`.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
@@ -277,7 +277,7 @@ define(["N/search"], (search) => ({
 - **A lost await is an error.** A result holding a nested Promise (checked for every result, synchronous or awaited) makes `run` fail with `the result holds a Promise that was not awaited at <path>`, because a nested Promise always serializes as `{}`. Await it, or return `typeof value?.then === "function"` to show that a value is a Promise. A fire-and-forget call (`search.lookupFields.promise(...); return "done"`) cannot be detected, so do not write one.
 - Handle rejections you expect, and avoid `return await` (return the Promise itself): this is Oracle's advice.
 
-**Note:** that NetSuite awaits a RESTlet `post` or an async Suitelet `onRequest` is **unverified** here: contributors' tests showed it, and no sandbox check by this package has yet. The same goes for an unhandled rejection from `onRequest` giving an HTTP 500 page and only `UNEXPECTED_ERROR` in the execution log, which is why the Suitelet host catches rejections itself.
+In a sandbox at 2026.2, NetSuite awaited a RESTlet `post` and a Suitelet `onRequest` that returned a Promise: resolved values, rejections and a response written after an `await` all arrived. An uncaught rejection from a Suitelet's own `onRequest` gave HTTP 500 and only `UNEXPECTED_ERROR` in the execution log, without the error's name, which is why the Suitelet host catches rejections itself. A Promise that never settles is not held until a time limit: see [Troubleshooting](#a-probe-that-returns-a-promise-fails-with-http-400-unexpected_error).
 
 ### Suitelet probes
 
@@ -288,7 +288,7 @@ A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Su
 - `sendRedirect` is refused: `requestSuitelet` follows a redirect, so the runner would see the page it leads to (often the login page), never the redirect. A redirect cannot be probed this way.
 - The host runs in the `SUITELET` execution context with the runner role's permissions, so `@permission` applies to Suitelet probes too.
 
-When the probe returns, the host answers in one of two modes:
+When the probe returns, the host answers in one of two modes. `run` does not print the mode: a `result` means `wrapped`, a `response` means `own`.
 
 | The probe                                   | Mode      | What `run` reports                                                                                            |
 | ------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
@@ -346,7 +346,7 @@ The runner stays the only entry point, because the machine-to-machine token reac
 
 The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, `@timeout`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
 
-`@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300, NetSuite's per-execution limit for RESTlets and Suitelets. Without it the limit is 60 seconds. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
+`@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gives up at about 45 seconds (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 
 ### Writing probes that do not cost a deploy
 
@@ -422,11 +422,15 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### A Suitelet probe reports that the Suitelet host call failed
 
-`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page, which a redirect followed by `requestSuitelet` also gives), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
+`run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. `SSS_REQUEST_TIME_EXCEEDED` after about 45 seconds means the probe ran past what `requestSuitelet` waits for (see [Running one](#running-one)). Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page, which a redirect followed by `requestSuitelet` also gives), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
 
 ### `run` says a probe timed out
 
-`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (60 seconds, or its `@timeout`), so the CLI stopped waiting and printed no result. If the probe is only slow, declare `@timeout <seconds>` (up to 300) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than 300 seconds exceeds NetSuite's limit: split it, or narrow what it reads.
+`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (its `@timeout`, else 60 seconds for a RESTlet probe and 45 for a Suitelet probe), so the CLI stopped waiting and printed no result. If the probe is only slow, declare `@timeout <seconds>` (up to 300 for a RESTlet probe, 45 for a Suitelet probe) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than that exceeds NetSuite's limit: split it, narrow what it reads, or make a Suitelet probe that needs no response calls a RESTlet probe.
+
+### A probe that returns a Promise fails with HTTP 400 `UNEXPECTED_ERROR`
+
+`run` says `The runner call failed: HTTP 400` with `UNEXPECTED_ERROR` in the body, within seconds. In a sandbox at 2026.2, a probe returning a Promise that never settles (`new Promise(() => {})`, or a lost `resolve`) ended the request this way in about 2 seconds, before the runner could answer, whatever its `@timeout`. Make sure every path of the probe resolves or rejects its Promise.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 
@@ -481,7 +485,7 @@ A **lesson** is a short, generic account of a runner, deploy, probe or sandbox p
 
 ## Development
 
-You need the Node.js and npm versions in `package.json` `devEngines`. `npm pack` and `npm test` refuse any other Node version.
+You need the Node.js and npm versions in `package.json` `devEngines`. On any other Node version every npm command in this repository fails with `EBADDEVENGINES`, `npm ci` and `npm run build` included.
 
 ```sh
 npm install

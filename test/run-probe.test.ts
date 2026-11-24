@@ -2871,11 +2871,8 @@ describe("probe timeouts", () => {
     const result = cli(p, ["run", "one", "--draft"]);
     assert.equal(result.status, 1, result.all);
     assert.match(result.stderr, /one timed out after 1 seconds/);
-    assert.match(
-      result.stderr,
-      /still be running in NetSuite until its 300-second limit/,
-    );
-    assert.match(result.stderr, /@timeout/);
+    assert.match(result.stderr, /may still be running in NetSuite\./);
+    assert.match(result.stderr, /@timeout <seconds> \(up to 300\)/);
     assert.equal(result.stdout.includes('"ok"'), false);
     assert.deepEqual(readdirSync(join(p.dir, "docs/verification/results")), []);
   });
@@ -2983,5 +2980,79 @@ describe("probe timeouts", () => {
       withTags(p, [`@timeout ${value}`]);
       assert.equal(cli(p, ["run", "one"]).status, 0, value);
     }
+  });
+
+  describe("a Suitelet probe, which requestSuitelet cuts off at about 45 seconds", () => {
+    const withSuiteletTags = (p: Project, tags: string[]) =>
+      write(
+        p.dir,
+        "verification/probes/one.js",
+        probeSource(
+          ["@scriptType Suitelet", ...tags.map((line) => ` * ${line}`)].join(
+            "\n",
+          ),
+        ),
+      );
+
+    it("reads 45 seconds when it declares no @timeout", () => {
+      const p = project();
+      withSuiteletTags(p, []);
+      const [one] = listProbes(join(p.dir, "verification/probes"), []);
+      assert.equal(one?.timeoutSeconds, 45);
+    });
+
+    it("refuses a @timeout over 45 at run and at deploy, naming the cut-off", () => {
+      const p = project();
+      p.script(...ok({ result: {}, version: "1" }));
+      withSuiteletTags(p, ["@timeout 46"]);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, run.all);
+      assert.match(run.stderr, /@timeout "46"[^\n]*1 to 45/);
+      assert.match(run.stderr, /requestSuitelet/);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, deploy.all);
+      assert.match(deploy.stderr, /one: @timeout "46"/);
+      assert.deepEqual(p.requests(), []);
+    });
+
+    it("accepts 45", () => {
+      const p = project();
+      withSuiteletTags(p, ["@timeout 45"]);
+      const [one] = listProbes(join(p.dir, "verification/probes"), []);
+      assert.deepEqual(one?.timeoutProblems, []);
+      assert.equal(one?.timeoutSeconds, 45);
+    });
+
+    it("tells a timed-out Suitelet probe its own limit, not 300", () => {
+      const p = project();
+      withSuiteletTags(p, ["@timeout 1"]);
+      p.script(...slow(1500));
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.stderr, /one timed out after 1 seconds/);
+      assert.match(result.stderr, /up to 45/);
+      assert.doesNotMatch(result.stderr, /300/);
+    });
+
+    it("reports NetSuite's SSS_REQUEST_TIME_EXCEEDED at 45, not a CLI timeout", () => {
+      const p = project();
+      withSuiteletTags(p, []);
+      p.script(
+        ...ok({
+          error:
+            "the Suitelet host call failed: SSS_REQUEST_TIME_EXCEEDED: The host you are trying to connect to has exceeded the maximum allowed response time.",
+        }),
+      );
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.stderr, /SSS_REQUEST_TIME_EXCEEDED/);
+      assert.doesNotMatch(result.stderr, /timed out/);
+    });
+
+    it("states the cut-off and the grace in the README", () => {
+      const readme = readFileSync(join(root, "README.md"), "utf8");
+      assert.match(readme, /`SSS_REQUEST_TIME_EXCEEDED`/);
+      assert.ok(readme.includes("from 1 to 45"));
+    });
   });
 });

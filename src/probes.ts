@@ -73,31 +73,51 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
   return { paramProblems, params };
 }
 
-/** How long `run` waits for a probe without a `@timeout`. */
+/** How long `run` waits for a probe without a `@timeout`, unless its script type allows less. */
 export const defaultTimeoutSeconds = 60;
 
 /** NetSuite's per-execution limit for RESTlets and Suitelets, the most `@timeout` may declare. */
 export const maxTimeoutSeconds = 300;
 
+/**
+ * The most a Suitelet probe may declare: the runner reaches the Suitelet host
+ * through `requestSuitelet`, which gave up with SSS_REQUEST_TIME_EXCEEDED at
+ * about 45 seconds in a sandbox at NetSuite 2026.2.
+ */
+export const suiteletMaxTimeoutSeconds = 45;
+
+/** The most `@timeout` may declare for a script type: NetSuite cuts the probe off there. */
+export const timeoutCeiling = (scriptType: string) =>
+  scriptType.toLowerCase() === "suitelet"
+    ? suiteletMaxTimeoutSeconds
+    : maxTimeoutSeconds;
+
 function parseTimeout(
   block: string,
+  scriptType: string,
 ): Pick<Probe, "timeoutProblems" | "timeoutSeconds"> {
+  const ceiling = timeoutCeiling(scriptType);
+  const fallback = Math.min(defaultTimeoutSeconds, ceiling);
   const values = [
     ...block.matchAll(/^[ \t]*\*?[ \t]*@timeout\b[ \t]*(.*)$/gm),
   ].map((match) => (match[1] ?? "").trim());
   const [value = "", ...more] = values;
   const problem = (text: string) => ({
     timeoutProblems: [text],
-    timeoutSeconds: defaultTimeoutSeconds,
+    timeoutSeconds: fallback,
   });
   if (values.length === 0) {
-    return { timeoutProblems: [], timeoutSeconds: defaultTimeoutSeconds };
+    return { timeoutProblems: [], timeoutSeconds: fallback };
   }
   if (more.length > 0) return problem("@timeout is declared more than once");
   const seconds = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
-  if (!(seconds >= 1 && seconds <= maxTimeoutSeconds)) {
+  if (!(seconds >= 1 && seconds <= ceiling)) {
+    const why =
+      ceiling === suiteletMaxTimeoutSeconds
+        ? " for a Suitelet probe, since requestSuitelet gives up at about 45 seconds"
+        : "";
     return problem(
-      `@timeout "${value}" must be a whole number of seconds from 1 to ${maxTimeoutSeconds}: @timeout <seconds>`,
+      `@timeout "${value}" must be a whole number of seconds from 1 to ${ceiling}${why}: @timeout <seconds>`,
     );
   }
   return { timeoutProblems: [], timeoutSeconds: seconds };
@@ -203,11 +223,12 @@ export function parseProbe(
       !builtinTags.has(name.toLowerCase()) &&
       !registered.has(name.toLowerCase()),
   );
+  const scriptType = tags("scriptType")[0] ?? "";
   return {
     ...parseParams(block),
     ...parsePermissions(block),
-    ...parseTimeout(block),
-    scriptType: tags("scriptType")[0] ?? "",
+    ...parseTimeout(block, scriptType),
+    scriptType,
     slug,
     unknownTags,
     writes: tags("writes").length > 0,

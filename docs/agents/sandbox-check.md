@@ -15,7 +15,7 @@ A pull request that changes what runs in NetSuite (the runner, the Suitelet host
 ```text
 Check suitescript-verify PR #<PR> at commit <SHA> in this project, then post one comment on that PR.
 
-1. Build the commit: in a clone of nemchik/suitescript-verify outside this project, check out <SHA>, then run `npm ci`, `npm run build` and `npm pack` (dist/ is not committed, so a git install has no built code). Install the .tgz as a dev dependency here. Before any commit in this project, restore package.json and the lock file, since the install writes a `file:` path to a temporary tarball.
+1. Build the commit: in a clone of nemchik/suitescript-verify outside this project, check out <SHA>, then, on the Node version in that commit's `.nvmrc` (npm refuses any other with `EBADDEVENGINES`), run `npm ci`, `npm run build` and `npm pack` (dist/ is not committed, so a git install has no built code). Install the .tgz as a dev dependency here. Before any commit in this project, restore package.json and the lock file, since the install writes a `file:` path to a temporary tarball.
 2. Read the README at that commit and the pull request's latest "Still to check in a sandbox" list (`gh pr view <PR> --repo nemchik/suitescript-verify --comments`). Work through every box. Run `doctor` before and after each deploy.
 
 Rules:

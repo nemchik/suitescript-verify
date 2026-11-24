@@ -15,12 +15,12 @@ import {
   isSlug,
   listDifferences,
   listProbes,
-  maxTimeoutSeconds,
   type Probe,
   read,
   readExpect,
   sortKeys,
   tagProblems,
+  timeoutCeiling,
 } from "./probes.ts";
 import {
   ownResponse,
@@ -109,15 +109,19 @@ export const knownIds = (creds: Creds): KnownIds => ({
 });
 
 /**
- * How many seconds the CLI waits past NetSuite's own 300-second limit, so that
- * NetSuite's SSS_TIME_LIMIT_EXCEEDED answer (unverified in a sandbox) arrives
- * and is reported instead of the CLI giving up in the same instant.
+ * How many seconds the CLI waits past NetSuite's own limit for the probe's
+ * script type, so that NetSuite's answer arrives and is reported instead of
+ * the CLI giving up in the same instant: SSS_REQUEST_TIME_EXCEEDED from
+ * requestSuitelet at about 45 seconds (seen in a sandbox), or
+ * SSS_TIME_LIMIT_EXCEEDED at 300 (unverified).
  */
 export const graceSeconds = 15;
 
-/** How long to wait for a probe's limit, in seconds: the limit, plus the grace at NetSuite's own. */
-const waitSeconds = (limit: number) =>
-  limit >= maxTimeoutSeconds ? limit + graceSeconds : limit;
+/** How long to wait for a probe, in seconds: its limit, plus the grace when that is NetSuite's own. */
+const waitSeconds = (probe: Probe) =>
+  probe.timeoutSeconds >= timeoutCeiling(probe.scriptType)
+    ? probe.timeoutSeconds + graceSeconds
+    : probe.timeoutSeconds;
 
 /** Raised when the runner did not answer within the probe's time limit. */
 export class RunnerTimeout extends Error {}
@@ -205,7 +209,7 @@ export async function callRunner(
       ...(timeoutSeconds === undefined
         ? {}
         : {
-            signal: AbortSignal.timeout(waitSeconds(timeoutSeconds) * 1000),
+            signal: AbortSignal.timeout(timeoutSeconds * 1000),
           }),
     });
     const text = await response.text();
@@ -274,12 +278,12 @@ export async function runProbe(
       probe.params.length > 0
         ? { params, probe: probe.slug }
         : { probe: probe.slug },
-      probe.timeoutSeconds,
+      waitSeconds(probe),
     );
   } catch (error) {
     if (!(error instanceof RunnerTimeout)) throw error;
     throw new UsageError(
-      `${probe.slug} timed out after ${probe.timeoutSeconds} seconds, so there is no result. It may still be running in NetSuite until its ${maxTimeoutSeconds}-second limit. To give it more time, declare @timeout <seconds> (up to ${maxTimeoutSeconds}) in its JSDoc block.`,
+      `${probe.slug} timed out after ${probe.timeoutSeconds} seconds, so there is no result. It may still be running in NetSuite. To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`,
     );
   }
 

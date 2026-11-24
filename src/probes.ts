@@ -76,7 +76,7 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
 /** How long `run` waits for a probe without a `@timeout`, unless its script type allows less. */
 export const defaultTimeoutSeconds = 60;
 
-/** NetSuite's per-execution limit for RESTlets and Suitelets, the most `@timeout` may declare. */
+/** The most a RESTlet probe's `@timeout` may declare: NetSuite's per-execution limit for RESTlets (unverified). */
 export const maxTimeoutSeconds = 300;
 
 /**
@@ -86,11 +86,17 @@ export const maxTimeoutSeconds = 300;
  */
 export const suiteletMaxTimeoutSeconds = 45;
 
-/** The most `@timeout` may declare for a script type: NetSuite cuts the probe off there. */
+/** Whether a declared `@scriptType` is Suitelet, in any case. */
+const isSuiteletType = (scriptType: string) =>
+  scriptType.toLowerCase() === "suitelet";
+
+/**
+ * The most `@timeout` may declare for a declared `@scriptType`: NetSuite cuts
+ * the probe off there. It takes the tag's text, since `parseTimeout` runs before
+ * the probe exists.
+ */
 export const timeoutCeiling = (scriptType: string) =>
-  scriptType.toLowerCase() === "suitelet"
-    ? suiteletMaxTimeoutSeconds
-    : maxTimeoutSeconds;
+  isSuiteletType(scriptType) ? suiteletMaxTimeoutSeconds : maxTimeoutSeconds;
 
 function parseTimeout(
   block: string,
@@ -112,10 +118,9 @@ function parseTimeout(
   if (more.length > 0) return problem("@timeout is declared more than once");
   const seconds = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
   if (!(seconds >= 1 && seconds <= ceiling)) {
-    const why =
-      ceiling === suiteletMaxTimeoutSeconds
-        ? " for a Suitelet probe, since requestSuitelet gives up at about 45 seconds"
-        : "";
+    const why = isSuiteletType(scriptType)
+      ? " for a Suitelet probe, since requestSuitelet gave up at about 45 seconds in a sandbox"
+      : "";
     return problem(
       `@timeout "${value}" must be a whole number of seconds from 1 to ${ceiling}${why}: @timeout <seconds>`,
     );
@@ -252,8 +257,7 @@ export const isRestlet = (probe: Probe) =>
   probe.scriptType.toLowerCase() === "restlet";
 
 /** A Suitelet probe runs in the Suitelet host, which the runner calls. */
-export const isSuitelet = (probe: Probe) =>
-  probe.scriptType.toLowerCase() === "suitelet";
+export const isSuitelet = (probe: Probe) => isSuiteletType(probe.scriptType);
 
 /** A probe the runner can run, itself or through a script host. */
 export const isRunnable = (probe: Probe) =>

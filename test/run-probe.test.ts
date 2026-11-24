@@ -14,8 +14,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { listProbes } from "../src/probes.ts";
-import { graceSeconds, patientDispatcher } from "../src/run.ts";
+import { listProbes, parseProbe } from "../src/probes.ts";
+import {
+  graceSeconds,
+  patientDispatcher,
+  secondsToWait,
+  timedOutMessage,
+} from "../src/run.ts";
 import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -2982,6 +2987,28 @@ describe("probe timeouts", () => {
     }
   });
 
+  // A real wait at a ceiling is 60 to 315 seconds, too long for a test run, so
+  // the wait and the message are checked where run computes them.
+  it("waits the grace past a script type's ceiling, and says how long it waited", () => {
+    const probe = (lines: string[]) =>
+      parseProbe("one", probeSource(lines.join("\n * ")));
+    const restletAt = probe([restlet, "@timeout 300"]);
+    const suiteletAt = probe(["@scriptType Suitelet"]);
+    const below = probe(["@scriptType Suitelet", "@timeout 44"]);
+    assert.equal(secondsToWait(restletAt), 300 + graceSeconds);
+    assert.equal(secondsToWait(suiteletAt), 45 + graceSeconds);
+    assert.equal(secondsToWait(probe([restlet, "@timeout 299"])), 299);
+    assert.equal(secondsToWait(below), 44);
+    assert.match(
+      timedOutMessage(suiteletAt),
+      /timed out after 60 seconds.*most a Suitelet probe allows/,
+    );
+    assert.match(
+      timedOutMessage(below),
+      /timed out after 44 seconds.*up to 45/,
+    );
+  });
+
   describe("a Suitelet probe, which requestSuitelet cuts off at about 45 seconds", () => {
     const withSuiteletTags = (p: Project, tags: string[]) =>
       write(
@@ -3017,10 +3044,10 @@ describe("probe timeouts", () => {
 
     it("accepts 45", () => {
       const p = project();
+      p.script(...ok({ result: {}, version: "1" }));
       withSuiteletTags(p, ["@timeout 45"]);
-      const [one] = listProbes(join(p.dir, "verification/probes"), []);
-      assert.deepEqual(one?.timeoutProblems, []);
-      assert.equal(one?.timeoutSeconds, 45);
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 0, result.all);
     });
 
     it("tells a timed-out Suitelet probe its own limit, not 300", () => {
@@ -3049,7 +3076,7 @@ describe("probe timeouts", () => {
       assert.doesNotMatch(result.stderr, /timed out/);
     });
 
-    it("states the cut-off and the grace in the README", () => {
+    it("states the Suitelet cut-off in the README", () => {
       const readme = readFileSync(join(root, "README.md"), "utf8");
       assert.match(readme, /`SSS_REQUEST_TIME_EXCEEDED`/);
       assert.ok(readme.includes("from 1 to 45"));

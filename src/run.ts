@@ -117,11 +117,21 @@ export const knownIds = (creds: Creds): KnownIds => ({
  */
 export const graceSeconds = 15;
 
-/** How long to wait for a probe, in seconds: its limit, plus the grace when that is NetSuite's own. */
-const waitSeconds = (probe: Probe) =>
-  probe.timeoutSeconds >= timeoutCeiling(probe.scriptType)
-    ? probe.timeoutSeconds + graceSeconds
-    : probe.timeoutSeconds;
+/** Whether a probe's limit is the most its script type allows, where NetSuite answers itself. */
+const atCeiling = (probe: Probe) =>
+  probe.timeoutSeconds >= timeoutCeiling(probe.scriptType);
+
+/** How long the CLI waits for a probe, in seconds: its limit, plus the grace at its ceiling. */
+export const secondsToWait = (probe: Probe) =>
+  atCeiling(probe) ? probe.timeoutSeconds + graceSeconds : probe.timeoutSeconds;
+
+/** What `run` says when the CLI stopped waiting for a probe. */
+export const timedOutMessage = (probe: Probe) =>
+  `${probe.slug} timed out after ${secondsToWait(probe)} seconds, so there is no result. It may still be running in NetSuite. ${
+    atCeiling(probe)
+      ? `Its @timeout is the most a ${probe.scriptType} probe allows: split it, or narrow what it reads.`
+      : `To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`
+  }`;
 
 /** Raised when the runner did not answer within the probe's time limit. */
 export class RunnerTimeout extends Error {}
@@ -156,14 +166,14 @@ export function patientDispatcher(): object | undefined {
  * Gets a token with the runner's certificate (OAuth 2.0 client credentials)
  * and posts `body` to the deployed runner. Returns the runner's answer as text;
  * a failed token request, a failed call or a non-OK status is a UsageError
- * whose message is scrubbed of the configured ids. With `timeoutSeconds`, it
+ * whose message is scrubbed of the configured ids. With `waitSeconds`, it
  * stops waiting for the runner after that long and throws a RunnerTimeout.
  */
 export async function callRunner(
   creds: Creds,
   runnerId: string,
   body: unknown,
-  timeoutSeconds?: number,
+  waitSeconds?: number,
 ): Promise<string> {
   const safe = (text: string) => scrub(text, knownIds(creds)).text;
   const endpoint = tokenUrl(creds.account);
@@ -206,10 +216,10 @@ export async function callRunner(
         "content-type": "application/json",
       },
       method: "POST",
-      ...(timeoutSeconds === undefined
+      ...(waitSeconds === undefined
         ? {}
         : {
-            signal: AbortSignal.timeout(timeoutSeconds * 1000),
+            signal: AbortSignal.timeout(waitSeconds * 1000),
           }),
     });
     const text = await response.text();
@@ -278,13 +288,11 @@ export async function runProbe(
       probe.params.length > 0
         ? { params, probe: probe.slug }
         : { probe: probe.slug },
-      waitSeconds(probe),
+      secondsToWait(probe),
     );
   } catch (error) {
     if (!(error instanceof RunnerTimeout)) throw error;
-    throw new UsageError(
-      `${probe.slug} timed out after ${probe.timeoutSeconds} seconds, so there is no result. It may still be running in NetSuite. To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`,
-    );
+    throw new UsageError(timedOutMessage(probe));
   }
 
   const scrubbed = scrub(withOwnResponse(text), known);

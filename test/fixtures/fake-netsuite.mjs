@@ -18,13 +18,23 @@ globalThis.fetch = async (url, init = {}) => {
   if (process.env.FAKE_NETSUITE_LOG) {
     appendFileSync(
       process.env.FAKE_NETSUITE_LOG,
-      `${JSON.stringify({ body, headers: init.headers, url: String(url) })}\n`,
+      `${JSON.stringify({ body, dispatcher: Boolean(init.dispatcher), headers: init.headers, url: String(url) })}\n`,
     );
   }
   const script = answers();
   const answer = String(url).includes("/oauth2/v1/token")
     ? script.token
     : script.restlet;
+  // An answer may take a while; the caller gives up through its signal, as a real fetch does.
+  if (answer.delayMs) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, answer.delayMs);
+      init.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(init.signal.reason);
+      });
+    });
+  }
   return new Response(
     typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body),
     { status: answer.status },

@@ -15,6 +15,7 @@ import {
   isSlug,
   listDifferences,
   listProbes,
+  maxTimeoutSeconds,
   type Probe,
   read,
   readExpect,
@@ -108,15 +109,54 @@ export const knownIds = (creds: Creds): KnownIds => ({
 });
 
 /**
+ * The milliseconds in one second of a probe's time limit. Tests shrink it
+ * (SSV_TIMEOUT_UNIT_MS) so they need not wait a real minute; it is not a setting.
+ */
+const timeoutUnitMs = () => Number(process.env.SSV_TIMEOUT_UNIT_MS) || 1000;
+
+/**
+ * How long to wait for a probe's limit. At NetSuite's own 300-second limit the
+ * CLI waits a little longer, so NetSuite's SSS_TIME_LIMIT_EXCEEDED answer
+ * arrives and is reported instead of the CLI giving up in the same instant.
+ */
+const waitSeconds = (limit: number) =>
+  limit >= maxTimeoutSeconds ? limit + 15 : limit;
+
+/** Raised when the runner did not answer within the probe's time limit. */
+export class RunnerTimeout extends Error {}
+
+/**
+ * A dispatcher for the runner call that never gives up waiting for headers or
+ * body. Node's global fetch (undici) does so after 300 seconds, which would cut
+ * in just as NetSuite answers SSS_TIME_LIMIT_EXCEEDED at its own 300-second
+ * limit; the CLI's limit (at most 300) is the only one that applies. Undefined
+ * when the global dispatcher cannot be reached, which leaves fetch's default.
+ */
+function patientDispatcher(): object | undefined {
+  try {
+    const global = (globalThis as Record<symbol, unknown>)[
+      Symbol.for("undici.globalDispatcher.1")
+    ] as { constructor: new (options: object) => object } | undefined;
+    return global
+      ? new global.constructor({ bodyTimeout: 0, headersTimeout: 0 })
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Gets a token with the runner's certificate (OAuth 2.0 client credentials)
  * and posts `body` to the deployed runner. Returns the runner's answer as text;
  * a failed token request, a failed call or a non-OK status is a UsageError
- * whose message is scrubbed of the configured ids.
+ * whose message is scrubbed of the configured ids. With `timeoutSeconds`, it
+ * stops waiting for the runner after that long and throws a RunnerTimeout.
  */
 export async function callRunner(
   creds: Creds,
   runnerId: string,
   body: unknown,
+  timeoutSeconds?: number,
 ): Promise<string> {
   const safe = (text: string) => scrub(text, knownIds(creds)).text;
   const endpoint = tokenUrl(creds.account);
@@ -149,13 +189,23 @@ export async function callRunner(
         ),
       );
     }
+    const dispatcher = patientDispatcher();
     const response = await fetch(restletUrl(creds.account, runnerId), {
       body: JSON.stringify(body),
+      // biome-ignore lint/suspicious/noExplicitAny: undici's Dispatcher type is not exposed by Node
+      ...(dispatcher ? ({ dispatcher } as any) : {}),
       headers: {
         authorization: `Bearer ${tokenBody.access_token}`,
         "content-type": "application/json",
       },
       method: "POST",
+      ...(timeoutSeconds === undefined
+        ? {}
+        : {
+            signal: AbortSignal.timeout(
+              waitSeconds(timeoutSeconds) * timeoutUnitMs(),
+            ),
+          }),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -167,6 +217,7 @@ ${safe(text.slice(0, 500))}`,
     return text;
   } catch (error) {
     if (error instanceof UsageError) throw error;
+    if ((error as Error).name === "TimeoutError") throw new RunnerTimeout();
     throw new UsageError(
       safe(`The request failed: ${(error as Error).message}`),
     );
@@ -214,13 +265,22 @@ export async function runProbe(
   }
   const known = knownIds(creds);
 
-  const text = await callRunner(
-    creds,
-    config.runnerId,
-    probe.params.length > 0
-      ? { params, probe: probe.slug }
-      : { probe: probe.slug },
-  );
+  let text: string;
+  try {
+    text = await callRunner(
+      creds,
+      config.runnerId,
+      probe.params.length > 0
+        ? { params, probe: probe.slug }
+        : { probe: probe.slug },
+      probe.timeoutSeconds,
+    );
+  } catch (error) {
+    if (!(error instanceof RunnerTimeout)) throw error;
+    throw new UsageError(
+      `${probe.slug} timed out after ${probe.timeoutSeconds} seconds, so there is no result. It may still be running in NetSuite until its ${maxTimeoutSeconds}-second limit. To give it more time, declare @timeout <seconds> (up to ${maxTimeoutSeconds}) in its JSDoc block.`,
+    );
+  }
 
   const scrubbed = scrub(withOwnResponse(text), known);
   if (scrubbed.problems.length > 0) {

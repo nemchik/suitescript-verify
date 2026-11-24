@@ -37,6 +37,8 @@ const trailer = `
 
 interface Answer {
   body: unknown;
+  /** How long the fake takes to answer, in milliseconds. */
+  delayMs?: number;
   status: number;
 }
 
@@ -2793,5 +2795,129 @@ describe("doctor calls the self-check", () => {
     }).all;
     assert.match(lineOf(out), /^FAIL /);
     assert.deepEqual(p.requests(), []);
+  });
+});
+
+describe("probe timeouts", () => {
+  // The CLI reads this many milliseconds as one "second", so no test waits a real minute.
+  const unit = { SSV_TIMEOUT_UNIT_MS: "20" };
+  const withTags = (p: Project, tags: string[]) =>
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource([restlet, ...tags.map((line) => ` * ${line}`)].join("\n")),
+    );
+  const slow = (delayMs: number): [Answer, Answer] => [
+    { body: { access_token: "tok-abc" }, status: 200 },
+    {
+      body: { probe: "one", result: { ok: true }, version: "2026.2" },
+      delayMs,
+      status: 200,
+    },
+  ];
+
+  it("stops waiting after 60 seconds by default: exit 1, a message, no result and no draft", () => {
+    const p = project();
+    withTags(p, []);
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one", "--draft"], unit);
+    assert.equal(result.status, 1, result.all);
+    assert.match(result.stderr, /one timed out after 60 seconds/);
+    assert.match(
+      result.stderr,
+      /still be running in NetSuite until its 300-second limit/,
+    );
+    assert.match(result.stderr, /@timeout/);
+    assert.equal(result.stdout.includes('"ok"'), false);
+    assert.deepEqual(readdirSync(join(p.dir, "docs/verification/results")), []);
+  });
+
+  it("does not report drift for a timeout", () => {
+    const p = project();
+    withTags(p, []);
+    write(p.dir, "verification/probes/one.expect.json", '{"ok": true}');
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one"], unit);
+    assert.equal(result.status, 1, result.all);
+    assert.doesNotMatch(result.all, /DRIFT/);
+  });
+
+  it("lets @timeout 120 give the probe longer than 60 seconds", () => {
+    const p = project();
+    withTags(p, ["@timeout 120"]);
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one"], unit);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /"ok": true/);
+  });
+
+  it("names the declared limit when a probe with @timeout runs out of time", () => {
+    const p = project();
+    withTags(p, ["@timeout 5"]);
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one"], unit);
+    assert.equal(result.status, 1, result.all);
+    assert.match(result.stderr, /timed out after 5 seconds/);
+  });
+
+  it("reports NetSuite's own answer at @timeout 300, not a CLI timeout", () => {
+    const p = project();
+    withTags(p, ["@timeout 300"]);
+    p.script(
+      ...ok({
+        error: "SSS_TIME_LIMIT_EXCEEDED: Script Execution Time Exceeded.",
+      }),
+    );
+    const result = cli(p, ["run", "one"], unit);
+    assert.equal(result.status, 1, result.all);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: SSS_TIME_LIMIT_EXCEEDED/,
+    );
+    assert.doesNotMatch(result.stderr, /timed out/);
+  });
+
+  it("keeps the HTTP client from giving up before 300 seconds", () => {
+    const p = project();
+    withTags(p, []);
+    p.script(...ok({ result: {}, version: "1" }));
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+    const [, call] = p.requests() as { dispatcher?: boolean }[];
+    assert.equal(call?.dispatcher, true);
+  });
+
+  it("refuses a bad @timeout at run and at deploy, before anything is generated or sent", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const lines of [
+      ["@timeout"],
+      ["@timeout soon"],
+      ["@timeout 1.5"],
+      ["@timeout 60s"],
+      ["@timeout -5"],
+      ["@timeout 0"],
+      ["@timeout 301"],
+      ["@timeout 60 61"],
+      ["@timeout 60", "@timeout 90"],
+    ]) {
+      withTags(p, lines);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, lines.join());
+      assert.match(run.stderr, /one has invalid tags[\s\S]*@timeout/);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, lines.join());
+      assert.match(deploy.stderr, /one: @timeout/);
+    }
+    assert.deepEqual(p.requests(), []);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+
+  it("accepts the limits 1 and 300", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const value of ["1", "300"]) {
+      withTags(p, [`@timeout ${value}`]);
+      assert.equal(cli(p, ["run", "one"]).status, 0, value);
+    }
   });
 });

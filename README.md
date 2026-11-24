@@ -256,6 +256,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
 - A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift, naming the keys that differ (such as `response.headers.x-sv-multi` or `result`). The expectation is the `result` object (or, for a Suitelet probe that writes its own response, the `response` object), not the whole output. No command writes it: copy it from a real run's output, which `run` prints with keys sorted and indented, never a guess, so a new probe has none until it has run once. Capture the output with `npx suitescript-verify run …` or `npm run --silent …`, or npm's own warnings land before the JSON. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none. After upgrading suitescript-verify, rewrite each own probe's expectation from a fresh `run`: what `run` reports can change between versions with no platform change.
+- `run` stops waiting for a probe after 60 seconds, or after its `@timeout` (see [Tags](#tags)), whatever the script type and whether or not the probe is asynchronous: server SuiteScript has no timers, so a probe cannot time itself out. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. The probe may still be running in NetSuite until its 300-second limit. At `@timeout 300` the CLI waits a few seconds past 300, so NetSuite's own `SSS_TIME_LIMIT_EXCEEDED` answer is reported as the runner's error rather than as a CLI timeout.
 - The output says which script type ran the probe: `"scriptType": "RESTlet"` or `"scriptType": "Suitelet"`.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
@@ -395,7 +396,9 @@ The runner stays the only entry point, because the machine-to-machine token reac
 
 ### Tags
 
-The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
+The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, `@timeout`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
+
+`@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300, NetSuite's per-execution limit for RESTlets and Suitelets. Without it the limit is 60 seconds. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 
 ### Writing probes that do not cost a deploy
 
@@ -472,6 +475,10 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 ### A Suitelet probe reports that the Suitelet host call failed
 
 `run` says `The runner reported an error: the Suitelet host call failed`, `answered HTTP`, `without its X-SSV-Mode header` or `answer was not JSON`. The runner reached `requestSuitelet`, but the host did not answer with a result. A generic `UNEXPECTED_ERROR` is what `requestSuitelet` gives for a script that does not exist: deploy again (every deploy includes the host), and check that a `cleanup` has not switched it off. Another status, an answer without the `X-SSV-Mode` header, or a body that is not JSON, means the host did not run the probe (an HTTP 200 without the header is usually a login or error page, which a redirect followed by `requestSuitelet` also gives), and the start of the body says why. A RESTlet probe that still runs shows the runner itself loads.
+
+### `run` says a probe timed out
+
+`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (60 seconds, or its `@timeout`), so the CLI stopped waiting and printed no result. The probe may still be running in NetSuite until its 300-second limit, so do not rerun it at once if it writes or holds a lock. If the probe is only slow, declare `@timeout <seconds>` (up to 300) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than 300 seconds exceeds NetSuite's limit: split it, or narrow what it reads.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 

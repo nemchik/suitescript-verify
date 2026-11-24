@@ -27,6 +27,10 @@ export interface Probe {
   permissions: ProbePermission[];
   scriptType: string;
   slug: string;
+  /** The seconds `run` waits for the probe: its `@timeout`, else the default. */
+  timeoutSeconds: number;
+  /** What is wrong with the probe's `@timeout` tag, if anything. */
+  timeoutProblems: string[];
   /** Tags in the block that neither the package nor the project registered. */
   unknownTags: string[];
   writes: boolean;
@@ -67,6 +71,36 @@ function parseParams(block: string): Pick<Probe, "paramProblems" | "params"> {
     }
   }
   return { paramProblems, params };
+}
+
+/** How long `run` waits for a probe without a `@timeout`. */
+export const defaultTimeoutSeconds = 60;
+
+/** NetSuite's per-execution limit for RESTlets and Suitelets, the most `@timeout` may declare. */
+export const maxTimeoutSeconds = 300;
+
+function parseTimeout(
+  block: string,
+): Pick<Probe, "timeoutProblems" | "timeoutSeconds"> {
+  const values = [
+    ...block.matchAll(/^[ \t]*\*?[ \t]*@timeout\b[ \t]*(.*)$/gm),
+  ].map((match) => (match[1] ?? "").trim());
+  const [value = "", ...more] = values;
+  const problem = (text: string) => ({
+    timeoutProblems: [text],
+    timeoutSeconds: defaultTimeoutSeconds,
+  });
+  if (values.length === 0) {
+    return { timeoutProblems: [], timeoutSeconds: defaultTimeoutSeconds };
+  }
+  if (more.length > 0) return problem("@timeout is declared more than once");
+  const seconds = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
+  if (!(seconds >= 1 && seconds <= maxTimeoutSeconds)) {
+    return problem(
+      `@timeout "${value}" must be a whole number of seconds from 1 to ${maxTimeoutSeconds}: @timeout <seconds>`,
+    );
+  }
+  return { timeoutProblems: [], timeoutSeconds: seconds };
 }
 
 /** The permission levels SDF knows, lowest first. */
@@ -130,6 +164,7 @@ const builtinTags = new Set(
     "writes",
     "param",
     "permission",
+    "timeout",
     "NApiVersion",
     "NScriptType",
     "NModuleScope",
@@ -171,6 +206,7 @@ export function parseProbe(
   return {
     ...parseParams(block),
     ...parsePermissions(block),
+    ...parseTimeout(block),
     scriptType: tags("scriptType")[0] ?? "",
     slug,
     unknownTags,
@@ -249,6 +285,7 @@ export const listDifferences = (paths: string[]) =>
 export const tagProblems = (probe: Probe) => [
   ...probe.paramProblems,
   ...probe.permissionProblems,
+  ...probe.timeoutProblems,
   ...probe.unknownTags.map(
     (name) =>
       `@${name} is not a tag the package knows; register it with SUITESCRIPT_VERIFY_EXTRA_TAGS=${name}`,

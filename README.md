@@ -286,6 +286,26 @@ A probe that needs a record permission declares it in its leading JSDoc block, o
 - A malformed tag, an unknown key or level, a level above `VIEW` or a key declared twice in one probe stops `run` and `deploy`, naming the probe and the tag.
 - Every deploy adds each declared permission to the runner's role once, however many probes declare it, after the token-login and REST web services permissions. A permission takes effect only after a deploy, so a new declaration needs one before `run` can use it.
 
+### Probes that return a Promise
+
+A RESTlet probe whose `run()` returns a Promise (any value with a `then` method) is awaited: the runner waits and reports what it settles to.
+
+```js
+define(["N/dataStore"], (ds) => ({
+    run: () => ds.find.promise({ type: "x" }),
+}));
+```
+
+- **A resolved value** is the `result`.
+- **A rejection** is reported as `REJECTS: <name>: <message>`. A synchronous throw, including one before the Promise is returned, is still `THROWS: <name>: <message>`. Which errors surface synchronously and which as rejections is itself a platform behavior a probe can verify.
+- **A synchronous probe** is unchanged: the runner returns its answer directly, with no Promise.
+- **A lost await is an error.** Every result, synchronous or awaited, is searched for a nested Promise. Finding one makes `run` fail with `the result holds a Promise that was not awaited at <path>` (for example `at cursor`) instead of reporting a result, because a nested Promise always serializes as `{}`. Await it inside the probe, or return `typeof value?.then === "function"` to show that a value is a Promise.
+- **A fire-and-forget call cannot be detected.** `ds.find(); return "done"` reports `done` whatever the call did, so do not write one.
+- Handle rejections you expect, and avoid `return await` (return the Promise itself): this is Oracle's advice.
+- Promise probes still only read.
+
+**Note:** that NetSuite awaits a RESTlet `post` that returns a Promise is **unverified** here: a contributor's test showed it, and no sandbox check by this package has yet.
+
 ### Suitelet probes
 
 A probe that declares `@scriptType Suitelet` runs in the **Suitelet host**, a Suitelet deployed beside the runner. It exports `run(params, context)`, with the same declared parameters as a RESTlet probe:

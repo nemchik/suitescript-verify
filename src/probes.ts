@@ -119,7 +119,7 @@ function parseTimeout(
   const seconds = /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
   if (!(seconds >= 1 && seconds <= ceiling)) {
     const why = isSuiteletType(scriptType)
-      ? " for a Suitelet probe, since requestSuitelet gave up at about 45 seconds in a sandbox"
+      ? " for a Suitelet probe, since requestSuitelet gave up at about 45 seconds in a sandbox at 2026.2"
       : "";
     return problem(
       `@timeout "${value}" must be a whole number of seconds from 1 to ${ceiling}${why}: @timeout <seconds>`,

@@ -345,7 +345,7 @@ The runner stays the only entry point, because the machine-to-machine token reac
 
 The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, `@timeout`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
 
-`@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gave up at about 45 seconds in a sandbox (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
+`@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gave up at about 45 seconds in a sandbox at 2026.2 (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 
 ### Writing probes that do not cost a deploy
 
@@ -425,7 +425,7 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### `run` says a probe timed out
 
-`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (its `@timeout`, else 60 seconds for a RESTlet probe and 45 for a Suitelet probe, plus 15 at the most its type allows), so the CLI stopped waiting and printed no result. If the probe is only slow, declare `@timeout <seconds>` (up to 300 for a RESTlet probe, 45 for a Suitelet probe) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than that exceeds NetSuite's limit: split it, or narrow what it reads.
+`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (its `@timeout`, else 60 seconds for a RESTlet probe and 45 for a Suitelet probe; 15 seconds more when that is the most its type allows), so the CLI stopped waiting and printed no result. If the probe is only slow, raise or drop its `@timeout` (a RESTlet probe may declare up to 300; a Suitelet probe's most, 45, is its default) and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe already at its type's most: split it, or narrow what it reads.
 
 ### A probe that returns a Promise fails with HTTP 400 `UNEXPECTED_ERROR`
 

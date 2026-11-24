@@ -13,6 +13,7 @@ import {
   differingPaths,
   isRunnable,
   isSlug,
+  isSuitelet,
   listDifferences,
   listProbes,
   type Probe,
@@ -129,7 +130,7 @@ export const secondsToWait = (probe: Probe) =>
 export const timedOutMessage = (probe: Probe) =>
   `${probe.slug} timed out after ${secondsToWait(probe)} seconds, so there is no result. It may still be running in NetSuite. ${
     atCeiling(probe)
-      ? `Its @timeout is the most a ${probe.scriptType} probe allows: split it, or narrow what it reads.`
+      ? `Its limit is the most a ${isSuitelet(probe) ? "Suitelet" : "RESTlet"} probe allows: split it, or narrow what it reads.`
       : `To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`
   }`;
 

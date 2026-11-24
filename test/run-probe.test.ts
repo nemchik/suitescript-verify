@@ -2993,7 +2993,7 @@ describe("probe timeouts", () => {
     const probe = (lines: string[]) =>
       parseProbe("one", probeSource(lines.join("\n * ")));
     const restletAt = probe([restlet, "@timeout 300"]);
-    const suiteletAt = probe(["@scriptType Suitelet"]);
+    const suiteletAt = probe(["@scriptType suitelet"]);
     const below = probe(["@scriptType Suitelet", "@timeout 44"]);
     assert.equal(secondsToWait(restletAt), 300 + graceSeconds);
     assert.equal(secondsToWait(suiteletAt), 45 + graceSeconds);
@@ -3001,15 +3001,20 @@ describe("probe timeouts", () => {
     assert.equal(secondsToWait(below), 44);
     assert.match(
       timedOutMessage(suiteletAt),
-      /timed out after 60 seconds.*most a Suitelet probe allows/,
+      /timed out after 60 seconds.*Its limit is the most a Suitelet probe allows/,
     );
+    assert.match(
+      timedOutMessage(restletAt),
+      /timed out after 315 seconds.*Its limit is the most a RESTlet probe allows/,
+    );
+    assert.doesNotMatch(timedOutMessage(suiteletAt), /@timeout/);
     assert.match(
       timedOutMessage(below),
       /timed out after 44 seconds.*up to 45/,
     );
   });
 
-  describe("a Suitelet probe, which requestSuitelet cuts off at about 45 seconds", () => {
+  describe("a Suitelet probe, which requestSuitelet gave up on at about 45 seconds at 2026.2", () => {
     const withSuiteletTags = (p: Project, tags: string[]) =>
       write(
         p.dir,

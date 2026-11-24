@@ -177,7 +177,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
 
   /**
    * The path to the first Promise (any thenable) nested in a result, or
-   * undefined: the same check as the runner's, since a nested Promise always
+   * undefined: the same check as the runner's (a copy: the two are deployed
+   * as separate scripts, and a test fails if they drift apart), since a nested Promise always
    * serializes as `{}` and means a probe forgot to await. A path reads
    * `page.items[1].cursor`; a cycle is visited once.
    */
@@ -203,6 +204,26 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       if (found !== undefined) return found;
     }
     return undefined;
+  };
+
+  /** What a rejection reports: `REJECTS: <name>: <message>` for an error, else the rejected value as text. */
+  const rejection = (e) => {
+    try {
+      if (
+        e !== null &&
+        typeof e === "object" &&
+        typeof e.name === "string" &&
+        typeof e.message === "string"
+      ) {
+        return `REJECTS: ${e.name}: ${e.message}`;
+      }
+      return `REJECTS: ${String(e)}`;
+    } catch (_) {
+      return "REJECTS: (a value that cannot be shown)";
+    }
+  };
+  const lostAwait = (path) => {
+    return `the result holds a Promise that was not awaited at ${path}`;
   };
 
   /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
@@ -272,7 +293,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
                   version: String(runtime.version),
                 }
               : {
-                  error: `the result holds a Promise that was not awaited at ${lost}`,
+                  error: lostAwait(lost),
                 },
           );
         };
@@ -308,14 +329,25 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       // A probe that returns a thenable is awaited and judged once it settles;
       // a synchronous one keeps its synchronous answer.
       if (isThenable(result)) {
-        return Promise.resolve(result).then(
-          (value) => finish(value),
-          (e) => {
-            const { message, name: kind } = e || {};
-            recorded.calls.length = 0;
-            return finish(`REJECTS: ${kind}: ${message}`);
-          },
-        );
+        return Promise.resolve(result)
+          .then(
+            (value) => finish(value),
+            (e) => {
+              recorded.calls.length = 0;
+              return finish(rejection(e));
+            },
+          )
+          .catch((e) => {
+            // Answering failed (a result that cannot be serialized, say). Never
+            // let it reject: that is an HTTP 500 page the runner cannot read.
+            try {
+              answer(response, {
+                error: `the host could not answer after the probe settled: ${e && e.name}: ${e && e.message}`,
+              });
+            } catch (_) {
+              // Nothing more can be written.
+            }
+          });
       }
       return finish(result);
     },

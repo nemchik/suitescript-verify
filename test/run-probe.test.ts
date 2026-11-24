@@ -1198,12 +1198,16 @@ describe("RESTlet probes that return a Promise", () => {
     assert.equal(answer.result, "THROWS: TypeError: boom");
   });
 
-  it("reports a rejection that is not an Error without throwing", async () => {
-    const runner = runnerWith(() => Promise.reject(undefined));
-    assert.match(
-      String((await runner.post(asked)).result),
-      /^REJECTS: undefined: undefined$/,
-    );
+  it("reports a rejection that is not an Error as its text", async () => {
+    for (const [reason, expected] of [
+      [undefined, "REJECTS: undefined"],
+      ["plain words", "REJECTS: plain words"],
+      [42, "REJECTS: 42"],
+      [{ code: 7 }, "REJECTS: [object Object]"],
+    ] as const) {
+      const runner = runnerWith(() => Promise.reject(reason));
+      assert.equal((await runner.post(asked)).result, expected);
+    }
   });
 
   it("keeps a synchronous probe and the self-check on the same path, returning no Promise", () => {
@@ -1256,6 +1260,34 @@ describe("RESTlet probes that return a Promise", () => {
       /The runner reported an error: the result holds a Promise that was not awaited at cursor/,
     );
   });
+});
+
+describe("the two templates' shared helpers", () => {
+  // The runner and the Suitelet host deploy as separate scripts, so each keeps
+  // its own copy of these helpers. The copies must not drift apart.
+  const source = (file: string) =>
+    readFileSync(join(root, "templates", file), "utf8").replaceAll(
+      "\r\n",
+      "\n",
+    );
+  const helper = (text: string, name: string) => {
+    const start = text.indexOf(`\n  const ${name} = `);
+    assert.notEqual(start, -1, `${name} is missing`);
+    return text.slice(start, text.indexOf("\n  };\n", start));
+  };
+  for (const name of [
+    "isThenable",
+    "findLostAwait",
+    "lostAwait",
+    "rejection",
+  ]) {
+    it(`keeps ${name} identical in both`, () => {
+      assert.equal(
+        helper(source("runner.template.js"), name),
+        helper(source("suitelet.template.js"), name),
+      );
+    });
+  }
 });
 
 describe("Suitelet probes", () => {
@@ -2142,7 +2174,8 @@ describe("Suitelet probes", () => {
       it("reports a rejection as REJECTS and replays nothing, including a rejection with no error", async () => {
         for (const [reason, expected] of [
           [nope, "REJECTS: NOT_FOUND: gone"],
-          [undefined, "REJECTS: undefined: undefined"],
+          [undefined, "REJECTS: undefined"],
+          ["plain words", "REJECTS: plain words"],
         ] as const) {
           const p = project();
           const host = hostFor(p, async (_params, { response }) => {
@@ -2203,6 +2236,21 @@ describe("Suitelet probes", () => {
               "the result holds a Promise that was not awaited at page.items[1].cursor",
           });
         }
+      });
+
+      it("answers with an error, never an unhandled rejection, when the host fails after the Promise settles", async () => {
+        const p = project();
+        // A cyclic value cannot be serialized, so answering throws inside the handler.
+        const cyclic: Record<string, unknown> = {};
+        cyclic.self = cyclic;
+        const host = hostFor(p, async () => cyclic)(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        assert.equal(run.marker.at(-1), "wrapped");
+        assert.match(
+          written(run.seen).error,
+          /the host could not answer after the probe settled: TypeError/,
+        );
       });
 
       it("keeps a synchronous probe synchronous, returning no Promise", () => {

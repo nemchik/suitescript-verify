@@ -336,7 +336,8 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
    * undefined. A nested Promise always serializes as `{}`, so it is never a
    * meaningful value: it means a probe forgot to await. The result itself is
    * not checked, since the caller has awaited it. A path reads `page.items[1].cursor`;
-   * a cycle is visited once. The Suitelet host can reuse this as it is.
+   * a cycle is visited once. The Suitelet host keeps its own copy (the two are
+   * deployed as separate scripts); a test fails if the copies drift apart.
    */
   const findLostAwait = (value, path = "", seen = new Set()) => {
     if (value === null || typeof value !== "object" || seen.has(value)) {
@@ -361,8 +362,25 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     }
     return undefined;
   };
-  const lostAwait = (path) =>
-    `the result holds a Promise that was not awaited at ${path}`;
+  /** What a rejection reports: `REJECTS: <name>: <message>` for an error, else the rejected value as text. */
+  const rejection = (e) => {
+    try {
+      if (
+        e !== null &&
+        typeof e === "object" &&
+        typeof e.name === "string" &&
+        typeof e.message === "string"
+      ) {
+        return `REJECTS: ${e.name}: ${e.message}`;
+      }
+      return `REJECTS: ${String(e)}`;
+    } catch (_) {
+      return "REJECTS: (a value that cannot be shown)";
+    }
+  };
+  const lostAwait = (path) => {
+    return `the result holds a Promise that was not awaited at ${path}`;
+  };
 
   /** The reserved self-check: proves the deployment, its role and the host without running a probe. */
   const selfCheck = () => {
@@ -426,10 +444,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       // Only a probe that returns a thenable gets a promise back: a synchronous
       // probe keeps its synchronous answer.
       if (!isThenable(result)) return answer(result);
-      return Promise.resolve(result).then(answer, (e) => {
-        const { message, name: kind } = e || {};
-        return answer(`REJECTS: ${kind}: ${message}`);
-      });
+      return Promise.resolve(result).then(answer, (e) => answer(rejection(e)));
     },
   };
 });

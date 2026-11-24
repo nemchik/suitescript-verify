@@ -1150,6 +1150,114 @@ const sandbox = {
   version: "2026.2",
 };
 
+describe("RESTlet probes that return a Promise", () => {
+  type Answer = { error?: string; result?: unknown; probe?: string };
+  type Runner = { post: (b: unknown) => Answer | Promise<Answer> };
+  /** The generated runner with `run` as the one probe's body. */
+  const runnerWith = (run: () => unknown): Runner => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return load<Runner>(calls(p).runner.join(""), sandbox, {}, { run });
+  };
+  const asked = { probe: "one" };
+
+  it("waits for a returned Promise and reports what it resolves to", async () => {
+    const runner = runnerWith(() => Promise.resolve({ found: [1, 2] }));
+    const answer = runner.post(asked);
+    assert.ok(answer instanceof Promise);
+    assert.deepEqual(await answer, {
+      probe: "one",
+      result: { found: [1, 2] },
+      scriptType: "RESTlet",
+      version: "2026.2",
+    });
+  });
+
+  it("waits for any thenable", async () => {
+    const runner = runnerWith(() => ({
+      // biome-ignore lint/suspicious/noThenProperty: a thenable is what this tests
+      then: (ok: (v: unknown) => void) => ok("later"),
+    }));
+    assert.equal((await runner.post(asked)).result, "later");
+  });
+
+  it("reports a rejection as REJECTS, kept apart from a synchronous throw", async () => {
+    const rejects = runnerWith(() =>
+      Promise.reject(Object.assign(new Error("gone"), { name: "NOT_FOUND" })),
+    );
+    assert.equal(
+      (await rejects.post(asked)).result,
+      "REJECTS: NOT_FOUND: gone",
+    );
+    const throws = runnerWith(() => {
+      throw Object.assign(new Error("boom"), { name: "TypeError" });
+    });
+    const answer = throws.post(asked);
+    assert.ok(!(answer instanceof Promise));
+    assert.equal(answer.result, "THROWS: TypeError: boom");
+  });
+
+  it("reports a rejection that is not an Error without throwing", async () => {
+    const runner = runnerWith(() => Promise.reject(undefined));
+    assert.match(
+      String((await runner.post(asked)).result),
+      /^REJECTS: undefined: undefined$/,
+    );
+  });
+
+  it("keeps a synchronous probe and the self-check on the same path, returning no Promise", () => {
+    const runner = runnerWith(() => ({ ok: true }));
+    const answer = runner.post(asked);
+    assert.ok(!(answer instanceof Promise));
+    assert.deepEqual(answer.result, { ok: true });
+  });
+
+  it("makes a synchronous result that holds a Promise an error naming the path", () => {
+    const runner = runnerWith(() => ({
+      page: { items: [1, { cursor: Promise.resolve(1) }] },
+    }));
+    const answer = runner.post(asked) as Answer;
+    assert.deepEqual(answer, {
+      error:
+        "the result holds a Promise that was not awaited at page.items[1].cursor",
+    });
+  });
+
+  it("makes an awaited result that holds a Promise an error, and does not loop on a cycle", async () => {
+    const runner = runnerWith(() =>
+      // biome-ignore lint/suspicious/noThenProperty: a thenable is what this tests
+      Promise.resolve({ cursor: { then() {} }, name: "x" }),
+    );
+    assert.equal(
+      (await runner.post(asked)).error,
+      "the result holds a Promise that was not awaited at cursor",
+    );
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    assert.deepEqual(
+      (runnerWith(() => cyclic).post(asked) as Answer).result,
+      cyclic,
+    );
+  });
+
+  it("makes the CLI report the lost await as an error, not a result", () => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    p.script(
+      ...ok({
+        error: "the result holds a Promise that was not awaited at cursor",
+      }),
+    );
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: the result holds a Promise that was not awaited at cursor/,
+    );
+  });
+});
+
 describe("Suitelet probes", () => {
   const suitelet = "@scriptType Suitelet";
   const withProbe = (p: Project, tags: string, slug: string) =>

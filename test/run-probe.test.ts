@@ -1874,7 +1874,7 @@ describe("Suitelet probes", () => {
   });
 
   describe("the generated Suitelet host", () => {
-    type Host = { onRequest: (context: unknown) => void };
+    type Host = { onRequest: (context: unknown) => unknown };
     type Context = {
       request: Record<string, unknown>;
       response: Record<
@@ -1914,7 +1914,7 @@ describe("Suitelet probes", () => {
           }
           seen.push([method, arg]);
         };
-      host.onRequest({
+      const done = host.onRequest({
         request: { method: "GET", parameters, ...request },
         response: Object.fromEntries(
           [
@@ -1928,13 +1928,27 @@ describe("Suitelet probes", () => {
           ].map((method) => [method, record(method)]),
         ),
       });
-      const headers = seen.filter(([m]) => m.endsWith("Header"));
-      const marker = headers
-        .map(([, arg]) => arg as { name: string; value: string })
-        .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
-        .map(({ value }) => value);
-      return { marker, seen };
+      return {
+        done,
+        // Read when asked, so a probe that returns a Promise can be awaited first.
+        get marker() {
+          return seen
+            .filter(([m]) => m.endsWith("Header"))
+            .map(([, arg]) => arg as { name: string; value: string })
+            .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
+            .map(({ value }) => value);
+        },
+        seen,
+      };
     };
+    /** The JSON a host wrote, from its recorded calls. */
+    const written = (seen: [string, unknown][]) =>
+      JSON.parse(
+        seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) => (o as { output: string }).output)
+          .join(""),
+      );
     const call = (host: Host, parameters: Record<string, string>) => {
       const { marker, seen } = serve(host, parameters);
       assert.deepEqual(marker, ["wrapped"]);
@@ -2068,6 +2082,134 @@ describe("Suitelet probes", () => {
       );
       const { seen } = serve(host, { params, probe: "page" });
       assert.equal(JSON.stringify(seen).includes("partial"), false);
+    });
+
+    describe("a probe that returns a Promise", () => {
+      const nope = Object.assign(new Error("gone"), { name: "NOT_FOUND" });
+
+      it("waits for the Promise and reports a resolved value as wrapped", async () => {
+        const p = project();
+        const host = hostFor(p, async () => {
+          await Promise.resolve();
+          return { found: [1] };
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.ok(run.done instanceof Promise);
+        assert.equal(run.seen.length, 0);
+        await run.done;
+        assert.deepEqual(run.marker, ["wrapped"]);
+        assert.deepEqual(written(run.seen), {
+          probe: "page",
+          result: { found: [1] },
+          scriptType: "Suitelet",
+          version: "2026.2",
+        });
+      });
+
+      it("replays a response written after an await as own, once it resolves undefined", async () => {
+        const p = project();
+        const host = hostFor(p, async (_params, { response }) => {
+          await Promise.resolve();
+          response.write({ output: "late" });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.equal(run.seen.length, 0);
+        await run.done;
+        assert.deepEqual(run.marker, ["own"]);
+        assert.deepEqual(
+          run.seen.filter(([m]) => m === "write"),
+          [["write", { output: "late" }]],
+        );
+      });
+
+      it("refuses a Promise that resolves a value after response calls, replaying nothing", async () => {
+        const p = project();
+        const host = hostFor(p, async (_params, { response }) => {
+          response.write({ output: "partial" });
+          return { ok: true };
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        assert.match(
+          written(run.seen).error,
+          /both wrote a response and returned a value/,
+        );
+        assert.equal(JSON.stringify(run.seen).includes("partial"), false);
+      });
+
+      it("reports a rejection as REJECTS and replays nothing, including a rejection with no error", async () => {
+        for (const [reason, expected] of [
+          [nope, "REJECTS: NOT_FOUND: gone"],
+          [undefined, "REJECTS: undefined: undefined"],
+        ] as const) {
+          const p = project();
+          const host = hostFor(p, async (_params, { response }) => {
+            response.setHeader({ name: "X-Probe", value: "1" });
+            response.write({ output: "partial" });
+            throw reason;
+          })(sandbox);
+          const run = serve(host, { params, probe: "page" });
+          await run.done;
+          assert.deepEqual(run.marker, ["wrapped"]);
+          assert.equal(written(run.seen).result, expected);
+          assert.equal(/partial|X-Probe/.test(JSON.stringify(run.seen)), false);
+        }
+      });
+
+      it("seals the recorder when the Promise settles: a later response call is ignored", async () => {
+        const p = project();
+        let later = () => {};
+        const host = hostFor(p, (_params, { response }) => {
+          later = () => {
+            response.write({ output: "stray" });
+            response.setHeader({ name: "X-Stray", value: "1" });
+          };
+          return Promise.resolve({ ok: true });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        later();
+        assert.equal(/stray|X-Stray/.test(JSON.stringify(run.seen)), false);
+        assert.deepEqual(run.marker, ["wrapped"]);
+      });
+
+      it("ignores a stray call after an own probe settles instead of landing it mid-replay", async () => {
+        const p = project();
+        let later = () => {};
+        const host = hostFor(p, async (_params, { response }) => {
+          later = () => response.write({ output: "stray" });
+          response.write({ output: "real" });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        later();
+        assert.deepEqual(
+          run.seen.filter(([m]) => m === "write"),
+          [["write", { output: "real" }]],
+        );
+      });
+
+      it("makes a result that holds a Promise an error naming the path, for a Promise or a synchronous probe", async () => {
+        const nested = { page: { items: [1, { cursor: Promise.resolve(1) }] } };
+        for (const result of [Promise.resolve(nested), nested]) {
+          const p = project();
+          const host = hostFor(p, () => result)(sandbox);
+          const run = serve(host, { params, probe: "page" });
+          await run.done;
+          assert.deepEqual(written(run.seen), {
+            error:
+              "the result holds a Promise that was not awaited at page.items[1].cursor",
+          });
+        }
+      });
+
+      it("keeps a synchronous probe synchronous, returning no Promise", () => {
+        const p = project();
+        const host = hostFor(p, () => ({ ok: true }))(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.ok(!(run.done instanceof Promise));
+        assert.deepEqual(run.marker, ["wrapped"]);
+      });
     });
 
     it("drops everything a probe wrote when it throws, before or after writing", () => {

@@ -340,6 +340,28 @@ define([], () => ({
 }));
 ```
 
+A Suitelet probe whose `run(params, context)` returns a Promise (any value with a `then` method) is awaited, as a RESTlet probe is (see [Probes that return a Promise](#probes-that-return-a-promise)), and judged once it settles by the table's rules:
+
+```js
+/**
+ * @scriptType Suitelet
+ */
+define(["N/search"], (search) => ({
+    run: async (params, { response }) => {
+        const found = await search.create.promise({ type: "customer" });
+        response.write({ output: String(found.id) });
+    },
+}));
+```
+
+- **Resolved with no response calls** is `wrapped`, with the resolved value as `result`. **Response calls and resolved `undefined`** is `own`, replayed in order. **Both a value and response calls** is refused, as above.
+- **A rejection** is reported as `REJECTS: <name>: <message>` (`wrapped`), and the calls recorded before it are discarded, like a `THROWS`. The host catches the rejection itself: an unhandled rejection from `onRequest` would give an HTTP 500 page with only `UNEXPECTED_ERROR` in the execution log.
+- **The recorder is sealed when the Promise settles.** A response call that a stray continuation (an un-awaited callback) makes after that is ignored, so nothing lands in the middle of the replay. Do not rely on a call made after `run` settles.
+- **A lost await is an error**, as for a RESTlet probe: a nested Promise in a `wrapped` result makes `run` fail with `the result holds a Promise that was not awaited at <path>`.
+- **A synchronous probe** and the self-check are unchanged.
+
+**Note:** that NetSuite awaits an async Suitelet `onRequest` is **unverified** here: a contributor's test showed it, and no sandbox check by this package has yet.
+
 The host names the mode in an `X-SSV-Mode` header, and the runner reads the body as JSON only when it says `wrapped`. An answer without it is reported as an error, never read. The errors particular to Suitelet probes:
 
 | Error                                                  | Raised by                            | Cause and fix                                                                                                                                                                              |

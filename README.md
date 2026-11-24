@@ -71,28 +71,7 @@ require(["N/util"], function (u) {
 });
 ```
 
-For a deployed script, record each check's result or error so one throw does not hide the rest. A minimal Suitelet, opened from its deployment URL:
-
-```js
-/**
- * @NApiVersion 2.1
- * @NScriptType Suitelet
- */
-define([], () => ({
-    onRequest({ response }) {
-        const r = {};
-        const t = (k, f) => {
-            try {
-                r[k] = f();
-            } catch (e) {
-                r[k] = "THROWS: " + e.name + ": " + e.message;
-            }
-        };
-        t("example", () => typeof util.isArray);
-        response.write(JSON.stringify(r, null, 1));
-    },
-}));
-```
+For a deployed script, a minimal Suitelet opened from its deployment URL is enough: wrap each check in its own `try/catch` and write the results as JSON (`THROWS: <name>: <message>` for a throw), so one throw does not hide the rest.
 
 **Note:** do not put the account number in a verification, nor an account URL, user, token or the internal id of a real record. They identify a company's account, they are not needed to reproduce a result, and they are a security risk in a public repository. Replace ids with placeholders.
 
@@ -207,16 +186,7 @@ A machine-to-machine mapping cannot be changed after it is created, only revoked
 
 A project that publishes its own package from the repository root may keep the tooling in a subfolder that is an npm project of its own, with its own `package.json` and `node_modules` holding `suitescript-verify` and `@oracle/suitecloud-cli`. The package treats the folder it runs in as the project, so run it from the subfolder and pass `--dir .`, which makes the subfolder itself the verification folder (its `.env`, `.env.local`, `probes` and `sdf`):
 
-```json
-{
-    "scripts": {
-        "verify:doctor": "suitescript-verify doctor --dir .",
-        "verify:run": "suitescript-verify run --dir ."
-    }
-}
-```
-
-A script at the repository root then calls it with `npm --prefix <subfolder> run verify:doctor --`. Give `init`, `deploy`, `cleanup` and the other commands the same `--dir .`. The subfolder's `.env.local` is checked against the repository's `.gitignore`.
+Give it scripts such as `"verify:doctor": "suitescript-verify doctor --dir ."` and `"verify:run": "suitescript-verify run --dir ."`. A script at the repository root then calls one with `npm --prefix <subfolder> run verify:doctor --`. Give `init`, `deploy`, `cleanup` and the other commands the same `--dir .`. The subfolder's `.env.local` is checked against the repository's `.gitignore`.
 
 ## Deploy
 
@@ -256,7 +226,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
 - A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift, naming the keys that differ (such as `response.headers.x-sv-multi` or `result`). The expectation is the `result` object (or, for a Suitelet probe that writes its own response, the `response` object), not the whole output. No command writes it: copy it from a real run's output, which `run` prints with keys sorted and indented, never a guess, so a new probe has none until it has run once. Capture the output with `npx suitescript-verify run …` or `npm run --silent …`, or npm's own warnings land before the JSON. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none. After upgrading suitescript-verify, rewrite each own probe's expectation from a fresh `run`: what `run` reports can change between versions with no platform change.
-- `run` stops waiting for a probe after 60 seconds, or after its `@timeout` (see [Tags](#tags)), whatever the script type and whether or not the probe is asynchronous: server SuiteScript has no timers, so a probe cannot time itself out. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. The probe may still be running in NetSuite until its 300-second limit. At `@timeout 300` the CLI waits a few seconds past 300, so NetSuite's own `SSS_TIME_LIMIT_EXCEEDED` answer is reported as the runner's error rather than as a CLI timeout.
+- `run` stops waiting for a probe after 60 seconds, or after its `@timeout` (see [Tags](#tags)), whatever the script type, because a probe cannot time itself out. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. At `@timeout 300` the CLI waits 15 seconds longer, to allow for NetSuite's `SSS_TIME_LIMIT_EXCEEDED` answer, which is reported as the runner's error, not a CLI timeout. **Note:** that server SuiteScript has no timers, that the limit is 300 seconds per execution for RESTlets and Suitelets, that NetSuite answers `SSS_TIME_LIMIT_EXCEEDED` at 300, and that a timed-out probe may keep running until then are all **unverified**: no sandbox run has shown them.
 - The output says which script type ran the probe: `"scriptType": "RESTlet"` or `"scriptType": "Suitelet"`.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
@@ -289,23 +259,25 @@ A probe that needs a record permission declares it in its leading JSDoc block, o
 
 ### Probes that return a Promise
 
-A RESTlet probe whose `run()` returns a Promise (any value with a `then` method) is awaited: the runner waits and reports what it settles to.
+A probe whose `run()` returns a Promise (any value with a `then` method) is awaited, for a RESTlet or a Suitelet probe, and reports what it settles to. A synchronous probe and the self-check are unchanged.
 
 ```js
-define(["N/dataStore"], (ds) => ({
-    run: () => ds.find.promise({ type: "x" }),
+define(["N/search"], (search) => ({
+    run: () =>
+        search.lookupFields.promise({
+            type: "customer",
+            id: "1",
+            columns: ["entityid"],
+        }),
 }));
 ```
 
 - **A resolved value** is the `result`.
-- **A rejection** is reported as `REJECTS: <name>: <message>`. A synchronous throw, including one before the Promise is returned, is still `THROWS: <name>: <message>`. Which errors surface synchronously and which as rejections is itself a platform behavior a probe can verify.
-- **A synchronous probe** is unchanged: the runner returns its answer directly, with no Promise.
-- **A lost await is an error.** Every result, synchronous or awaited, is searched for a nested Promise. Finding one makes `run` fail with `the result holds a Promise that was not awaited at <path>` (for example `at cursor`) instead of reporting a result, because a nested Promise always serializes as `{}`. Await it inside the probe, or return `typeof value?.then === "function"` to show that a value is a Promise.
-- **A fire-and-forget call cannot be detected.** `ds.find(); return "done"` reports `done` whatever the call did, so do not write one.
+- **A rejection** is reported as `REJECTS: <name>: <message>` (or `REJECTS: <value>` when the rejection is not an error). A synchronous throw, including one before the Promise is returned, is still `THROWS: <name>: <message>`. Which errors surface synchronously and which as rejections is itself something a probe can verify.
+- **A lost await is an error.** A result holding a nested Promise (checked for every result, synchronous or awaited) makes `run` fail with `the result holds a Promise that was not awaited at <path>`, because a nested Promise always serializes as `{}`. Await it, or return `typeof value?.then === "function"` to show that a value is a Promise. A fire-and-forget call (`search.lookupFields.promise(...); return "done"`) cannot be detected, so do not write one.
 - Handle rejections you expect, and avoid `return await` (return the Promise itself): this is Oracle's advice.
-- Promise probes still only read.
 
-**Note:** that NetSuite awaits a RESTlet `post` that returns a Promise is **unverified** here: a contributor's test showed it, and no sandbox check by this package has yet.
+**Note:** that NetSuite awaits a RESTlet `post` or an async Suitelet `onRequest` is **unverified** here: contributors' tests showed it, and no sandbox check by this package has yet. The same goes for an unhandled rejection from `onRequest` giving an HTTP 500 page and only `UNEXPECTED_ERROR` in the execution log, which is why the Suitelet host catches rejections itself.
 
 ### Suitelet probes
 
@@ -341,27 +313,7 @@ define([], () => ({
 }));
 ```
 
-A Suitelet probe whose `run(params, context)` returns a Promise (any value with a `then` method) is awaited, as a RESTlet probe is (see [Probes that return a Promise](#probes-that-return-a-promise)), and judged once it settles by the table's rules:
-
-```js
-/**
- * @scriptType Suitelet
- */
-define(["N/search"], (search) => ({
-    run: async (params, { response }) => {
-        const found = await search.create.promise({ type: "customer" });
-        response.write({ output: String(found.id) });
-    },
-}));
-```
-
-- **Resolved with no response calls** is `wrapped`, with the resolved value as `result`. **Response calls and resolved `undefined`** is `own`, replayed in order. **Both a value and response calls** is refused, as above.
-- **A rejection** is reported as `REJECTS: <name>: <message>` (`wrapped`), and the calls recorded before it are discarded, like a `THROWS`. The host catches the rejection itself: an unhandled rejection from `onRequest` would give an HTTP 500 page with only `UNEXPECTED_ERROR` in the execution log.
-- **The recorder is sealed when the Promise settles.** A response call that a stray continuation (an un-awaited callback) makes after that is ignored, so nothing lands in the middle of the replay. Do not rely on a call made after `run` settles.
-- **A lost await is an error**, as for a RESTlet probe: a nested Promise in a `wrapped` result makes `run` fail with `the result holds a Promise that was not awaited at <path>`.
-- **A synchronous probe** and the self-check are unchanged.
-
-**Note:** that NetSuite awaits an async Suitelet `onRequest` is **unverified** here: a contributor's test showed it, and no sandbox check by this package has yet.
+A Suitelet probe that returns a Promise (see [Probes that return a Promise](#probes-that-return-a-promise)) is judged by the table once it settles: a resolved value is `wrapped`, response calls with `undefined` are `own`, and both is refused. A rejection is `wrapped` and the calls recorded before it are discarded, like a `THROWS`. The recorder is sealed when the Promise settles, so a response call a stray continuation makes later is ignored.
 
 The host names the mode in an `X-SSV-Mode` header, and the runner reads the body as JSON only when it says `wrapped`. An answer without it is reported as an error, never read. The errors particular to Suitelet probes:
 
@@ -381,18 +333,14 @@ For an `own` response, the runner reports only headers that are safe to commit, 
 - **Credential-like values are redacted.** A probe header named `Authorization`, `Proxy-Authorization` or `Cookie`, or whose name contains `token`, `secret`, `session`, `password`, `auth`, `key`, `csrf`, `sign`, `hmac`, `credential`, `nonce` or `jwt` (in any case), is reported as `<redacted>`, and so is the file name in a `Content-Disposition` (`filename=<redacted>`, `filename*=<redacted>`). The name pattern is a backstop, not a guarantee: a probe never sets a header holding a real credential or customer value.
 - **Cookies are redacted.** Each `Set-Cookie` cookie the probe set becomes `<name>=<redacted>`, unless its name starts with `sv_`, which is reported whole: an `sv_` cookie never holds a real credential or customer value. A probe that needs to show a value writes it into the body or an `sv_` cookie.
 - **One lower-cased key per header.** The runner saw two or three casings of each name from `requestSuitelet` at NetSuite 2026.2; values that differ are kept as a list.
-- **NetSuite's HTML trailer is dropped.** NetSuite appends comments to a `text/html` page that name the host, the account and the user's email. The trailing `<!-- … -->` comments of a `text/html` body are removed before the cut.
-- **The body is cut at 64 KB** (65,536 characters), and the response then carries `"truncated": true`.
-- **The scrubber still applies.** The whole output goes through the same scrubber and identifier refusal as any probe, so a header, an `sv_` cookie or a body that names the account is refused, not printed.
+- **NetSuite's HTML trailer is dropped.** The trailing `<!-- … -->` comments of a `text/html` body, which name the host, the account and the user's email, are removed before the body is cut at 64 KB (65,536 characters), when the response carries `"truncated": true`.
+- **The scrubber still applies**, as for any probe: a header, an `sv_` cookie or a body that names the account is refused, not printed.
 
-The expected output of an `own` probe is the `response` object (`{ status, headers, body }`). The comparison ignores the case of header names and compares every reported header: none changes on every call, since those are dropped.
+The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe it checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet` (10 governance units), passing `scriptId` and `deploymentId` (the host's `_sl` ids) and `urlParams` holding the probe name (`probe`) and the parameters as one JSON string (`params`); it rejects a `params` option and `external: true`.
 
-The runner stays the only entry point, because the machine-to-machine token reaches RESTlets and no Oracle page says it reaches Suitelets. For a Suitelet probe, the runner checks the parameters, then calls the host from inside the account with `N/https.requestSuitelet`:
-
-- The options are `scriptId` and `deploymentId` (the host's `_sl` ids) and `urlParams`, which carries the probe name (`probe`) and the parameters as one JSON string (`params`). `requestSuitelet` rejects a `params` option and `external: true` (see the errors above), and costs 10 governance units.
 - The host's deployment is never available without login (`isonline` F), its audience is only the runner's role (`allroles` F), and its status is released. Oracle says `requestSuitelet` works only for authenticated users in trusted contexts, so no anonymous URL is needed.
-- Like the runner, the host refuses outside a sandbox, runs only the Suitelet probes generated into its own fixed list, checks the parameters again against the declarations, and reports a throw as `THROWS: <name>: <message>`.
-- A failed or unexpected answer from the host is reported, never thrown: `run` stops with `The runner reported an error:` and what the runner saw (the error the call threw, the HTTP status and the start of the body, an answer without the `X-SSV-Mode` header, a `wrapped` body that is not JSON, or the host's own refusal). See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).
+- Like the runner, the host refuses outside a sandbox, runs only the Suitelet probes generated into its own fixed list, checks the parameters again, and reports a throw as `THROWS: <name>: <message>`.
+- A failed or unexpected answer from the host is reported, never thrown: `run` stops with `The runner reported an error:` and what the runner saw. See [Troubleshooting](#a-suitelet-probe-reports-that-the-suitelet-host-call-failed).
 
 ### Tags
 
@@ -478,7 +426,7 @@ The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAd
 
 ### `run` says a probe timed out
 
-`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (60 seconds, or its `@timeout`), so the CLI stopped waiting and printed no result. The probe may still be running in NetSuite until its 300-second limit, so do not rerun it at once if it writes or holds a lock. If the probe is only slow, declare `@timeout <seconds>` (up to 300) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than 300 seconds exceeds NetSuite's limit: split it, or narrow what it reads.
+`run` exits 1 with `<probe> timed out after N seconds`. The runner did not answer within the probe's limit (60 seconds, or its `@timeout`), so the CLI stopped waiting and printed no result. If the probe is only slow, declare `@timeout <seconds>` (up to 300) in its leading JSDoc block and run again; `@timeout` needs no redeploy for `run`, but `deploy` must see a valid tag. A probe that needs more than 300 seconds exceeds NetSuite's limit: split it, or narrow what it reads.
 
 ### A probe returns `INSUFFICIENT_PERMISSION`
 

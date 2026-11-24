@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
+import { listProbes } from "../src/probes.ts";
+import { graceSeconds, patientDispatcher } from "../src/run.ts";
 import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -2847,8 +2849,6 @@ describe("doctor calls the self-check", () => {
 });
 
 describe("probe timeouts", () => {
-  // The CLI reads this many milliseconds as one "second", so no test waits a real minute.
-  const unit = { SSV_TIMEOUT_UNIT_MS: "20" };
   const withTags = (p: Project, tags: string[]) =>
     write(
       p.dir,
@@ -2864,13 +2864,13 @@ describe("probe timeouts", () => {
     },
   ];
 
-  it("stops waiting after 60 seconds by default: exit 1, a message, no result and no draft", () => {
+  it("stops waiting at the limit: exit 1, a message, no result and no draft", () => {
     const p = project();
-    withTags(p, []);
+    withTags(p, ["@timeout 1"]);
     p.script(...slow(1500));
-    const result = cli(p, ["run", "one", "--draft"], unit);
+    const result = cli(p, ["run", "one", "--draft"]);
     assert.equal(result.status, 1, result.all);
-    assert.match(result.stderr, /one timed out after 60 seconds/);
+    assert.match(result.stderr, /one timed out after 1 seconds/);
     assert.match(
       result.stderr,
       /still be running in NetSuite until its 300-second limit/,
@@ -2882,30 +2882,31 @@ describe("probe timeouts", () => {
 
   it("does not report drift for a timeout", () => {
     const p = project();
-    withTags(p, []);
+    withTags(p, ["@timeout 1"]);
     write(p.dir, "verification/probes/one.expect.json", '{"ok": true}');
     p.script(...slow(1500));
-    const result = cli(p, ["run", "one"], unit);
+    const result = cli(p, ["run", "one"]);
     assert.equal(result.status, 1, result.all);
     assert.doesNotMatch(result.all, /DRIFT/);
   });
 
-  it("lets @timeout 120 give the probe longer than 60 seconds", () => {
+  it("lets a longer @timeout wait for a slower answer", () => {
     const p = project();
-    withTags(p, ["@timeout 120"]);
+    withTags(p, ["@timeout 5"]);
     p.script(...slow(1500));
-    const result = cli(p, ["run", "one"], unit);
+    const result = cli(p, ["run", "one"]);
     assert.equal(result.status, 0, result.all);
     assert.match(result.stdout, /"ok": true/);
   });
 
-  it("names the declared limit when a probe with @timeout runs out of time", () => {
+  // No test waits a real minute, and the CLI has no test-only setting for it:
+  // the default is checked where it is read, and the wait is the same code the
+  // @timeout cases above exercise.
+  it("reads 60 seconds when a probe declares no @timeout", () => {
     const p = project();
-    withTags(p, ["@timeout 5"]);
-    p.script(...slow(1500));
-    const result = cli(p, ["run", "one"], unit);
-    assert.equal(result.status, 1, result.all);
-    assert.match(result.stderr, /timed out after 5 seconds/);
+    withTags(p, []);
+    const [one] = listProbes(join(p.dir, "verification/probes"), []);
+    assert.equal(one?.timeoutSeconds, 60);
   });
 
   it("reports NetSuite's own answer at @timeout 300, not a CLI timeout", () => {
@@ -2916,7 +2917,7 @@ describe("probe timeouts", () => {
         error: "SSS_TIME_LIMIT_EXCEEDED: Script Execution Time Exceeded.",
       }),
     );
-    const result = cli(p, ["run", "one"], unit);
+    const result = cli(p, ["run", "one"]);
     assert.equal(result.status, 1, result.all);
     assert.match(
       result.stderr,
@@ -2932,6 +2933,21 @@ describe("probe timeouts", () => {
     assert.equal(cli(p, ["run", "one"]).status, 0);
     const [, call] = p.requests() as { dispatcher?: boolean }[];
     assert.equal(call?.dispatcher, true);
+  });
+
+  it("can build the patient dispatcher on this Node, so fetch's own 300-second cut-off is lifted", async () => {
+    // undici's global dispatcher appears once the first fetch has run. If a Node
+    // release removes the symbol or its class, this fails instead of the CLI
+    // silently going back to giving up after 300 seconds.
+    await fetch("http://127.0.0.1:1").catch(() => {});
+    const dispatcher = patientDispatcher();
+    assert.equal(typeof dispatcher, "object");
+    assert.equal(patientDispatcher(), dispatcher, "it is built once");
+  });
+
+  it("states in the README the same grace the CLI waits past 300", () => {
+    const readme = readFileSync(join(root, "README.md"), "utf8");
+    assert.ok(readme.includes(`waits ${graceSeconds} seconds longer`));
   });
 
   it("refuses a bad @timeout at run and at deploy, before anything is generated or sent", () => {

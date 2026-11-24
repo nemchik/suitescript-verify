@@ -109,40 +109,43 @@ export const knownIds = (creds: Creds): KnownIds => ({
 });
 
 /**
- * The milliseconds in one second of a probe's time limit. Tests shrink it
- * (SSV_TIMEOUT_UNIT_MS) so they need not wait a real minute; it is not a setting.
+ * How many seconds the CLI waits past NetSuite's own 300-second limit, so that
+ * NetSuite's SSS_TIME_LIMIT_EXCEEDED answer (unverified in a sandbox) arrives
+ * and is reported instead of the CLI giving up in the same instant.
  */
-const timeoutUnitMs = () => Number(process.env.SSV_TIMEOUT_UNIT_MS) || 1000;
+export const graceSeconds = 15;
 
-/**
- * How long to wait for a probe's limit. At NetSuite's own 300-second limit the
- * CLI waits a little longer, so NetSuite's SSS_TIME_LIMIT_EXCEEDED answer
- * arrives and is reported instead of the CLI giving up in the same instant.
- */
+/** How long to wait for a probe's limit, in seconds: the limit, plus the grace at NetSuite's own. */
 const waitSeconds = (limit: number) =>
-  limit >= maxTimeoutSeconds ? limit + 15 : limit;
+  limit >= maxTimeoutSeconds ? limit + graceSeconds : limit;
 
 /** Raised when the runner did not answer within the probe's time limit. */
 export class RunnerTimeout extends Error {}
 
+let patient: object | undefined;
+
 /**
  * A dispatcher for the runner call that never gives up waiting for headers or
- * body. Node's global fetch (undici) does so after 300 seconds, which would cut
- * in just as NetSuite answers SSS_TIME_LIMIT_EXCEEDED at its own 300-second
- * limit; the CLI's limit (at most 300) is the only one that applies. Undefined
- * when the global dispatcher cannot be reached, which leaves fetch's default.
+ * body, built once. Node's global fetch (undici) does so after 300 seconds,
+ * which would cut in as NetSuite reaches its own 300-second limit; the CLI's
+ * limit (at most 300, plus the grace) is the only one that applies. Node does
+ * not expose undici's Agent, so this copies the global dispatcher's class,
+ * which exists once the first fetch has run. A test fails if a Node release
+ * removes it; undefined here would silently restore the 300-second cut-off.
  */
-function patientDispatcher(): object | undefined {
+export function patientDispatcher(): object | undefined {
+  if (patient) return patient;
   try {
     const global = (globalThis as Record<symbol, unknown>)[
       Symbol.for("undici.globalDispatcher.1")
     ] as { constructor: new (options: object) => object } | undefined;
-    return global
-      ? new global.constructor({ bodyTimeout: 0, headersTimeout: 0 })
-      : undefined;
+    if (global) {
+      patient = new global.constructor({ bodyTimeout: 0, headersTimeout: 0 });
+    }
   } catch {
-    return undefined;
+    // Leaves fetch's own default.
   }
+  return patient;
 }
 
 /**
@@ -202,9 +205,7 @@ export async function callRunner(
       ...(timeoutSeconds === undefined
         ? {}
         : {
-            signal: AbortSignal.timeout(
-              waitSeconds(timeoutSeconds) * timeoutUnitMs(),
-            ),
+            signal: AbortSignal.timeout(waitSeconds(timeoutSeconds) * 1000),
           }),
     });
     const text = await response.text();

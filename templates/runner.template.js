@@ -336,8 +336,8 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
    * undefined. A nested Promise always serializes as `{}`, so it is never a
    * meaningful value: it means a probe forgot to await. The result itself is
    * not checked, since the caller has awaited it. A path reads `page.items[1].cursor`;
-   * a cycle is visited once. The Suitelet host keeps its own copy (the two are
-   * deployed as separate scripts); a test fails if the copies drift apart.
+   * a cycle is visited once. The Suitelet host keeps its own copy (separately
+   * deployed scripts); a test fails if the copies drift apart.
    */
   const findLostAwait = (value, path = "", seen = new Set()) => {
     if (value === null || typeof value !== "object" || seen.has(value)) {

@@ -26,8 +26,9 @@
  * settles by the same rules: a rejection is `REJECTS: <name>: <message>` with
  * the recorded calls discarded. The recorder is sealed at settle, so a stray
  * call a continuation makes later is ignored. The host catches the rejection
- * itself: an unhandled one from `onRequest` is an HTTP 500 page that the
- * execution log shows only as `UNEXPECTED_ERROR`.
+ * itself, because an unhandled one from `onRequest` is said (unverified in a
+ * sandbox) to give an HTTP 500 page that the execution log shows only as
+ * `UNEXPECTED_ERROR`.
  *
  * @NApiVersion 2.1
  * @NScriptType Suitelet
@@ -342,7 +343,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             // let it reject: that is an HTTP 500 page the runner cannot read.
             try {
               answer(response, {
-                error: `the host could not answer after the probe settled: ${e && e.name}: ${e && e.message}`,
+                error: `the host could not answer after the probe settled: ${e?.name}: ${e?.message}`,
               });
             } catch (_) {
               // Nothing more can be written.

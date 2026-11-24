@@ -320,6 +320,68 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     return answer.selfCheck;
   };
 
+  /** Whether a value is a thenable (has a `then` method), such as a Promise; a throwing getter is not one. */
+  const isThenable = (value) => {
+    if (value === null) return false;
+    if (typeof value !== "object" && typeof value !== "function") return false;
+    try {
+      return typeof value.then === "function";
+    } catch (_) {
+      return false;
+    }
+  };
+
+  /**
+   * The path to the first Promise (any thenable) nested in a result, or
+   * undefined. A nested Promise always serializes as `{}`, so it is never a
+   * meaningful value: it means a probe forgot to await. The result itself is
+   * not checked, since the caller has awaited it. A path reads `page.items[1].cursor`;
+   * a cycle is visited once. The Suitelet host keeps its own copy (separately
+   * deployed scripts); a test fails if the copies drift apart.
+   */
+  const findLostAwait = (value, path = "", seen = new Set()) => {
+    if (value === null || typeof value !== "object" || seen.has(value)) {
+      return undefined;
+    }
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      let child;
+      try {
+        child = value[key];
+      } catch (_) {
+        continue;
+      }
+      const at = Array.isArray(value)
+        ? `${path}[${key}]`
+        : path
+          ? `${path}.${key}`
+          : key;
+      if (isThenable(child)) return at;
+      const found = findLostAwait(child, at, seen);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  /** What a rejection reports: `REJECTS: <name>: <message>` for an error, else the rejected value as text. */
+  const rejection = (e) => {
+    try {
+      if (
+        e !== null &&
+        typeof e === "object" &&
+        typeof e.name === "string" &&
+        typeof e.message === "string"
+      ) {
+        return `REJECTS: ${e.name}: ${e.message}`;
+      }
+      return `REJECTS: ${String(e)}`;
+    } catch (_) {
+      return "REJECTS: (a value that cannot be shown)";
+    }
+  };
+  const lostAwait = (path) => {
+    return `the result holds a Promise that was not awaited at ${path}`;
+  };
+
   /** The reserved self-check: proves the deployment, its role and the host without running a probe. */
   const selfCheck = () => {
     if (runtime.envType !== runtime.EnvType.SANDBOX) {
@@ -362,18 +424,27 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       const checked = checkParams(body, entry ? entry[1] : suitelet);
       if (checked.error) return { error: checked.error };
       if (!entry) return viaSuitelet(name, checked.params);
+      const answer = (result) => {
+        const lost = findLostAwait(result);
+        return lost === undefined
+          ? {
+              probe: name,
+              result,
+              scriptType: "RESTlet",
+              version: String(runtime.version),
+            }
+          : { error: lostAwait(lost) };
+      };
       let result;
       try {
         result = entry[0].run(checked.params);
       } catch (e) {
-        result = `THROWS: ${e.name}: ${e.message}`;
+        return answer(`THROWS: ${e.name}: ${e.message}`);
       }
-      return {
-        probe: name,
-        result,
-        scriptType: "RESTlet",
-        version: String(runtime.version),
-      };
+      // Only a probe that returns a thenable gets a promise back: a synchronous
+      // probe keeps its synchronous answer.
+      if (!isThenable(result)) return answer(result);
+      return Promise.resolve(result).then(answer, (e) => answer(rejection(e)));
     },
   };
 });

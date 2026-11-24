@@ -13,6 +13,7 @@ import {
   differingPaths,
   isRunnable,
   isSlug,
+  isSuitelet,
   listDifferences,
   listProbes,
   type Probe,
@@ -20,6 +21,7 @@ import {
   readExpect,
   sortKeys,
   tagProblems,
+  timeoutCeiling,
 } from "./probes.ts";
 import {
   ownResponse,
@@ -108,15 +110,71 @@ export const knownIds = (creds: Creds): KnownIds => ({
 });
 
 /**
+ * How many seconds the CLI waits past NetSuite's own limit for the probe's
+ * script type, so that NetSuite's answer arrives and is reported instead of
+ * the CLI giving up in the same instant: SSS_REQUEST_TIME_EXCEEDED from
+ * requestSuitelet at about 45 seconds (seen in a sandbox), or
+ * SSS_TIME_LIMIT_EXCEEDED at 300 (unverified).
+ */
+export const graceSeconds = 15;
+
+/** Whether a probe's limit is the most its script type allows, where NetSuite answers itself. */
+const atCeiling = (probe: Probe) =>
+  probe.timeoutSeconds >= timeoutCeiling(probe.scriptType);
+
+/** How long the CLI waits for a probe, in seconds: its limit, plus the grace at its ceiling. */
+export const secondsToWait = (probe: Probe) =>
+  atCeiling(probe) ? probe.timeoutSeconds + graceSeconds : probe.timeoutSeconds;
+
+/** What `run` says when the CLI stopped waiting for a probe. */
+export const timedOutMessage = (probe: Probe) =>
+  `${probe.slug} timed out after ${secondsToWait(probe)} seconds, so there is no result. It may still be running in NetSuite. ${
+    atCeiling(probe)
+      ? `Its limit is the most a ${isSuitelet(probe) ? "Suitelet" : "RESTlet"} probe allows: split it, or narrow what it reads.`
+      : `To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`
+  }`;
+
+/** Raised when the runner did not answer within the probe's time limit. */
+export class RunnerTimeout extends Error {}
+
+let patient: object | undefined;
+
+/**
+ * A dispatcher for the runner call that never gives up waiting for headers or
+ * body, built once. Node's global fetch (undici) does so after 300 seconds,
+ * which would cut in as NetSuite reaches its own 300-second limit; the CLI's
+ * limit (at most 300, plus the grace) is the only one that applies. Node does
+ * not expose undici's Agent, so this copies the global dispatcher's class,
+ * which exists once the first fetch has run. A test fails if a Node release
+ * removes it; undefined here would silently restore the 300-second cut-off.
+ */
+export function patientDispatcher(): object | undefined {
+  if (patient) return patient;
+  try {
+    const global = (globalThis as Record<symbol, unknown>)[
+      Symbol.for("undici.globalDispatcher.1")
+    ] as { constructor: new (options: object) => object } | undefined;
+    if (global) {
+      patient = new global.constructor({ bodyTimeout: 0, headersTimeout: 0 });
+    }
+  } catch {
+    // Leaves fetch's own default.
+  }
+  return patient;
+}
+
+/**
  * Gets a token with the runner's certificate (OAuth 2.0 client credentials)
  * and posts `body` to the deployed runner. Returns the runner's answer as text;
  * a failed token request, a failed call or a non-OK status is a UsageError
- * whose message is scrubbed of the configured ids.
+ * whose message is scrubbed of the configured ids. With `waitSeconds`, it
+ * stops waiting for the runner after that long and throws a RunnerTimeout.
  */
 export async function callRunner(
   creds: Creds,
   runnerId: string,
   body: unknown,
+  waitSeconds?: number,
 ): Promise<string> {
   const safe = (text: string) => scrub(text, knownIds(creds)).text;
   const endpoint = tokenUrl(creds.account);
@@ -149,13 +207,21 @@ export async function callRunner(
         ),
       );
     }
+    const dispatcher = patientDispatcher();
     const response = await fetch(restletUrl(creds.account, runnerId), {
       body: JSON.stringify(body),
+      // biome-ignore lint/suspicious/noExplicitAny: undici's Dispatcher type is not exposed by Node
+      ...(dispatcher ? ({ dispatcher } as any) : {}),
       headers: {
         authorization: `Bearer ${tokenBody.access_token}`,
         "content-type": "application/json",
       },
       method: "POST",
+      ...(waitSeconds === undefined
+        ? {}
+        : {
+            signal: AbortSignal.timeout(waitSeconds * 1000),
+          }),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -167,6 +233,7 @@ ${safe(text.slice(0, 500))}`,
     return text;
   } catch (error) {
     if (error instanceof UsageError) throw error;
+    if ((error as Error).name === "TimeoutError") throw new RunnerTimeout();
     throw new UsageError(
       safe(`The request failed: ${(error as Error).message}`),
     );
@@ -214,13 +281,20 @@ export async function runProbe(
   }
   const known = knownIds(creds);
 
-  const text = await callRunner(
-    creds,
-    config.runnerId,
-    probe.params.length > 0
-      ? { params, probe: probe.slug }
-      : { probe: probe.slug },
-  );
+  let text: string;
+  try {
+    text = await callRunner(
+      creds,
+      config.runnerId,
+      probe.params.length > 0
+        ? { params, probe: probe.slug }
+        : { probe: probe.slug },
+      secondsToWait(probe),
+    );
+  } catch (error) {
+    if (!(error instanceof RunnerTimeout)) throw error;
+    throw new UsageError(timedOutMessage(probe));
+  }
 
   const scrubbed = scrub(withOwnResponse(text), known);
   if (scrubbed.problems.length > 0) {

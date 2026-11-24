@@ -14,6 +14,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
+import { listProbes, parseProbe } from "../src/probes.ts";
+import {
+  graceSeconds,
+  patientDispatcher,
+  secondsToWait,
+  timedOutMessage,
+} from "../src/run.ts";
 import { fakeTerminal } from "./fixtures/terminal.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -37,6 +44,8 @@ const trailer = `
 
 interface Answer {
   body: unknown;
+  /** How long the fake takes to answer, in milliseconds. */
+  delayMs?: number;
   status: number;
 }
 
@@ -1148,6 +1157,146 @@ const sandbox = {
   version: "2026.2",
 };
 
+describe("RESTlet probes that return a Promise", () => {
+  type Answer = { error?: string; result?: unknown; probe?: string };
+  type Runner = { post: (b: unknown) => Answer | Promise<Answer> };
+  /** The generated runner with `run` as the one probe's body. */
+  const runnerWith = (run: () => unknown): Runner => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return load<Runner>(calls(p).runner.join(""), sandbox, {}, { run });
+  };
+  const asked = { probe: "one" };
+
+  it("waits for a returned Promise and reports what it resolves to", async () => {
+    const runner = runnerWith(() => Promise.resolve({ found: [1, 2] }));
+    const answer = runner.post(asked);
+    assert.ok(answer instanceof Promise);
+    assert.deepEqual(await answer, {
+      probe: "one",
+      result: { found: [1, 2] },
+      scriptType: "RESTlet",
+      version: "2026.2",
+    });
+  });
+
+  it("waits for any thenable", async () => {
+    const runner = runnerWith(() => ({
+      // biome-ignore lint/suspicious/noThenProperty: a thenable is what this tests
+      then: (ok: (v: unknown) => void) => ok("later"),
+    }));
+    assert.equal((await runner.post(asked)).result, "later");
+  });
+
+  it("reports a rejection as REJECTS, kept apart from a synchronous throw", async () => {
+    const rejects = runnerWith(() =>
+      Promise.reject(Object.assign(new Error("gone"), { name: "NOT_FOUND" })),
+    );
+    assert.equal(
+      (await rejects.post(asked)).result,
+      "REJECTS: NOT_FOUND: gone",
+    );
+    const throws = runnerWith(() => {
+      throw Object.assign(new Error("boom"), { name: "TypeError" });
+    });
+    const answer = throws.post(asked);
+    assert.ok(!(answer instanceof Promise));
+    assert.equal(answer.result, "THROWS: TypeError: boom");
+  });
+
+  it("reports a rejection that is not an Error as its text", async () => {
+    for (const [reason, expected] of [
+      [undefined, "REJECTS: undefined"],
+      ["plain words", "REJECTS: plain words"],
+      [42, "REJECTS: 42"],
+      [{ code: 7 }, "REJECTS: [object Object]"],
+    ] as const) {
+      const runner = runnerWith(() => Promise.reject(reason));
+      assert.equal((await runner.post(asked)).result, expected);
+    }
+  });
+
+  it("keeps a synchronous probe and the self-check on the same path, returning no Promise", () => {
+    const runner = runnerWith(() => ({ ok: true }));
+    const answer = runner.post(asked);
+    assert.ok(!(answer instanceof Promise));
+    assert.deepEqual(answer.result, { ok: true });
+  });
+
+  it("makes a synchronous result that holds a Promise an error naming the path", () => {
+    const runner = runnerWith(() => ({
+      page: { items: [1, { cursor: Promise.resolve(1) }] },
+    }));
+    const answer = runner.post(asked) as Answer;
+    assert.deepEqual(answer, {
+      error:
+        "the result holds a Promise that was not awaited at page.items[1].cursor",
+    });
+  });
+
+  it("makes an awaited result that holds a Promise an error, and does not loop on a cycle", async () => {
+    const runner = runnerWith(() =>
+      // biome-ignore lint/suspicious/noThenProperty: a thenable is what this tests
+      Promise.resolve({ cursor: { then() {} }, name: "x" }),
+    );
+    assert.equal(
+      (await runner.post(asked)).error,
+      "the result holds a Promise that was not awaited at cursor",
+    );
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    assert.deepEqual(
+      (runnerWith(() => cyclic).post(asked) as Answer).result,
+      cyclic,
+    );
+  });
+
+  it("makes the CLI report the lost await as an error, not a result", () => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    p.script(
+      ...ok({
+        error: "the result holds a Promise that was not awaited at cursor",
+      }),
+    );
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: the result holds a Promise that was not awaited at cursor/,
+    );
+  });
+});
+
+describe("the two templates' shared helpers", () => {
+  // The runner and the Suitelet host deploy as separate scripts, so each keeps
+  // its own copy of these helpers. The copies must not drift apart.
+  const source = (file: string) =>
+    readFileSync(join(root, "templates", file), "utf8").replaceAll(
+      "\r\n",
+      "\n",
+    );
+  const helper = (text: string, name: string) => {
+    const start = text.indexOf(`\n  const ${name} = `);
+    assert.notEqual(start, -1, `${name} is missing`);
+    return text.slice(start, text.indexOf("\n  };\n", start));
+  };
+  for (const name of [
+    "isThenable",
+    "findLostAwait",
+    "lostAwait",
+    "rejection",
+  ]) {
+    it(`keeps ${name} identical in both`, () => {
+      assert.equal(
+        helper(source("runner.template.js"), name),
+        helper(source("suitelet.template.js"), name),
+      );
+    });
+  }
+});
+
 describe("Suitelet probes", () => {
   const suitelet = "@scriptType Suitelet";
   const withProbe = (p: Project, tags: string, slug: string) =>
@@ -1766,7 +1915,7 @@ describe("Suitelet probes", () => {
   });
 
   describe("the generated Suitelet host", () => {
-    type Host = { onRequest: (context: unknown) => void };
+    type Host = { onRequest: (context: unknown) => unknown };
     type Context = {
       request: Record<string, unknown>;
       response: Record<
@@ -1806,7 +1955,7 @@ describe("Suitelet probes", () => {
           }
           seen.push([method, arg]);
         };
-      host.onRequest({
+      const done = host.onRequest({
         request: { method: "GET", parameters, ...request },
         response: Object.fromEntries(
           [
@@ -1820,13 +1969,27 @@ describe("Suitelet probes", () => {
           ].map((method) => [method, record(method)]),
         ),
       });
-      const headers = seen.filter(([m]) => m.endsWith("Header"));
-      const marker = headers
-        .map(([, arg]) => arg as { name: string; value: string })
-        .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
-        .map(({ value }) => value);
-      return { marker, seen };
+      return {
+        done,
+        // Read when asked, so a probe that returns a Promise can be awaited first.
+        get marker() {
+          return seen
+            .filter(([m]) => m.endsWith("Header"))
+            .map(([, arg]) => arg as { name: string; value: string })
+            .filter(({ name }) => name.toLowerCase() === "x-ssv-mode")
+            .map(({ value }) => value);
+        },
+        seen,
+      };
     };
+    /** The JSON a host wrote, from its recorded calls. */
+    const written = (seen: [string, unknown][]) =>
+      JSON.parse(
+        seen
+          .filter(([m]) => m === "write")
+          .map(([, o]) => (o as { output: string }).output)
+          .join(""),
+      );
     const call = (host: Host, parameters: Record<string, string>) => {
       const { marker, seen } = serve(host, parameters);
       assert.deepEqual(marker, ["wrapped"]);
@@ -1960,6 +2123,150 @@ describe("Suitelet probes", () => {
       );
       const { seen } = serve(host, { params, probe: "page" });
       assert.equal(JSON.stringify(seen).includes("partial"), false);
+    });
+
+    describe("a probe that returns a Promise", () => {
+      const nope = Object.assign(new Error("gone"), { name: "NOT_FOUND" });
+
+      it("waits for the Promise and reports a resolved value as wrapped", async () => {
+        const p = project();
+        const host = hostFor(p, async () => {
+          await Promise.resolve();
+          return { found: [1] };
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.ok(run.done instanceof Promise);
+        assert.equal(run.seen.length, 0);
+        await run.done;
+        assert.deepEqual(run.marker, ["wrapped"]);
+        assert.deepEqual(written(run.seen), {
+          probe: "page",
+          result: { found: [1] },
+          scriptType: "Suitelet",
+          version: "2026.2",
+        });
+      });
+
+      it("replays a response written after an await as own, once it resolves undefined", async () => {
+        const p = project();
+        const host = hostFor(p, async (_params, { response }) => {
+          await Promise.resolve();
+          response.write({ output: "late" });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.equal(run.seen.length, 0);
+        await run.done;
+        assert.deepEqual(run.marker, ["own"]);
+        assert.deepEqual(
+          run.seen.filter(([m]) => m === "write"),
+          [["write", { output: "late" }]],
+        );
+      });
+
+      it("refuses a Promise that resolves a value after response calls, replaying nothing", async () => {
+        const p = project();
+        const host = hostFor(p, async (_params, { response }) => {
+          response.write({ output: "partial" });
+          return { ok: true };
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        assert.match(
+          written(run.seen).error,
+          /both wrote a response and returned a value/,
+        );
+        assert.equal(JSON.stringify(run.seen).includes("partial"), false);
+      });
+
+      it("reports a rejection as REJECTS and replays nothing, including a rejection with no error", async () => {
+        for (const [reason, expected] of [
+          [nope, "REJECTS: NOT_FOUND: gone"],
+          [undefined, "REJECTS: undefined"],
+          ["plain words", "REJECTS: plain words"],
+        ] as const) {
+          const p = project();
+          const host = hostFor(p, async (_params, { response }) => {
+            response.setHeader({ name: "X-Probe", value: "1" });
+            response.write({ output: "partial" });
+            throw reason;
+          })(sandbox);
+          const run = serve(host, { params, probe: "page" });
+          await run.done;
+          assert.deepEqual(run.marker, ["wrapped"]);
+          assert.equal(written(run.seen).result, expected);
+          assert.equal(/partial|X-Probe/.test(JSON.stringify(run.seen)), false);
+        }
+      });
+
+      it("seals the recorder when the Promise settles: a later response call is ignored", async () => {
+        const p = project();
+        let later = () => {};
+        const host = hostFor(p, (_params, { response }) => {
+          later = () => {
+            response.write({ output: "stray" });
+            response.setHeader({ name: "X-Stray", value: "1" });
+          };
+          return Promise.resolve({ ok: true });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        later();
+        assert.equal(/stray|X-Stray/.test(JSON.stringify(run.seen)), false);
+        assert.deepEqual(run.marker, ["wrapped"]);
+      });
+
+      it("ignores a stray call after an own probe settles instead of landing it mid-replay", async () => {
+        const p = project();
+        let later = () => {};
+        const host = hostFor(p, async (_params, { response }) => {
+          later = () => response.write({ output: "stray" });
+          response.write({ output: "real" });
+        })(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        later();
+        assert.deepEqual(
+          run.seen.filter(([m]) => m === "write"),
+          [["write", { output: "real" }]],
+        );
+      });
+
+      it("makes a result that holds a Promise an error naming the path, for a Promise or a synchronous probe", async () => {
+        const nested = { page: { items: [1, { cursor: Promise.resolve(1) }] } };
+        for (const result of [Promise.resolve(nested), nested]) {
+          const p = project();
+          const host = hostFor(p, () => result)(sandbox);
+          const run = serve(host, { params, probe: "page" });
+          await run.done;
+          assert.deepEqual(written(run.seen), {
+            error:
+              "the result holds a Promise that was not awaited at page.items[1].cursor",
+          });
+        }
+      });
+
+      it("answers with an error, never an unhandled rejection, when the host fails after the Promise settles", async () => {
+        const p = project();
+        // A cyclic value cannot be serialized, so answering throws inside the handler.
+        const cyclic: Record<string, unknown> = {};
+        cyclic.self = cyclic;
+        const host = hostFor(p, async () => cyclic)(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        await run.done;
+        assert.equal(run.marker.at(-1), "wrapped");
+        assert.match(
+          written(run.seen).error,
+          /the host could not answer after the probe settled: TypeError/,
+        );
+      });
+
+      it("keeps a synchronous probe synchronous, returning no Promise", () => {
+        const p = project();
+        const host = hostFor(p, () => ({ ok: true }))(sandbox);
+        const run = serve(host, { params, probe: "page" });
+        assert.ok(!(run.done instanceof Promise));
+        assert.deepEqual(run.marker, ["wrapped"]);
+      });
     });
 
     it("drops everything a probe wrote when it throws, before or after writing", () => {
@@ -2543,5 +2850,241 @@ describe("doctor calls the self-check", () => {
     }).all;
     assert.match(lineOf(out), /^FAIL /);
     assert.deepEqual(p.requests(), []);
+  });
+});
+
+describe("probe timeouts", () => {
+  const withTags = (p: Project, tags: string[]) =>
+    write(
+      p.dir,
+      "verification/probes/one.js",
+      probeSource([restlet, ...tags.map((line) => ` * ${line}`)].join("\n")),
+    );
+  const slow = (delayMs: number): [Answer, Answer] => [
+    { body: { access_token: "tok-abc" }, status: 200 },
+    {
+      body: { probe: "one", result: { ok: true }, version: "2026.2" },
+      delayMs,
+      status: 200,
+    },
+  ];
+
+  it("stops waiting at the limit: exit 1, a message, no result and no draft", () => {
+    const p = project();
+    withTags(p, ["@timeout 1"]);
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one", "--draft"]);
+    assert.equal(result.status, 1, result.all);
+    assert.match(result.stderr, /one timed out after 1 seconds/);
+    assert.match(result.stderr, /may still be running in NetSuite\./);
+    assert.match(result.stderr, /@timeout <seconds> \(up to 300\)/);
+    assert.equal(result.stdout.includes('"ok"'), false);
+    assert.deepEqual(readdirSync(join(p.dir, "docs/verification/results")), []);
+  });
+
+  it("does not report drift for a timeout", () => {
+    const p = project();
+    withTags(p, ["@timeout 1"]);
+    write(p.dir, "verification/probes/one.expect.json", '{"ok": true}');
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 1, result.all);
+    assert.doesNotMatch(result.all, /DRIFT/);
+  });
+
+  it("lets a longer @timeout wait for a slower answer", () => {
+    const p = project();
+    withTags(p, ["@timeout 5"]);
+    p.script(...slow(1500));
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 0, result.all);
+    assert.match(result.stdout, /"ok": true/);
+  });
+
+  // No test waits a real minute, and the CLI has no test-only setting for it:
+  // the default is checked where it is read, and the wait is the same code the
+  // @timeout cases above exercise.
+  it("reads 60 seconds when a probe declares no @timeout", () => {
+    const p = project();
+    withTags(p, []);
+    const [one] = listProbes(join(p.dir, "verification/probes"), []);
+    assert.equal(one?.timeoutSeconds, 60);
+  });
+
+  it("reports NetSuite's own answer at @timeout 300, not a CLI timeout", () => {
+    const p = project();
+    withTags(p, ["@timeout 300"]);
+    p.script(
+      ...ok({
+        error: "SSS_TIME_LIMIT_EXCEEDED: Script Execution Time Exceeded.",
+      }),
+    );
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 1, result.all);
+    assert.match(
+      result.stderr,
+      /The runner reported an error: SSS_TIME_LIMIT_EXCEEDED/,
+    );
+    assert.doesNotMatch(result.stderr, /timed out/);
+  });
+
+  it("keeps the HTTP client from giving up before 300 seconds", () => {
+    const p = project();
+    withTags(p, []);
+    p.script(...ok({ result: {}, version: "1" }));
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+    const [, call] = p.requests() as { dispatcher?: boolean }[];
+    assert.equal(call?.dispatcher, true);
+  });
+
+  it("can build the patient dispatcher on this Node, so fetch's own 300-second cut-off is lifted", async () => {
+    // undici's global dispatcher appears once the first fetch has run. If a Node
+    // release removes the symbol or its class, this fails instead of the CLI
+    // silently going back to giving up after 300 seconds.
+    await fetch("http://127.0.0.1:1").catch(() => {});
+    const dispatcher = patientDispatcher();
+    assert.equal(typeof dispatcher, "object");
+    assert.equal(patientDispatcher(), dispatcher, "it is built once");
+  });
+
+  it("states in the README the same grace the CLI waits past 300", () => {
+    const readme = readFileSync(join(root, "README.md"), "utf8");
+    assert.ok(readme.includes(`waits ${graceSeconds} seconds longer`));
+  });
+
+  it("refuses a bad @timeout at run and at deploy, before anything is generated or sent", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const lines of [
+      ["@timeout"],
+      ["@timeout soon"],
+      ["@timeout 1.5"],
+      ["@timeout 60s"],
+      ["@timeout -5"],
+      ["@timeout 0"],
+      ["@timeout 301"],
+      ["@timeout 60 61"],
+      ["@timeout 60", "@timeout 90"],
+    ]) {
+      withTags(p, lines);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, lines.join());
+      assert.match(run.stderr, /one has invalid tags[\s\S]*@timeout/);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, lines.join());
+      assert.match(deploy.stderr, /one: @timeout/);
+    }
+    assert.deepEqual(p.requests(), []);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+
+  it("accepts the limits 1 and 300", () => {
+    const p = project();
+    p.script(...ok({ result: {}, version: "1" }));
+    for (const value of ["1", "300"]) {
+      withTags(p, [`@timeout ${value}`]);
+      assert.equal(cli(p, ["run", "one"]).status, 0, value);
+    }
+  });
+
+  // A real wait at a ceiling is 60 to 315 seconds, too long for a test run, so
+  // the wait and the message are checked where run computes them.
+  it("waits the grace past a script type's ceiling, and says how long it waited", () => {
+    const probe = (lines: string[]) =>
+      parseProbe("one", probeSource(lines.join("\n * ")));
+    const restletAt = probe([restlet, "@timeout 300"]);
+    const suiteletAt = probe(["@scriptType suitelet"]);
+    const below = probe(["@scriptType Suitelet", "@timeout 44"]);
+    assert.equal(secondsToWait(restletAt), 300 + graceSeconds);
+    assert.equal(secondsToWait(suiteletAt), 45 + graceSeconds);
+    assert.equal(secondsToWait(probe([restlet, "@timeout 299"])), 299);
+    assert.equal(secondsToWait(below), 44);
+    assert.match(
+      timedOutMessage(suiteletAt),
+      /timed out after 60 seconds.*Its limit is the most a Suitelet probe allows/,
+    );
+    assert.match(
+      timedOutMessage(restletAt),
+      /timed out after 315 seconds.*Its limit is the most a RESTlet probe allows/,
+    );
+    assert.doesNotMatch(timedOutMessage(suiteletAt), /@timeout/);
+    assert.match(
+      timedOutMessage(below),
+      /timed out after 44 seconds.*up to 45/,
+    );
+  });
+
+  describe("a Suitelet probe, which requestSuitelet gave up on at about 45 seconds at 2026.2", () => {
+    const withSuiteletTags = (p: Project, tags: string[]) =>
+      write(
+        p.dir,
+        "verification/probes/one.js",
+        probeSource(
+          ["@scriptType Suitelet", ...tags.map((line) => ` * ${line}`)].join(
+            "\n",
+          ),
+        ),
+      );
+
+    it("reads 45 seconds when it declares no @timeout", () => {
+      const p = project();
+      withSuiteletTags(p, []);
+      const [one] = listProbes(join(p.dir, "verification/probes"), []);
+      assert.equal(one?.timeoutSeconds, 45);
+    });
+
+    it("refuses a @timeout over 45 at run and at deploy, naming the cut-off", () => {
+      const p = project();
+      p.script(...ok({ result: {}, version: "1" }));
+      withSuiteletTags(p, ["@timeout 46"]);
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 1, run.all);
+      assert.match(run.stderr, /@timeout "46"[^\n]*1 to 45/);
+      assert.match(run.stderr, /requestSuitelet/);
+      const deploy = cli(p, ["deploy"]);
+      assert.equal(deploy.status, 1, deploy.all);
+      assert.match(deploy.stderr, /one: @timeout "46"/);
+      assert.deepEqual(p.requests(), []);
+    });
+
+    it("accepts 45", () => {
+      const p = project();
+      p.script(...ok({ result: {}, version: "1" }));
+      withSuiteletTags(p, ["@timeout 45"]);
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 0, result.all);
+    });
+
+    it("tells a timed-out Suitelet probe its own limit, not 300", () => {
+      const p = project();
+      withSuiteletTags(p, ["@timeout 1"]);
+      p.script(...slow(1500));
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.stderr, /one timed out after 1 seconds/);
+      assert.match(result.stderr, /up to 45/);
+      assert.doesNotMatch(result.stderr, /300/);
+    });
+
+    it("reports NetSuite's SSS_REQUEST_TIME_EXCEEDED at 45, not a CLI timeout", () => {
+      const p = project();
+      withSuiteletTags(p, []);
+      p.script(
+        ...ok({
+          error:
+            "the Suitelet host call failed: SSS_REQUEST_TIME_EXCEEDED: The host you are trying to connect to has exceeded the maximum allowed response time.",
+        }),
+      );
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 1, result.all);
+      assert.match(result.stderr, /SSS_REQUEST_TIME_EXCEEDED/);
+      assert.doesNotMatch(result.stderr, /timed out/);
+    });
+
+    it("states the Suitelet cut-off in the README", () => {
+      const readme = readFileSync(join(root, "README.md"), "utf8");
+      assert.match(readme, /`SSS_REQUEST_TIME_EXCEEDED`/);
+      assert.ok(readme.includes("from 1 to 45"));
+    });
   });
 });

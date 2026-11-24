@@ -22,6 +22,14 @@
  *   `wrapped` and writes `THROWS: …`;
  * - both is refused, as wrapped JSON.
  *
+ * A probe whose `run()` returns a thenable is awaited, and judged once it
+ * settles by the same rules: a rejection is `REJECTS: <name>: <message>` with
+ * the recorded calls discarded. The recorder is sealed at settle, so a stray
+ * call a continuation makes later is ignored. The host catches the rejection
+ * itself, because an unhandled one from `onRequest` is said (unverified in a
+ * sandbox) to give an HTTP 500 page that the execution log shows only as
+ * `UNEXPECTED_ERROR`.
+ *
  * @NApiVersion 2.1
  * @NScriptType Suitelet
  */
@@ -84,15 +92,19 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
    * replay, and answers header reads from what it recorded. It refuses every
    * X-SSV- header, so a probe cannot choose how the runner reads its answer,
    * and refuses a redirect: `requestSuitelet` follows it, so the runner would
-   * see the page it leads to (often the login page), never the redirect.
+   * see the page it leads to (often the login page), never the redirect. Once
+   * sealed, it ignores every call, so nothing lands while the host replays.
    */
   const recorder = () => {
     const calls = [];
     const headers = {};
+    let sealed = false;
     const record = (method) => (options) => {
+      if (sealed) return;
       calls.push([method, options]);
     };
     const header = (method, replace) => (options) => {
+      if (sealed) return;
       const name = headerName(options);
       if (RESERVED.test(name)) {
         const e = new Error(
@@ -146,7 +158,73 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
           value: String(value),
         })),
       );
-    return { calls, headers: list, response };
+    /** Ends recording: a call made after this (a stray continuation) is ignored. */
+    const seal = () => {
+      sealed = true;
+    };
+    return { calls, headers: list, response, seal };
+  };
+
+  /** Whether a value is a thenable (has a `then` method), such as a Promise; a throwing getter is not one. */
+  const isThenable = (value) => {
+    if (value === null) return false;
+    if (typeof value !== "object" && typeof value !== "function") return false;
+    try {
+      return typeof value.then === "function";
+    } catch (_) {
+      return false;
+    }
+  };
+
+  /**
+   * The path to the first Promise (any thenable) nested in a result, or
+   * undefined: the same check as the runner's (a copy: the two are deployed
+   * as separate scripts, and a test fails if they drift apart), since a nested Promise always
+   * serializes as `{}` and means a probe forgot to await. A path reads
+   * `page.items[1].cursor`; a cycle is visited once.
+   */
+  const findLostAwait = (value, path = "", seen = new Set()) => {
+    if (value === null || typeof value !== "object" || seen.has(value)) {
+      return undefined;
+    }
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      let child;
+      try {
+        child = value[key];
+      } catch (_) {
+        continue;
+      }
+      const at = Array.isArray(value)
+        ? `${path}[${key}]`
+        : path
+          ? `${path}.${key}`
+          : key;
+      if (isThenable(child)) return at;
+      const found = findLostAwait(child, at, seen);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+
+  /** What a rejection reports: `REJECTS: <name>: <message>` for an error, else the rejected value as text. */
+  const rejection = (e) => {
+    try {
+      if (
+        e !== null &&
+        typeof e === "object" &&
+        typeof e.name === "string" &&
+        typeof e.message === "string"
+      ) {
+        return `REJECTS: ${e.name}: ${e.message}`;
+      }
+      return `REJECTS: ${String(e)}`;
+    } catch (_) {
+      return "REJECTS: (a value that cannot be shown)";
+    }
+  };
+  const lostAwait = (path) => {
+    return `the result holds a Promise that was not awaited at ${path}`;
   };
 
   /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
@@ -196,47 +274,83 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         result = `THROWS: ${e.name}: ${e.message}`;
         recorded.calls.length = 0;
       }
-      if (recorded.calls.length > 0 && result !== undefined) {
-        return answer(response, {
-          error:
-            "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
-        });
-      }
-      const wrapped = (value) =>
-        answer(response, {
-          probe: name,
-          result: value,
-          scriptType: "Suitelet",
-          version: String(runtime.version),
-        });
-      if (recorded.calls.length === 0) return wrapped(result);
-      response.setHeader({ name: MARKER, value: "own" });
-      try {
-        // JSON with every non-ASCII character escaped, so it is a valid header value.
-        response.setHeader({
-          name: HEADERS,
-          value: JSON.stringify(recorded.headers()).replace(
-            /[\u007f-\uffff]/g,
-            (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
-          ),
-        });
-      } catch (_) {
-        // The runner falls back to the platform's headers alone.
-      }
-      try {
-        for (const [method, options] of recorded.calls) {
-          response[method](options);
+      const finish = (result) => {
+        recorded.seal();
+        if (recorded.calls.length > 0 && result !== undefined) {
+          return answer(response, {
+            error:
+              "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
+          });
         }
-      } catch (e) {
-        // A replayed call the real response refuses ends the replay. The host
-        // cannot take back what it already wrote, so it switches the marker to
-        // `wrapped` and appends the `THROWS` answer: with nothing written yet
-        // the runner reads a clean THROWS result, and after a write it reads
-        // the partial output plus the answer as a body that is not JSON, which
-        // it reports as an error, never as `own` output. The platform still
-        // takes a header set after a write (confirmed in a sandbox).
-        wrapped(`THROWS: ${e.name}: ${e.message}`);
+        const wrapped = (value) => {
+          const lost = findLostAwait(value);
+          return answer(
+            response,
+            lost === undefined
+              ? {
+                  probe: name,
+                  result: value,
+                  scriptType: "Suitelet",
+                  version: String(runtime.version),
+                }
+              : {
+                  error: lostAwait(lost),
+                },
+          );
+        };
+        if (recorded.calls.length === 0) return wrapped(result);
+        response.setHeader({ name: MARKER, value: "own" });
+        try {
+          // JSON with every non-ASCII character escaped, so it is a valid header value.
+          response.setHeader({
+            name: HEADERS,
+            value: JSON.stringify(recorded.headers()).replace(
+              /[\u007f-\uffff]/g,
+              (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+            ),
+          });
+        } catch (_) {
+          // The runner falls back to the platform's headers alone.
+        }
+        try {
+          for (const [method, options] of recorded.calls) {
+            response[method](options);
+          }
+        } catch (e) {
+          // A replayed call the real response refuses ends the replay. The host
+          // cannot take back what it already wrote, so it switches the marker to
+          // `wrapped` and appends the `THROWS` answer: with nothing written yet
+          // the runner reads a clean THROWS result, and after a write it reads
+          // the partial output plus the answer as a body that is not JSON, which
+          // it reports as an error, never as `own` output. The platform still
+          // takes a header set after a write (confirmed in a sandbox).
+          wrapped(`THROWS: ${e.name}: ${e.message}`);
+        }
+      };
+      // A probe that returns a thenable is awaited and judged once it settles;
+      // a synchronous one keeps its synchronous answer.
+      if (isThenable(result)) {
+        return Promise.resolve(result)
+          .then(
+            (value) => finish(value),
+            (e) => {
+              recorded.calls.length = 0;
+              return finish(rejection(e));
+            },
+          )
+          .catch((e) => {
+            // Answering failed (a result that cannot be serialized, say). Never
+            // let it reject: that is an HTTP 500 page the runner cannot read.
+            try {
+              answer(response, {
+                error: `the host could not answer after the probe settled: ${e?.name}: ${e?.message}`,
+              });
+            } catch (_) {
+              // Nothing more can be written.
+            }
+          });
       }
+      return finish(result);
     },
   };
 });

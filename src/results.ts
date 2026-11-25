@@ -9,6 +9,8 @@ export function resultsDraft(options: {
   probeFile: string;
   resultsDir: string;
   scriptSource: string;
+  /** What the run cost, as the runner reported it: shown beside the output, never part of an expectation. */
+  usage?: unknown;
   version: string;
 }): string {
   const link = relative(options.resultsDir, options.probeFile).replaceAll(
@@ -38,7 +40,17 @@ ${options.scriptSource.trimEnd()}
 \`\`\`json
 ${JSON.stringify(options.output, null, 2)}
 \`\`\`
+${
+  options.usage === undefined
+    ? ""
+    : `
+Usage (governance units remaining before and after the run; information only, never part of the expected output):
 
+\`\`\`json
+${JSON.stringify(options.usage, null, 2)}
+\`\`\`
+`
+}
 ## Explanation
 
 TODO(verify): what the results mean, and how they relate to what each source claims.

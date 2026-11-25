@@ -719,6 +719,42 @@ describe("run", () => {
     assert.match(result.stderr, /The runner reported an error: refused/);
   });
 
+  const usage = (before: number, after: number) => ({
+    RESTlet: { after, before },
+  });
+
+  it("prints usage with the result", () => {
+    const p = project();
+    withProbe(p);
+    p.script(
+      ...ok({
+        result: { ok: true },
+        usage: usage(5000, 4990),
+        version: "2026.2",
+      }),
+    );
+    const result = cli(p, ["run", "one"]);
+    assert.equal(result.status, 0, result.all);
+    const printed = JSON.parse(result.stdout.split(/\r?\n\r?\n/)[0] ?? "");
+    assert.deepEqual(printed.usage, usage(5000, 4990));
+    assert.deepEqual(printed.result, { ok: true });
+  });
+
+  it("prints usage after the keys that sort before it, as the rest is sorted", () => {
+    const p = project();
+    withProbe(p);
+    p.script(
+      ...ok({
+        result: { ok: true },
+        usage: usage(5000, 4990),
+        version: "2026.2",
+      }),
+    );
+    const { stdout } = cli(p, ["run", "one"]);
+    assert.ok(stdout.indexOf('"result"') < stdout.indexOf('"usage"'));
+    assert.ok(stdout.indexOf('"usage"') < stdout.indexOf('"version"'));
+  });
+
   describe("drift against expect.json", () => {
     it("passes when the output matches", () => {
       const p = project();
@@ -728,6 +764,27 @@ describe("run", () => {
       const result = cli(p, ["run", "one"]);
       assert.equal(result.status, 0, result.all);
       assert.match(result.stdout, /Matches the expected output/);
+    });
+
+    it("ignores usage: a matching expectation still matches when only usage differs, and needs no edit", () => {
+      const p = project();
+      withProbe(p);
+      write(p.dir, "verification/probes/one.expect.json", '{"ok": true}');
+      for (const [before, after] of [
+        [5000, 4990],
+        [5000, 1],
+      ]) {
+        p.script(
+          ...ok({
+            result: { ok: true },
+            usage: usage(before as number, after as number),
+            version: "2026.2",
+          }),
+        );
+        const result = cli(p, ["run", "one"]);
+        assert.equal(result.status, 0, result.all);
+        assert.match(result.stdout, /Matches the expected output/);
+      }
     });
 
     it("flags a difference with exit 2", () => {
@@ -795,6 +852,26 @@ describe("run", () => {
       assert.match(text, /\(\.\.\/\.\.\/\.\.\/verification\/probes\/one\.js\)/);
       assert.equal(text.includes(account), false);
       assert.doesNotMatch(text, /contradiction|rule/i);
+    });
+
+    it("carries usage in the Results section", () => {
+      const p = project();
+      withProbe(p);
+      p.script(
+        ...ok({
+          result: { ok: true },
+          usage: usage(5000, 4990),
+          version: "2026.2",
+        }),
+      );
+      assert.equal(cli(p, ["run", "one", "--draft"]).status, 0);
+      const text = readFileSync(page(p), "utf8");
+      const results = text.split("## Results")[1]?.split("## Explanation")[0];
+      assert.match(
+        results ?? "",
+        /Usage \(.*\):\s+```json\s+\{\s+"RESTlet": \{\s+"after": 4990,\s+"before": 5000/,
+      );
+      assert.match(results ?? "", /"ok": true/);
     });
 
     it("refuses without a results folder, names the key and writes nothing", () => {
@@ -966,6 +1043,7 @@ describe("probe parameters", () => {
     const runtime = {
       EnvType: { SANDBOX: "SANDBOX" },
       envType: "SANDBOX",
+      getCurrentScript: () => ({ getRemainingUsage: () => 5000 }),
       version: "1",
     };
     const runner = factory(
@@ -1154,6 +1232,8 @@ function load<T>(source: string, ...modules: unknown[]): T {
 const sandbox = {
   EnvType: { PRODUCTION: "PRODUCTION", SANDBOX: "SANDBOX" },
   envType: "SANDBOX",
+  /** Reads a steady 5,000 units, the RESTlet limit: nothing is spent. */
+  getCurrentScript: () => ({ getRemainingUsage: () => 5000 }),
   version: "2026.2",
 };
 
@@ -1177,6 +1257,7 @@ describe("RESTlet probes that return a Promise", () => {
       probe: "one",
       result: { found: [1, 2] },
       scriptType: "RESTlet",
+      usage: { RESTlet: { after: 5000, before: 5000 } },
       version: "2026.2",
     });
   });
@@ -1266,6 +1347,117 @@ describe("RESTlet probes that return a Promise", () => {
       result.stderr,
       /The runner reported an error: the result holds a Promise that was not awaited at cursor/,
     );
+  });
+});
+
+describe("a RESTlet probe's usage", () => {
+  type Usage = { after: number; before: number };
+  type Answer = {
+    error?: string;
+    result?: unknown;
+    usage?: Record<string, Usage>;
+  };
+  type Runner = { post: (b: unknown) => Answer | Promise<Answer> };
+  /** A runtime whose remaining units read as the given numbers, in order, then stay at the last. */
+  const counting = (...readings: number[]) => {
+    const left = [...readings];
+    return {
+      ...sandbox,
+      getCurrentScript: () => ({
+        getRemainingUsage: () =>
+          left.length > 1 ? (left.shift() as number) : (left[0] as number),
+      }),
+    };
+  };
+  const runnerWith = (run: () => unknown, runtime: object): Runner => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", probeSource(restlet));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    return load<Runner>(calls(p).runner.join(""), runtime, {}, { run });
+  };
+  const asked = { probe: "one" };
+
+  it("reports the units remaining before and after a returned result", () => {
+    const runner = runnerWith(() => ({ ok: true }), counting(5000, 4990));
+    const answer = runner.post(asked) as Answer;
+    assert.deepEqual(answer.result, { ok: true });
+    assert.deepEqual(answer.usage, { RESTlet: { after: 4990, before: 5000 } });
+  });
+
+  it("reports usage for a throw, whose result is the THROWS text", () => {
+    const runner = runnerWith(
+      () => {
+        throw Object.assign(new Error("boom"), { name: "TypeError" });
+      },
+      counting(5000, 4980),
+    );
+    const answer = runner.post(asked) as Answer;
+    assert.equal(answer.result, "THROWS: TypeError: boom");
+    assert.deepEqual(answer.usage, { RESTlet: { after: 4980, before: 5000 } });
+  });
+
+  it("reports usage for a throw that is not an Error instance", () => {
+    const runner = runnerWith(
+      () => {
+        throw { message: "out", name: "SSS_USAGE_LIMIT_EXCEEDED" };
+      },
+      counting(5000, 0),
+    );
+    const answer = runner.post(asked) as Answer;
+    assert.equal(answer.result, "THROWS: SSS_USAGE_LIMIT_EXCEEDED: out");
+    assert.deepEqual(answer.usage, { RESTlet: { after: 0, before: 5000 } });
+  });
+
+  it("reports usage for a rejection", async () => {
+    const runner = runnerWith(
+      () => Promise.reject(Object.assign(new Error("gone"), { name: "NOPE" })),
+      counting(5000, 4000),
+    );
+    const answer = await runner.post(asked);
+    assert.equal(answer.result, "REJECTS: NOPE: gone");
+    assert.deepEqual(answer.usage, { RESTlet: { after: 4000, before: 5000 } });
+  });
+
+  it("reads after once a returned Promise has settled", async () => {
+    let settle: (v: unknown) => void = () => {};
+    let readings = 0;
+    const runtime = {
+      ...sandbox,
+      getCurrentScript: () => ({
+        getRemainingUsage: () => (++readings === 1 ? 5000 : 4900),
+      }),
+    };
+    const runner = runnerWith(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+      runtime,
+    );
+    const pending = runner.post(asked) as Promise<Answer>;
+    assert.equal(readings, 1);
+    settle({ ok: true });
+    const answer = await pending;
+    assert.equal(readings, 2);
+    assert.deepEqual(answer.usage, { RESTlet: { after: 4900, before: 5000 } });
+  });
+
+  it("carries no usage on a refused request", () => {
+    const runner = runnerWith(() => ({ ok: true }), counting(5000, 4990));
+    for (const body of [
+      { probe: "nope" },
+      { params: { x: "1" }, probe: "one" },
+    ]) {
+      const answer = runner.post(body) as Answer;
+      assert.ok(answer.error, JSON.stringify(answer));
+      assert.equal("usage" in answer, false);
+    }
+    const lost = runnerWith(
+      () => ({ cursor: Promise.resolve(1) }),
+      counting(5000, 4990),
+    ).post(asked) as Answer;
+    assert.ok(lost.error);
+    assert.equal("usage" in lost, false);
   });
 });
 

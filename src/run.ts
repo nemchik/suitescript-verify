@@ -306,6 +306,7 @@ export async function runProbe(
     error?: string;
     response?: unknown;
     result?: unknown;
+    usage?: unknown;
     version?: string;
   };
   try {
@@ -353,6 +354,7 @@ export async function runProbe(
           probeFile,
           resultsDir,
           scriptSource: read(probeFile),
+          usage: body.usage === undefined ? undefined : sortKeys(body.usage),
           version: body.version ?? "unknown",
         }),
         known,

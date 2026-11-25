@@ -424,16 +424,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       const checked = checkParams(body, entry ? entry[1] : suitelet);
       if (checked.error) return { error: checked.error };
       if (!entry) return viaSuitelet(name, checked.params);
+      // Usage is information only: the units this script has left just before
+      // the probe's run() and just after it (once a returned Promise settles).
+      // The read costs nothing.
+      const before = runtime.getCurrentScript().getRemainingUsage();
       const answer = (result) => {
         const lost = findLostAwait(result);
-        return lost === undefined
-          ? {
-              probe: name,
-              result,
-              scriptType: "RESTlet",
-              version: String(runtime.version),
-            }
-          : { error: lostAwait(lost) };
+        if (lost !== undefined) return { error: lostAwait(lost) };
+        const after = runtime.getCurrentScript().getRemainingUsage();
+        return {
+          probe: name,
+          result,
+          scriptType: "RESTlet",
+          usage: { RESTlet: { after, before } },
+          version: String(runtime.version),
+        };
       };
       let result;
       try {

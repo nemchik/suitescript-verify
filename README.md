@@ -347,6 +347,30 @@ The package validates the tags in a probe's leading JSDoc block: `@scriptType`, 
 
 `@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gave up at about 45 seconds in a sandbox at 2026.2 (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 
+### Governance usage
+
+`run` prints `usage` beside `result` (or `response`): for each script that ran the probe, `{ "before": n, "after": n }`, its remaining governance units just before `run()` and just after it (after a returned Promise settles), plus `"exceeded": true` when it ran out. A RESTlet probe has a `RESTlet` entry. A Suitelet probe has a `Suitelet` entry (the host, which sends it in the wrapped answer or, for an `own` response, in the reserved `X-SSV-Usage` header) and a `RESTlet` entry (the runner), which includes the 10 units `requestSuitelet` spends. A request refused before the probe ran carries none. A draft page shows it in a separate Usage block.
+
+- **Never compared.** Usage is not part of the expected output: copy an expectation from `result` or `response`, never from the whole printed output. A script is flagged `exceeded` when it caught an error named `SSS_USAGE_LIMIT_EXCEEDED` or its `after` is 0, even if the probe caught the error and returned normally, and `run` then prints a warning line.
+- **What was measured** (sandbox, 2026.2, one run each). A RESTlet started with 5,000 units and the Suitelet host with 1,000, so `before` shows a script's limit; the host's units are independent of the runner's. `SELECT 1 FROM DUAL` through `N/query.runSuiteQL` cost 10 units. Running out was exact (500 such calls used 5,000, 100 used 1,000), the probe, the runner and the host could each catch the error, and the remaining units read 0 afterwards. `search.lookupFields.promise` was charged when called, not when it settled; no other async call was measured.
+- **Look-alike.** A RESTlet probe that stops at the 300-second limit can look like a usage-limit error from the CLI. Do not estimate a call's duration from a few calls.
+
+To check a governance claim in documentation, measure one call (`@scriptType Restlet`, no other tag needed):
+
+```js
+/**
+ * @scriptType Restlet
+ */
+define(["N/runtime", "N/query"], (runtime, query) => ({
+    run: () => {
+        const script = runtime.getCurrentScript();
+        const before = script.getRemainingUsage();
+        query.runSuiteQL({ query: "SELECT 1 FROM DUAL" });
+        return { spent: before - script.getRemainingUsage() };
+    },
+}));
+```
+
 ### Writing probes that do not cost a deploy
 
 - **Keep module-scope code rare and tiny.** The runner loads every probe as a dependency of its own `define()`. A probe whose top-level code fails in a way its own `try/catch` cannot capture takes the whole runner down. If you need one, make it one governed call, run it last and one per deploy, so a failure points at one call. Do not keep a probe that is expected to take the runner down; its results page carries the code.

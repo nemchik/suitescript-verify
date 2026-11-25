@@ -24,4 +24,5 @@ The README is the whole guide for a project that uses the package. People and ag
 - **Exactly three badges:** npm version, CI and license.
 - **Notes are plain bold lines** starting `**Note:**`, not blockquotes or GitHub alerts.
 - **A platform fact is verified only once a sandbox run showed it.** The README's own facts about NetSuite follow the same rule as the claims it teaches projects to check: anything a run has not shown is marked **unverified** in one sentence. State a verified fact as the run observed it, with the NetSuite version ("at 2026.2 the runner sees only the first value"), not the cause you infer from it ("`requestSuitelet` keeps only the first value"). The pull request whose run verifies a fact replaces its unverified sentence.
+- **A spec or ticket names the run behind each platform number.** A figure taken from Oracle's documentation (a unit cost, a time limit) is a claim, not a measurement: the spec marks it unverified, and it reaches the README marked unverified until a sandbox run shows it.
 - **Past about 500 lines, stop.** Bring the maintainer a plan to split the README into shipped files before splitting it.

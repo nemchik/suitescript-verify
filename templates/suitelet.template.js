@@ -307,6 +307,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
           return answer(response, {
             error:
               "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
+            usage,
           });
         }
         const wrapped = (value) => {

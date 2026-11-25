@@ -232,7 +232,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   /** Asks the Suitelet host to run a probe; a failed or unexpected answer is reported, never thrown. */
   const viaSuitelet = (name, params) => {
     // Usage is information only: this script's units just before and just
-    // after the call, so the runner's entry includes the 10 units
+    // after the call, so the runner's entry includes whatever
     // requestSuitelet spends. The host's own reading is folded in beside it
     // when the host answered. The reads cost nothing.
     const before = runtime.getCurrentScript().getRemainingUsage();
@@ -257,7 +257,10 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       ...(reading ? { Suitelet: reading } : {}),
       RESTlet: usageEntry(before, after),
     });
-    const fail = (error) => ({ error, usage: usageOf() });
+    const failWithUsage = (error, reading) => ({
+      error,
+      usage: usageOf(reading),
+    });
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
     const headers = reply?.headers || {};
@@ -276,14 +279,16 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       };
     }
     if (marker !== "wrapped") {
-      return fail(
+      return failWithUsage(
         status === 200
           ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
           : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
       );
     }
     if (status !== 200) {
-      return fail(`the Suitelet host answered HTTP ${status}: ${cut(text)}`);
+      return failWithUsage(
+        `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      );
     }
     let answer;
     try {
@@ -292,10 +297,15 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       answer = undefined;
     }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
-      return fail(`the Suitelet host's answer was not JSON: ${cut(text)}`);
+      return failWithUsage(
+        `the Suitelet host's answer was not JSON: ${cut(text)}`,
+      );
     }
     if (answer.error) {
-      return fail(`the Suitelet host refused: ${cut(answer.error)}`);
+      return failWithUsage(
+        `the Suitelet host refused: ${cut(answer.error)}`,
+        hostReading(answer.usage),
+      );
     }
     return {
       probe: name,

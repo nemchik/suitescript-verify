@@ -36,6 +36,7 @@ import {
   requireSandbox,
   UsageError,
 } from "./shared.ts";
+import { governanceWarning, readUsage, type Usage } from "./usage.ts";
 
 /** Every `--param name=value` in the arguments, in order. The value may start with anything. */
 function suppliedParams(args: string[]): [string, string][] {
@@ -102,20 +103,6 @@ function validateParams(probe: Probe, args: string[]): Record<string, string> {
 }
 
 /** The configured ids the scrubber replaces with placeholders. */
-/** The script types whose usage entry says the script ran out of governance units. */
-const exceededScripts = (usage: unknown): string[] =>
-  usage !== null && typeof usage === "object"
-    ? Object.entries(usage as Record<string, unknown>)
-        .filter(
-          ([, entry]) =>
-            entry !== null &&
-            typeof entry === "object" &&
-            (entry as { exceeded?: unknown }).exceeded === true,
-        )
-        .map(([script]) => script)
-        .sort()
-    : [];
-
 export const knownIds = (creds: Creds): KnownIds => ({
   account: creds.account,
   certificateId: creds.certificateId,
@@ -328,21 +315,27 @@ export async function runProbe(
   } catch {
     throw new UsageError("The runner's answer was not JSON.");
   }
+  const usage: Usage | undefined = readUsage(body.usage);
   if (body.error) {
-    throw new UsageError(`The runner reported an error: ${body.error}`);
+    // The usage and any governance warning go beside the error, already scrubbed with the rest.
+    const warning = governanceWarning(usage);
+    throw new UsageError(
+      [
+        `The runner reported an error: ${body.error}`,
+        ...(usage ? [`Usage: ${JSON.stringify(usage)}`] : []),
+        ...(warning ? [warning] : []),
+      ].join("\n"),
+    );
   }
+  if (usage) body.usage = usage;
+  else delete body.usage;
   // A Suitelet probe that wrote its own response is reported as that response, not a result.
   const own = "response" in body ? ownResponse(body.response) : undefined;
   if (own) body.response = own;
   // Sorted as an expectation is written, so the printed output can be copied as one.
   console.log(JSON.stringify(sortKeys(body), null, 2));
-  const ranOut = exceededScripts(body.usage);
-  if (ranOut.length > 0) {
-    console.log(
-      `
-Warning: a script ran out of governance units (${ranOut.join(", ")}); the probe's output may be cut short.`,
-    );
-  }
+  const warning = governanceWarning(usage);
+  if (warning) console.log(`\n${warning}`);
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
@@ -375,7 +368,7 @@ Warning: a script ran out of governance units (${ranOut.join(", ")}); the probe'
           probeFile,
           resultsDir,
           scriptSource: read(probeFile),
-          usage: body.usage === undefined ? undefined : sortKeys(body.usage),
+          usage: usage,
           version: body.version ?? "unknown",
         }),
         known,

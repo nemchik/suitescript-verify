@@ -787,6 +787,70 @@ describe("run", () => {
       }
     });
 
+    it("matches an expectation written before usage existed, with no edit", () => {
+      const p = project();
+      withProbe(p);
+      write(p.dir, "verification/probes/one.expect.json", '{"ok": true}');
+      p.script(
+        ...ok({
+          result: { ok: true },
+          usage: {
+            RESTlet: { after: 0, before: 5000, exceeded: true },
+            Suitelet: { after: 900, before: 1000 },
+          },
+          version: "2026.2",
+        }),
+      );
+      const result = cli(p, ["run", "one"]);
+      assert.equal(result.status, 0, result.all);
+      assert.match(result.stdout, /Matches the expected output/);
+    });
+
+    describe("an error answer that carries usage", () => {
+      const failed = (usage: unknown) => {
+        const p = project();
+        withProbe(p);
+        p.script(...ok({ error: "the Suitelet host refused: nope", usage }));
+        return cli(p, ["run", "one"]);
+      };
+
+      it("shows the usage beside the error and exits 1 as before", () => {
+        const result = failed({
+          RESTlet: { after: 4990, before: 5000 },
+          Suitelet: { after: 900, before: 1000 },
+        });
+        assert.equal(result.status, 1);
+        assert.match(
+          result.stderr,
+          /The runner reported an error: the Suitelet host refused: nope\nUsage: \{"RESTlet":\{"after":4990,"before":5000\},"Suitelet":\{"after":900,"before":1000\}\}/,
+        );
+        assert.doesNotMatch(result.all, /Warning:/);
+      });
+
+      it("adds the governance warning when an entry is flagged", () => {
+        const result = failed({
+          RESTlet: { after: 0, before: 5000, exceeded: true },
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /"exceeded":true/);
+        assert.match(
+          result.stderr,
+          /^Warning: a script ran out of governance units \(RESTlet\)/m,
+        );
+      });
+
+      it("scrubs the usage like any other output", () => {
+        const result = failed({ [account]: { after: 1, before: 2 } });
+        assert.equal(result.all.includes(account), false);
+      });
+
+      it("drops a malformed reading and prints just the error", () => {
+        const result = failed({ RESTlet: { after: "x", before: 1 } });
+        assert.equal(result.status, 1);
+        assert.doesNotMatch(result.stderr, /Usage:/);
+      });
+    });
+
     describe("the governance warning", () => {
       const warning =
         /^Warning: a script ran out of governance units \((.*)\)/m;
@@ -2050,7 +2114,7 @@ describe("Suitelet probes", () => {
       const wrapped = { "x-ssv-mode": "wrapped" };
       const asked = { params: { id: "1" }, probe: "page" };
 
-      it("reports the host's reading beside the runner's, which surrounds the call and so includes its 10 units", () => {
+      it("reports the host's reading beside the runner's, which surrounds the call and so includes what it spends", () => {
         const p = project();
         const runner = runnerFor(
           p,
@@ -2136,6 +2200,28 @@ describe("Suitelet probes", () => {
             RESTlet: { after: 4000, before: 5000 },
           });
         }
+      });
+
+      it("keeps the host's reading when it refused after the probe ran", () => {
+        const p = project();
+        const runner = runnerFor(
+          p,
+          () => ({
+            body: JSON.stringify({
+              error: "the probe both wrote a response and returned a value",
+              usage: { after: 940, before: 1000 },
+            }),
+            code: 200,
+            headers: wrapped,
+          }),
+          counting(5000, 4990),
+        );
+        const answer = runner.post(asked);
+        assert.match(answer.error ?? "", /both wrote/);
+        assert.deepEqual(usageOf(answer), {
+          RESTlet: { after: 4990, before: 5000 },
+          Suitelet: { after: 940, before: 1000 },
+        });
       });
 
       it("keeps a host answer's usage when the probe threw or rejected, and drops a malformed reading", () => {
@@ -3092,6 +3178,18 @@ describe("Suitelet probes", () => {
             "exceeded" in (call(host, { params, probe: "page" }).usage ?? {}),
             false,
           );
+        });
+      });
+
+      it("carries the host's reading on an error answer after the probe ran: both wrote a response and returned a value", () => {
+        const p = project();
+        const both = hostFor(p, (_params, { response }) => {
+          response.write({ output: "partial" });
+          return { ok: true };
+        })(counting(1000, 940));
+        assert.deepEqual(call(both, { params, probe: "page" }).usage, {
+          after: 940,
+          before: 1000,
         });
       });
 

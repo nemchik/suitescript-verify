@@ -10,6 +10,7 @@ A Suitelet probe gets `run(params, context)`. Its response calls are buffered an
 - A Suitelet available without login, guarded by a secret: rejected, it is an anonymous URL on an account that holds real data.
 - One Suitelet per probe: rejected, more objects to deploy, turn off and fit in 40 characters.
 - `run(params)` only, with no response access: rejected, the claims that need a Suitelet (`serverWidget`, `Set-Cookie`, `sendRedirect`) are about the response.
+- Starting script hosts through `N/task` instead of HTTPS: `N/task` starts only Scheduled and Map/Reduce scripts, so the Suitelet host keeps `requestSuitelet`. For `_mr` and `_sc` it is the only path (#31).
 - Keeping the `_runner` suffix: rejected, a 7-character suffix caps the runner id at 20, and a role name is no guide for the ids of later script types.
 
 ## Consequences

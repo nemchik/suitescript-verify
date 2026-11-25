@@ -200,9 +200,40 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     return { params };
   };
 
+  /** The USAGE header's name, lower-cased: the host's reading for an `own` answer. */
+  const USAGE = "x-ssv-usage";
+
+  /** A host's reading `{ before, after }` as finite numbers, or undefined: a malformed one is dropped, never trusted. */
+  const hostReading = (value) =>
+    value &&
+    typeof value === "object" &&
+    Number.isFinite(value.before) &&
+    Number.isFinite(value.after)
+      ? { after: value.after, before: value.before }
+      : undefined;
+
+  /** The host's reading from its X-SSV-Usage header (an `own` answer), or undefined. */
+  const headerUsage = (headers) => {
+    const key = Object.keys(headers).find(
+      (name) => name.toLowerCase() === USAGE,
+    );
+    if (key === undefined) return undefined;
+    try {
+      return hostReading(JSON.parse([].concat(headers[key])[0]));
+    } catch (_) {
+      return undefined;
+    }
+  };
+
   /** Asks the Suitelet host to run a probe; a failed or unexpected answer is reported, never thrown. */
   const viaSuitelet = (name, params) => {
+    // Usage is information only: this script's units just before and just
+    // after the call, so the runner's entry includes the 10 units
+    // requestSuitelet spends. The host's own reading is folded in beside it
+    // when the host answered. The reads cost nothing.
+    const before = runtime.getCurrentScript().getRemainingUsage();
     let reply;
+    let after;
     try {
       reply = https.requestSuitelet({
         deploymentId: host.deploymentId,
@@ -211,8 +242,18 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       });
     } catch (e) {
       const { message, name: kind } = e || {};
-      return { error: `the Suitelet host call failed: ${kind}: ${message}` };
+      after = runtime.getCurrentScript().getRemainingUsage();
+      return {
+        error: `the Suitelet host call failed: ${kind}: ${message}`,
+        usage: { RESTlet: { after, before } },
+      };
     }
+    after = runtime.getCurrentScript().getRemainingUsage();
+    const usageOf = (reading) => ({
+      ...(reading ? { Suitelet: reading } : {}),
+      RESTlet: { after, before },
+    });
+    const fail = (error) => ({ error, usage: usageOf() });
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
     const headers = reply?.headers || {};
@@ -226,21 +267,19 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
         probe: name,
         response: ownResponse(status, headers, text),
         scriptType: "Suitelet",
+        usage: usageOf(headerUsage(headers)),
         version: String(runtime.version),
       };
     }
     if (marker !== "wrapped") {
-      return {
-        error:
-          status === 200
-            ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
-            : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
-      };
+      return fail(
+        status === 200
+          ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
+          : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      );
     }
     if (status !== 200) {
-      return {
-        error: `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
-      };
+      return fail(`the Suitelet host answered HTTP ${status}: ${cut(text)}`);
     }
     let answer;
     try {
@@ -249,15 +288,16 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       answer = undefined;
     }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
-      return { error: `the Suitelet host's answer was not JSON: ${cut(text)}` };
+      return fail(`the Suitelet host's answer was not JSON: ${cut(text)}`);
     }
     if (answer.error) {
-      return { error: `the Suitelet host refused: ${cut(answer.error)}` };
+      return fail(`the Suitelet host refused: ${cut(answer.error)}`);
     }
     return {
       probe: name,
       result: answer.result,
       scriptType: "Suitelet",
+      usage: usageOf(hostReading(answer.usage)),
       version: String(runtime.version),
     };
   };

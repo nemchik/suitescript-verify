@@ -45,6 +45,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
    * session cookie never reaches it otherwise.
    */
   const HEADERS = "X-SSV-Headers";
+  /** The host's reading of its own remaining units, for an `own` answer: `{ before, after }` as JSON. */
+  const USAGE = "X-SSV-Usage";
   /** Every `X-SSV-` header is the host's; a probe cannot set one. */
   const RESERVED = /^x-ssv-/i;
 
@@ -108,7 +110,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       const name = headerName(options);
       if (RESERVED.test(name)) {
         const e = new Error(
-          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}) are the host's`,
+          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}) are the host's`,
         );
         e.name = "SSV_RESERVED_HEADER";
         throw e;
@@ -264,6 +266,9 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         method: request.method,
         parameters: Object.freeze({ ...checked.params }),
       });
+      // Usage is information only: this host's units just before the probe's
+      // run() and just after it (once a returned Promise settles). Reads cost nothing.
+      const before = runtime.getCurrentScript().getRemainingUsage();
       let result;
       try {
         result = probe.run(checked.params, {
@@ -276,6 +281,10 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       }
       const finish = (result) => {
         recorded.seal();
+        const usage = {
+          after: runtime.getCurrentScript().getRemainingUsage(),
+          before,
+        };
         if (recorded.calls.length > 0 && result !== undefined) {
           return answer(response, {
             error:
@@ -291,6 +300,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
                   probe: name,
                   result: value,
                   scriptType: "Suitelet",
+                  usage,
                   version: String(runtime.version),
                 }
               : {
@@ -300,6 +310,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         };
         if (recorded.calls.length === 0) return wrapped(result);
         response.setHeader({ name: MARKER, value: "own" });
+        response.setHeader({ name: USAGE, value: JSON.stringify(usage) });
         try {
           // JSON with every non-ASCII character escaped, so it is a valid header value.
           response.setHeader({

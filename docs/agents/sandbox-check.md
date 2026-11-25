@@ -6,7 +6,7 @@ A pull request that changes what runs in NetSuite (the runner, the Suitelet host
 
 1. On the pull request, post a comment ending in a `### Still to check in a sandbox` checklist: one box per behavior the fakes cannot show, each naming the expected output. A later comment's list replaces the earlier one.
 2. Give the maintainer the prompt below with `<PR>` and `<SHA>` filled in, plus any probes the checklist needs that the downstream project does not have yet.
-3. When the maintainer says the comment is posted, read it. Each failure, package lesson and platform finding becomes a fix on a branch here. Each platform finding that settles an unverified README sentence replaces that sentence on the fix branch, stated as observed with the NetSuite version; one that contradicts it rewrites it. Until that sentence changes, later sessions treat the fact as unverified.
+3. When the maintainer says the comment is posted, read it. Each failure, package lesson and platform finding becomes a fix on a branch here. Each platform finding updates the README sentence it settles or contradicts on the fix branch, as `CONTRIBUTING.md`'s verified-fact rule says. Until that sentence changes, later sessions treat the fact as unverified.
 4. `/code-review` the fix branch before it merges into the pull request's branch. Four unreviewed fix passes on #46 let a wrong README claim through.
 5. Reply on the pull request, mapping each finding to its change.
 

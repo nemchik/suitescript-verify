@@ -186,7 +186,7 @@ A machine-to-machine mapping cannot be changed after it is created, only revoked
 
 A project that publishes its own package from the repository root may keep the tooling in a subfolder that is an npm project of its own, with its own `package.json` and `node_modules` holding `suitescript-verify` and `@oracle/suitecloud-cli`. The package treats the folder it runs in as the project, so run it from the subfolder and pass `--dir .`, which makes the subfolder itself the verification folder (its `.env`, `.env.local`, `probes` and `sdf`):
 
-Give it scripts such as `"verify:doctor": "suitescript-verify doctor --dir ."` and `"verify:run": "suitescript-verify run --dir ."`. A script at the repository root then calls one with `npm --prefix <subfolder> run verify:doctor --`. Give `init`, `deploy`, `cleanup` and the other commands the same `--dir .`. The subfolder's `.env.local` is checked against the repository's `.gitignore`.
+Give it scripts such as `"verify:doctor": "suitescript-verify doctor --dir ."` and `"verify:run": "suitescript-verify run --dir ."`. A script at the repository root then calls one with `npm --prefix <subfolder> run verify:doctor --`. Give `init`, `deploy`, `cleanup` and the other commands the same `--dir .`. The subfolder's `.env.local` is checked against the repository's `.gitignore`. Without `--dir .`, `doctor` reads a nested `verification` folder that does not exist; when the folder already holds a `probes` folder or a `.env` with `SUITESCRIPT_VERIFY_` keys, it reports that alone and says to rerun with `--dir .` instead of running `init`, which would create that nested folder.
 
 ## Deploy
 

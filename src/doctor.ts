@@ -2,10 +2,11 @@ import { spawnSync } from "node:child_process";
 import { createPrivateKey } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type Config,
   insideProject,
+  looksLikeVerificationFolder,
   resultsDirGuidance,
   resultsDirKey,
 } from "./config.ts";
@@ -104,12 +105,37 @@ function keyType(path: string): string {
 export const isSandboxAccount = (account: string) =>
   /^\d{5,8}_SB\d+$/i.test(account);
 
+const rerunWithDirGuidance =
+  'This folder already looks like a verification folder, so the package is reading a nested one that does not exist. Run the command again with --dir . (see the README, "Keeping the tooling in a subfolder"). Do not run init: it would create a nested verification folder.';
+
+/**
+ * Whether the command ran inside a verification folder without `--dir .`: the
+ * default folder is missing, yet the current folder looks like one.
+ */
+export const inVerificationFolder = (project: string, config: Config) =>
+  resolve(config.root) === resolve(project, "verification") &&
+  !existsSync(config.root) &&
+  looksLikeVerificationFolder(project);
+
 /** Read-only checklist: each failing step says what to do next and who does it. */
 export function runChecks(
   project: string,
   config: Config,
   env: NodeJS.ProcessEnv = process.env,
 ): Check[] {
+  // Run in a verification folder without `--dir .`: every other step would
+  // read the wrong folder and fail, so report only the real problem.
+  if (inVerificationFolder(project, config)) {
+    return [
+      {
+        name: "This folder is a verification folder: run with --dir .",
+        next: rerunWithDirGuidance,
+        ok: false,
+        owner: "agent",
+      },
+    ];
+  }
+
   const checks: Check[] = [];
   const add = (
     name: string,

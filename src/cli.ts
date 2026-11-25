@@ -10,7 +10,12 @@ import {
   runnerIdKey,
   suggestedResultsDir,
 } from "./config.ts";
-import { formatChecks, names, runChecks } from "./doctor.ts";
+import {
+  formatChecks,
+  inVerificationFolder,
+  names,
+  runChecks,
+} from "./doctor.ts";
 import { envNames } from "./envfile.ts";
 import { init } from "./init.ts";
 import { runProbe } from "./run.ts";
@@ -78,10 +83,12 @@ function reporting(args: string[]): Config {
 
 async function doctor(args: string[]): Promise<number> {
   const config = reporting(args);
-  const checks = [
-    ...runChecks(process.cwd(), config),
-    await selfCheckStep(config),
-  ];
+  const project = process.cwd();
+  const checks = runChecks(project, config);
+  // Every other step would read the wrong folder: report only the real problem.
+  if (!inVerificationFolder(project, config)) {
+    checks.push(await selfCheckStep(config));
+  }
   console.log(formatChecks(checks));
   return config.problems.length === 0 && checks.every((c) => c.ok) ? 0 : 1;
 }

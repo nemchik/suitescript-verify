@@ -733,6 +733,42 @@ describe("a project nested in a subfolder of a repository", () => {
     return { repo, tools };
   }
 
+  it("doctor in a verification folder names --dir . and does not suggest init", () => {
+    const { tools } = nestedProject();
+    assert.equal(
+      cli(["init", "--dir", ".", "--results-dir", "results"], tools).status,
+      0,
+    );
+    const out = cli(["doctor"], tools).stdout;
+    assert.match(out, /--dir \./);
+    assert.equal(out.includes("suitescript-verify init"), false);
+    // Only the real problem: no step sends the maintainer to create what exists.
+    assert.equal(out.includes("Maintainer's own step"), false);
+  });
+
+  it("doctor leaves a folder chosen with --dir alone", () => {
+    const { tools } = nestedProject();
+    mkdirSync(join(tools, "probes"), { recursive: true });
+    const out = cli(["doctor", "--dir", "other"], tools).stdout;
+    assert.equal(out.includes("--dir ."), false);
+    assert.match(out, /suitescript-verify init/);
+  });
+
+  it("doctor reads a .env with SUITESCRIPT_VERIFY_ keys as a verification folder", () => {
+    const { tools } = nestedProject();
+    write(tools, ".env", "SUITESCRIPT_VERIFY_RUNNER_ID=my_project\n");
+    const out = cli(["doctor"], tools).stdout;
+    assert.match(out, /--dir \./);
+    assert.equal(out.includes("suitescript-verify init"), false);
+  });
+
+  it("doctor in an empty project still suggests init", () => {
+    const project = fakeProject();
+    const out = cli(["doctor"], project).stdout;
+    assert.match(out, /suitescript-verify init/);
+    assert.equal(out.includes("--dir ."), false);
+  });
+
   it("runs init, doctor and deploy from the subfolder with --dir .", () => {
     const { repo, tools } = nestedProject();
     const init = cli(["init", "--dir", ".", "--results-dir", "results"], tools);

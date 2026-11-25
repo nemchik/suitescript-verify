@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 const prefix = "SUITESCRIPT_VERIFY_";
+const probesFolder = "probes";
 
 /** Layout keys: the only ones the committed `.env` may hold. Each is a path in the project. */
 export const layoutKeys = [
@@ -132,6 +133,20 @@ function readEnvFile(path: string): Map<string, string> {
     : new Map<string, string>();
 }
 
+/**
+ * Whether `folder` already looks like a verification folder: a `probes`
+ * folder, or a `.env` holding `SUITESCRIPT_VERIFY_` keys. Run from there
+ * without `--dir .`, the package would look for a nested one.
+ */
+export function looksLikeVerificationFolder(folder: string): boolean {
+  return (
+    existsSync(join(folder, probesFolder)) ||
+    [...readEnvFile(join(folder, ".env")).keys()].some((key) =>
+      key.startsWith(prefix),
+    )
+  );
+}
+
 export const insideProject = (project: string, path: string) => {
   const rel = relative(project, resolve(project, path));
   return !isAbsolute(rel) && rel.split(/[\\/]/)[0] !== "..";
@@ -249,7 +264,7 @@ export function loadConfig(
   const shown = relative(project, envFile).replaceAll("\\", "/");
   return {
     extraTags: parseTagList(values[extraTagsKey] ?? ""),
-    probesDir: path("SUITESCRIPT_VERIFY_PROBES_DIR", join(root, "probes")),
+    probesDir: path("SUITESCRIPT_VERIFY_PROBES_DIR", join(root, probesFolder)),
     problems: [
       ...checkCommitted(project, committed, shown),
       ...checkLocalIgnored(project, localFile),

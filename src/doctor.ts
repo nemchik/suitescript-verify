@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import {
   type Config,
   insideProject,
+  looksLikeVerificationFolder,
   resultsDirGuidance,
   resultsDirKey,
 } from "./config.ts";
@@ -100,25 +101,21 @@ function keyType(path: string): string {
   return "other";
 }
 
-/**
- * Whether `folder` already looks like a verification folder: a `.env` holding
- * `SUITESCRIPT_VERIFY_` keys, or a `probes` folder. Run from there without
- * `--dir .`, the package looks for a nested one.
- */
-function looksLikeVerificationFolder(folder: string): boolean {
-  if (existsSync(join(folder, "probes"))) return true;
-  try {
-    return /^\s*(?:export\s+)?SUITESCRIPT_VERIFY_\w+\s*=/m.test(
-      readFileSync(join(folder, ".env"), "utf8"),
-    );
-  } catch {
-    return false;
-  }
-}
-
 /** A sandbox account id looks like `1234567_SB1`. Verification never runs in production. */
 export const isSandboxAccount = (account: string) =>
   /^\d{5,8}_SB\d+$/i.test(account);
+
+const rerunWithDirGuidance =
+  'This folder already looks like a verification folder, so the package is reading a nested one that does not exist. Run the command again with --dir . (see the README, "Keeping the tooling in a subfolder"). Do not run init: it would create a nested verification folder.';
+
+/**
+ * Whether the command ran inside a verification folder without `--dir .`: the
+ * default folder is missing, yet the current folder looks like one.
+ */
+export const inVerificationFolder = (project: string, config: Config) =>
+  resolve(config.root) === resolve(project, "verification") &&
+  !existsSync(config.root) &&
+  looksLikeVerificationFolder(project);
 
 /** Read-only checklist: each failing step says what to do next and who does it. */
 export function runChecks(
@@ -126,6 +123,19 @@ export function runChecks(
   config: Config,
   env: NodeJS.ProcessEnv = process.env,
 ): Check[] {
+  // Run in a verification folder without `--dir .`: every other step would
+  // read the wrong folder and fail, so report only the real problem.
+  if (inVerificationFolder(project, config)) {
+    return [
+      {
+        name: "This folder is a verification folder: run with --dir .",
+        next: rerunWithDirGuidance,
+        ok: false,
+        owner: "agent",
+      },
+    ];
+  }
+
   const checks: Check[] = [];
   const add = (
     name: string,
@@ -267,17 +277,12 @@ export function runChecks(
       // A malformed project.json fails the step.
     }
   }
-  const rerunWithDir =
-    'This folder already looks like a verification folder: run the command again with --dir . (see the README, "Keeping the tooling in a subfolder"). Do not run init: it would create a nested verification folder.';
-  const nestedByMistake =
-    resolve(config.root) !== resolve(project) &&
-    looksLikeVerificationFolder(project);
   add(
     `The results folder is set, inside the project (${resultsDirKey})`,
     config.resultsDir !== undefined &&
       insideProject(project, config.resultsDir),
     "maintainer",
-    nestedByMistake ? rerunWithDir : resultsDirGuidance,
+    resultsDirGuidance,
   );
 
   const absent = [config.probesDir, config.resultsDir, config.sdfDir].filter(
@@ -288,9 +293,7 @@ export function runChecks(
     absent.length === 0 && authId !== "",
     absent.length > 0 ? "agent" : "maintainer",
     absent.length > 0
-      ? nestedByMistake
-        ? 'This folder already looks like a verification folder: run the command again with --dir . (see the README, "Keeping the tooling in a subfolder"). Do not run init: it would create a nested verification folder.'
-        : "Run suitescript-verify init to create the missing folders."
+      ? "Run suitescript-verify init to create the missing folders."
       : "Run account:setup:ci from the SDF folder once the steps above pass, so project.json gets a default auth id.",
     "files",
   );

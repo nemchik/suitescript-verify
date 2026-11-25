@@ -742,6 +742,16 @@ describe("a project nested in a subfolder of a repository", () => {
     const out = cli(["doctor"], tools).stdout;
     assert.match(out, /--dir \./);
     assert.equal(out.includes("suitescript-verify init"), false);
+    // Only the real problem: no step sends the maintainer to create what exists.
+    assert.equal(out.includes("Maintainer's own step"), false);
+  });
+
+  it("doctor leaves a folder chosen with --dir alone", () => {
+    const { tools } = nestedProject();
+    mkdirSync(join(tools, "probes"), { recursive: true });
+    const out = cli(["doctor", "--dir", "other"], tools).stdout;
+    assert.equal(out.includes("--dir ."), false);
+    assert.match(out, /suitescript-verify init/);
   });
 
   it("doctor reads a .env with SUITESCRIPT_VERIFY_ keys as a verification folder", () => {

@@ -787,6 +787,63 @@ describe("run", () => {
       }
     });
 
+    describe("the governance warning", () => {
+      const warning =
+        /^Warning: a script ran out of governance units \((.*)\)/m;
+
+      it("prints one line naming each flagged script, and still prints the usage", () => {
+        const p = project();
+        withProbe(p);
+        p.script(
+          ...ok({
+            result: { ok: true },
+            usage: {
+              RESTlet: { after: 0, before: 5000, exceeded: true },
+              Suitelet: { after: 10, before: 1000 },
+            },
+            version: "2026.2",
+          }),
+        );
+        const result = cli(p, ["run", "one"]);
+        assert.equal(result.status, 0, result.all);
+        assert.equal(result.stdout.match(/Warning:/g)?.length, 1);
+        assert.equal(result.stdout.match(warning)?.[1], "RESTlet");
+        assert.match(result.stdout, /"exceeded": true/);
+      });
+
+      it("names both scripts when both are flagged", () => {
+        const p = project();
+        withProbe(p);
+        p.script(
+          ...ok({
+            result: 1,
+            usage: {
+              RESTlet: { after: 0, before: 5, exceeded: true },
+              Suitelet: { after: 0, before: 5, exceeded: true },
+            },
+            version: "2026.2",
+          }),
+        );
+        const result = cli(p, ["run", "one"]);
+        assert.equal(result.stdout.match(/Warning:/g)?.length, 1);
+        assert.equal(result.stdout.match(warning)?.[1], "RESTlet, Suitelet");
+      });
+
+      it("prints none when no entry is flagged or there is no usage", () => {
+        const p = project();
+        withProbe(p);
+        for (const usage of [
+          { RESTlet: { after: 4990, before: 5000 } },
+          undefined,
+        ]) {
+          p.script(...ok({ result: 1, usage, version: "2026.2" }));
+          const result = cli(p, ["run", "one"]);
+          assert.equal(result.status, 0, result.all);
+          assert.doesNotMatch(result.stdout, /Warning:/);
+        }
+      });
+    });
+
     it("flags a difference with exit 2", () => {
       const p = project();
       withProbe(p);
@@ -1405,7 +1462,9 @@ describe("a RESTlet probe's usage", () => {
     );
     const answer = runner.post(asked) as Answer;
     assert.equal(answer.result, "THROWS: SSS_USAGE_LIMIT_EXCEEDED: out");
-    assert.deepEqual(answer.usage, { RESTlet: { after: 0, before: 5000 } });
+    assert.deepEqual(answer.usage, {
+      RESTlet: { after: 0, before: 5000, exceeded: true },
+    });
   });
 
   it("reports usage for a rejection", async () => {
@@ -1440,6 +1499,67 @@ describe("a RESTlet probe's usage", () => {
     const answer = await pending;
     assert.equal(readings, 2);
     assert.deepEqual(answer.usage, { RESTlet: { after: 4900, before: 5000 } });
+  });
+
+  describe("exceeded", () => {
+    const limit = { message: "out", name: "SSS_USAGE_LIMIT_EXCEEDED" };
+
+    it("is set when the probe throws the limit error", () => {
+      const runner = runnerWith(
+        () => {
+          throw Object.assign(new Error("out"), { name: limit.name });
+        },
+        counting(5000, 3000),
+      );
+      const answer = runner.post(asked) as Answer;
+      assert.deepEqual(answer.usage, {
+        RESTlet: { after: 3000, before: 5000, exceeded: true },
+      });
+    });
+
+    it("is set for a thrown object that is not an Error instance", () => {
+      const runner = runnerWith(
+        () => {
+          throw limit;
+        },
+        counting(5000, 3000),
+      );
+      const answer = runner.post(asked) as Answer;
+      assert.deepEqual(answer.usage, {
+        RESTlet: { after: 3000, before: 5000, exceeded: true },
+      });
+    });
+
+    it("is set when the probe rejects with the limit error", async () => {
+      const runner = runnerWith(
+        () => Promise.reject(limit),
+        counting(5000, 3000),
+      );
+      const answer = await runner.post(asked);
+      assert.deepEqual(answer.usage, {
+        RESTlet: { after: 3000, before: 5000, exceeded: true },
+      });
+    });
+
+    it("is set when the probe caught the limit error and returned, because after is 0", () => {
+      const runner = runnerWith(() => "caught it", counting(5000, 0));
+      const answer = runner.post(asked) as Answer;
+      assert.equal(answer.result, "caught it");
+      assert.deepEqual(answer.usage, {
+        RESTlet: { after: 0, before: 5000, exceeded: true },
+      });
+    });
+
+    it("is absent when neither condition holds", () => {
+      const runner = runnerWith(
+        () => {
+          throw { message: "x", name: "OTHER" };
+        },
+        counting(5000, 10),
+      );
+      const answer = runner.post(asked) as Answer;
+      assert.equal("exceeded" in (answer.usage?.RESTlet ?? {}), false);
+    });
   });
 
   it("carries no usage on a refused request", () => {
@@ -1479,6 +1599,7 @@ describe("the two templates' shared helpers", () => {
     "findLostAwait",
     "lostAwait",
     "rejection",
+    "usageEntry",
   ]) {
     it(`keeps ${name} identical in both`, () => {
       assert.equal(
@@ -2041,6 +2162,83 @@ describe("Suitelet probes", () => {
           undefined,
           undefined,
         ]);
+      });
+    });
+
+    describe("usage exceeded", () => {
+      const asked = { params: { id: "1" }, probe: "page" };
+
+      it("passes a host's exceeded flag through, and drops one that is not true", () => {
+        const p = project();
+        const answers = [
+          { result: 1, usage: { after: 0, before: 9, exceeded: true } },
+          { result: 1, usage: { after: 5, before: 9, exceeded: "yes" } },
+        ];
+        let next = 0;
+        const runner = runnerFor(p, () => ({
+          body: JSON.stringify(answers[next++]),
+          code: 200,
+          headers: { "x-ssv-mode": "wrapped" },
+        }));
+        const suitelets = answers.map(
+          () =>
+            (usageOf(runner.post(asked)) as { Suitelet?: unknown }).Suitelet,
+        );
+        assert.deepEqual(suitelets, [
+          { after: 0, before: 9, exceeded: true },
+          { after: 5, before: 9 },
+        ]);
+      });
+
+      it("passes the flag from X-SSV-Usage for an own response", () => {
+        const p = project();
+        const runner = runnerFor(p, () => ({
+          body: "x",
+          code: 200,
+          headers: {
+            "X-SSV-Mode": "own",
+            "X-SSV-Usage": JSON.stringify({
+              after: 0,
+              before: 1000,
+              exceeded: true,
+            }),
+          },
+        }));
+        assert.deepEqual(
+          (usageOf(runner.post(asked)) as { Suitelet?: unknown }).Suitelet,
+          { after: 0, before: 1000, exceeded: true },
+        );
+      });
+
+      it("flags the runner's entry when its own units reach 0 during the host call", () => {
+        const p = project();
+        const runner = runnerFor(
+          p,
+          () => ({
+            body: JSON.stringify({ result: 1, usage: { after: 9, before: 9 } }),
+            code: 200,
+            headers: { "x-ssv-mode": "wrapped" },
+          }),
+          counting(5, 0),
+        );
+        assert.deepEqual(usageOf(runner.post(asked)), {
+          RESTlet: { after: 0, before: 5, exceeded: true },
+          Suitelet: { after: 9, before: 9 },
+        });
+      });
+
+      it("flags the runner's entry when the host call itself throws the limit error", () => {
+        const p = project();
+        const runner = runnerFor(
+          p,
+          () => {
+            throw { message: "out", name: "SSS_USAGE_LIMIT_EXCEEDED" };
+          },
+          counting(5, 2),
+        );
+        assert.deepEqual(usageOf(runner.post(asked)), {
+          RESTlet: { after: 2, before: 5, exceeded: true },
+        });
       });
     });
 
@@ -2830,6 +3028,71 @@ describe("Suitelet probes", () => {
         const answer = written(seen);
         assert.match(answer.result, /^THROWS: SSS_INVALID_PAGE/);
         assert.deepEqual(answer.usage, { after: 950, before: 1000 });
+      });
+
+      describe("exceeded", () => {
+        const limit = { message: "out", name: "SSS_USAGE_LIMIT_EXCEEDED" };
+
+        it("is set when the probe throws the limit error, even a non-Error object", () => {
+          const p = project();
+          const host = hostFor(p, () => {
+            throw limit;
+          })(counting(1000, 400));
+          assert.deepEqual(call(host, { params, probe: "page" }).usage, {
+            after: 400,
+            before: 1000,
+            exceeded: true,
+          });
+        });
+
+        it("is set when the probe rejects with the limit error", async () => {
+          const p = project();
+          const host = hostFor(p, async () => {
+            await Promise.resolve();
+            throw limit;
+          })(counting(1000, 400));
+          const run = serve(host, { params, probe: "page" });
+          await run.done;
+          assert.deepEqual(written(run.seen).usage, {
+            after: 400,
+            before: 1000,
+            exceeded: true,
+          });
+        });
+
+        it("is set when the probe caught the limit error and returned, because after is 0", () => {
+          const p = project();
+          const host = hostFor(p, () => "caught")(counting(1000, 0));
+          assert.deepEqual(call(host, { params, probe: "page" }).usage, {
+            after: 0,
+            before: 1000,
+            exceeded: true,
+          });
+        });
+
+        it("is sent in X-SSV-Usage for an own response", () => {
+          const p = project();
+          const host = hostFor(p, (_params, { response }) => {
+            response.write({ output: "hi" });
+          })(counting(1000, 0));
+          const { seen } = serve(host, { params, probe: "page" });
+          assert.deepEqual(JSON.parse(headerValue(seen) ?? ""), {
+            after: 0,
+            before: 1000,
+            exceeded: true,
+          });
+        });
+
+        it("is absent when neither condition holds", () => {
+          const p = project();
+          const host = hostFor(p, () => {
+            throw { message: "x", name: "OTHER" };
+          })(counting(1000, 5));
+          assert.equal(
+            "exceeded" in (call(host, { params, probe: "page" }).usage ?? {}),
+            false,
+          );
+        });
       });
 
       it("carries no usage on a refusal that never ran the probe", () => {

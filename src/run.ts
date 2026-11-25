@@ -102,6 +102,20 @@ function validateParams(probe: Probe, args: string[]): Record<string, string> {
 }
 
 /** The configured ids the scrubber replaces with placeholders. */
+/** The script types whose usage entry says the script ran out of governance units. */
+const exceededScripts = (usage: unknown): string[] =>
+  usage !== null && typeof usage === "object"
+    ? Object.entries(usage as Record<string, unknown>)
+        .filter(
+          ([, entry]) =>
+            entry !== null &&
+            typeof entry === "object" &&
+            (entry as { exceeded?: unknown }).exceeded === true,
+        )
+        .map(([script]) => script)
+        .sort()
+    : [];
+
 export const knownIds = (creds: Creds): KnownIds => ({
   account: creds.account,
   certificateId: creds.certificateId,
@@ -322,6 +336,13 @@ export async function runProbe(
   if (own) body.response = own;
   // Sorted as an expectation is written, so the printed output can be copied as one.
   console.log(JSON.stringify(sortKeys(body), null, 2));
+  const ranOut = exceededScripts(body.usage);
+  if (ranOut.length > 0) {
+    console.log(
+      `
+Warning: a script ran out of governance units (${ranOut.join(", ")}); the probe's output may be cut short.`,
+    );
+  }
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);

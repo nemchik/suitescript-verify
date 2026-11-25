@@ -225,6 +225,21 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       return "REJECTS: (a value that cannot be shown)";
     }
   };
+  /** A script's usage entry. `exceeded: true` is added when the caught error's `name` is SSS_USAGE_LIMIT_EXCEEDED (never parsed from text: a NetSuite error is not an Error) or the after reading is 0. */
+  const usageEntry = (before, after, caught) => {
+    let hit = false;
+    try {
+      hit =
+        caught !== null &&
+        typeof caught === "object" &&
+        caught.name === "SSS_USAGE_LIMIT_EXCEEDED";
+    } catch (_) {
+      hit = false;
+    }
+    return hit || after === 0
+      ? { after, before, exceeded: true }
+      : { after, before };
+  };
   const lostAwait = (path) => {
     return `the result holds a Promise that was not awaited at ${path}`;
   };
@@ -270,6 +285,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       // run() and just after it (once a returned Promise settles). Reads cost nothing.
       const before = runtime.getCurrentScript().getRemainingUsage();
       let result;
+      let caught;
       try {
         result = probe.run(checked.params, {
           request: view,
@@ -278,13 +294,15 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       } catch (e) {
         result = `THROWS: ${e.name}: ${e.message}`;
         recorded.calls.length = 0;
+        caught = e;
       }
       const finish = (result) => {
         recorded.seal();
-        const usage = {
-          after: runtime.getCurrentScript().getRemainingUsage(),
+        const usage = usageEntry(
           before,
-        };
+          runtime.getCurrentScript().getRemainingUsage(),
+          caught,
+        );
         if (recorded.calls.length > 0 && result !== undefined) {
           return answer(response, {
             error:
@@ -346,6 +364,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             (value) => finish(value),
             (e) => {
               recorded.calls.length = 0;
+              caught = e;
               return finish(rejection(e));
             },
           )

@@ -203,13 +203,17 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   /** The USAGE header's name, lower-cased: the host's reading for an `own` answer. */
   const USAGE = "x-ssv-usage";
 
-  /** A host's reading `{ before, after }` as finite numbers, or undefined: a malformed one is dropped, never trusted. */
+  /** A host's reading `{ before, after }` as finite numbers (and `exceeded` only when exactly true), or undefined: a malformed one is dropped, never trusted. */
   const hostReading = (value) =>
     value &&
     typeof value === "object" &&
     Number.isFinite(value.before) &&
     Number.isFinite(value.after)
-      ? { after: value.after, before: value.before }
+      ? {
+          after: value.after,
+          before: value.before,
+          ...(value.exceeded === true ? { exceeded: true } : {}),
+        }
       : undefined;
 
   /** The host's reading from its X-SSV-Usage header (an `own` answer), or undefined. */
@@ -245,13 +249,13 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       after = runtime.getCurrentScript().getRemainingUsage();
       return {
         error: `the Suitelet host call failed: ${kind}: ${message}`,
-        usage: { RESTlet: { after, before } },
+        usage: { RESTlet: usageEntry(before, after, e) },
       };
     }
     after = runtime.getCurrentScript().getRemainingUsage();
     const usageOf = (reading) => ({
       ...(reading ? { Suitelet: reading } : {}),
-      RESTlet: { after, before },
+      RESTlet: usageEntry(before, after),
     });
     const fail = (error) => ({ error, usage: usageOf() });
     const status = reply ? reply.code : undefined;
@@ -418,6 +422,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       return "REJECTS: (a value that cannot be shown)";
     }
   };
+  /** A script's usage entry. `exceeded: true` is added when the caught error's `name` is SSS_USAGE_LIMIT_EXCEEDED (never parsed from text: a NetSuite error is not an Error) or the after reading is 0. */
+  const usageEntry = (before, after, caught) => {
+    let hit = false;
+    try {
+      hit =
+        caught !== null &&
+        typeof caught === "object" &&
+        caught.name === "SSS_USAGE_LIMIT_EXCEEDED";
+    } catch (_) {
+      hit = false;
+    }
+    return hit || after === 0
+      ? { after, before, exceeded: true }
+      : { after, before };
+  };
   const lostAwait = (path) => {
     return `the result holds a Promise that was not awaited at ${path}`;
   };
@@ -468,7 +487,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       // the probe's run() and just after it (once a returned Promise settles).
       // The read costs nothing.
       const before = runtime.getCurrentScript().getRemainingUsage();
-      const answer = (result) => {
+      const answer = (result, caught) => {
         const lost = findLostAwait(result);
         if (lost !== undefined) return { error: lostAwait(lost) };
         const after = runtime.getCurrentScript().getRemainingUsage();
@@ -476,7 +495,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           probe: name,
           result,
           scriptType: "RESTlet",
-          usage: { RESTlet: { after, before } },
+          usage: { RESTlet: usageEntry(before, after, caught) },
           version: String(runtime.version),
         };
       };
@@ -484,12 +503,14 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       try {
         result = entry[0].run(checked.params);
       } catch (e) {
-        return answer(`THROWS: ${e.name}: ${e.message}`);
+        return answer(`THROWS: ${e.name}: ${e.message}`, e);
       }
       // Only a probe that returns a thenable gets a promise back: a synchronous
       // probe keeps its synchronous answer.
       if (!isThenable(result)) return answer(result);
-      return Promise.resolve(result).then(answer, (e) => answer(rejection(e)));
+      return Promise.resolve(result).then(answer, (e) =>
+        answer(rejection(e), e),
+      );
     },
   };
 });

@@ -226,7 +226,7 @@ suitescript-verify run <probe> [--param name=value ...] [--draft]
 - The name must be one of the probes in the folder: the runner only runs the fixed list generated into it and never code from a request.
 - Output is scrubbed of the account, client and certificate ids, and refused if it still looks like an identifier.
 - A probe with an `<probe>.expect.json` is compared with it, and a difference exits 2 as drift, naming the keys that differ (such as `response.headers.x-sv-multi` or `result`). The expectation is the `result` object (or, for a Suitelet probe that writes its own response, the `response` object), not the whole output. No command writes it: copy it from a real run's output, which `run` prints with keys sorted and indented, never a guess, so a new probe has none until it has run once. Capture the output with `npx suitescript-verify run …` or `npm run --silent …`, or npm's own warnings land before the JSON. A probe whose output changes on every run (a row count, a timestamp) cannot have one: it would report drift every time, so say on the results page why there is none. After upgrading suitescript-verify, rewrite each own probe's expectation from a fresh `run`: what `run` reports can change between versions with no platform change.
-- `run` stops waiting for a probe at its limit, because a probe cannot time itself out: its `@timeout` (see [Tags](#tags)), else 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. At the most its script type allows (300 for a RESTlet probe, 45 for a Suitelet probe) the CLI waits 15 seconds longer, so NetSuite's own answer is reported as the runner's error, not a CLI timeout. In a sandbox at 2026.2, `requestSuitelet` gave up on a Suitelet probe at about 45 seconds with `SSS_REQUEST_TIME_EXCEEDED`, and a RESTlet probe spinning in a loop threw `Script Execution Statement Count Exceeded.` (reported as `THROWS`) after about 90 seconds, before any time limit. **Note:** that server SuiteScript has no timers, that a RESTlet's limit is 300 seconds with an `SSS_TIME_LIMIT_EXCEEDED` answer, and that a timed-out probe keeps running in NetSuite are **unverified**.
+- `run` stops waiting for a probe at its limit, because a probe cannot time itself out: its `@timeout` (see [Tags](#tags)), else 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A timeout exits 1 (drift keeps exit 2), prints no result and writes no `--draft` page. At the most its script type allows (300 for a RESTlet probe, Oracle's documented RESTlet limit, which is **unverified**; 45 for a Suitelet probe) the CLI waits 15 seconds longer, so a Suitelet probe's `requestSuitelet` failure is reported as the runner's error, not a CLI timeout; a RESTlet probe got no answer within it. In a sandbox at 2026.2: `requestSuitelet` gave up on a Suitelet probe at about 45 seconds with `SSS_REQUEST_TIME_EXCEEDED`; a RESTlet probe spinning in a loop threw `Script Execution Statement Count Exceeded.` (reported as `THROWS`) after about 90 seconds; a RESTlet probe waiting on `N/https` calls got no answer by 315 seconds in two runs, and in one of them was still running at 331 seconds, at least 16 seconds after the CLI gave up; and `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout` and `queueMicrotask` were `undefined` in a RESTlet and in a Suitelet. **Note:** whether NetSuite stops a RESTlet at some limit, and with what answer, is **unverified**.
 - The output says which script type ran the probe: `"scriptType": "RESTlet"` or `"scriptType": "Suitelet"`.
 - `--draft` writes `<probe>.md` into your results folder, never over an existing page. A draft goes stale: after a probe changes, refresh the page's Test and Results sections from the probe and its expected output.
 
@@ -347,6 +347,30 @@ The package validates the tags in a probe's leading JSDoc block: `@scriptType`, 
 
 `@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gave up at about 45 seconds in a sandbox at 2026.2 (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 
+### Governance usage
+
+`run` prints `usage` beside `result` (or `response`): for each script that ran the probe, `{ "before": n, "after": n }`, its remaining governance units just before `run()` and just after it (after a returned Promise settles), plus `"exceeded": true` when it ran out. A RESTlet probe has a `RESTlet` entry. A Suitelet probe has a `Suitelet` entry (the host, which sends it in the wrapped answer or, for an `own` response, in the reserved `X-SSV-Usage` header) and a `RESTlet` entry (the runner), which includes what `requestSuitelet` spends (10 units in a sandbox at 2026.2, also when the call failed). A request refused before the probe ran carries none. A draft page shows it in a separate Usage block.
+
+- **Never compared.** Usage is not part of the expected output: copy an expectation from `result` or `response`, never from the whole printed output. A script is flagged `exceeded` when it caught an error named `SSS_USAGE_LIMIT_EXCEEDED` or its `after` is 0, even if the probe caught the error and returned normally, and `run` then prints a warning line.
+- **What was measured** (sandbox, 2026.2, one run each, two checks for running out). A RESTlet started with 5,000 units and the Suitelet host with 1,000, so `before` shows a script's limit; the host's units are independent of the runner's. `SELECT 1 FROM DUAL` through `N/query.runSuiteQL` cost 10 units. Running out was exact (500 such calls used 5,000, 100 used 1,000), the probe, the runner and the host could each catch the error, and the remaining units read 0 afterwards. `search.lookupFields.promise` was charged when called, not when it settled; no other async call was measured.
+- **Look-alike.** A slow RESTlet probe can end in a CLI timeout with no answer (see [Running one](#running-one)) or in a usage-limit error; read which one `run` printed before concluding. Do not estimate a call's duration from a few calls.
+
+To check a governance claim in documentation, measure one call (`@scriptType Restlet`, no other tag needed):
+
+```js
+/**
+ * @scriptType Restlet
+ */
+define(["N/runtime", "N/query"], (runtime, query) => ({
+    run: () => {
+        const script = runtime.getCurrentScript();
+        const before = script.getRemainingUsage();
+        query.runSuiteQL({ query: "SELECT 1 FROM DUAL" });
+        return { spent: before - script.getRemainingUsage() };
+    },
+}));
+```
+
 ### Writing probes that do not cost a deploy
 
 - **Keep module-scope code rare and tiny.** The runner loads every probe as a dependency of its own `define()`. A probe whose top-level code fails in a way its own `try/catch` cannot capture takes the whole runner down. If you need one, make it one governed call, run it last and one per deploy, so a failure points at one call. Do not keep a probe that is expected to take the runner down; its results page carries the code.
@@ -354,6 +378,7 @@ The package validates the tags in a probe's leading JSDoc block: `@scriptType`, 
 - **Check how an API is chained before relying on it.** `crypto.createHash(...).update(...)` returns nothing, so chaining `.digest()` threw `Cannot read property 'digest' of undefined` and cost a deploy. Read the method page for the return type.
 - **Outbound calls rate-limit.** A public echo service answered four requests in a row and failed the fifth with a body that had no `headers`. Keep a probe to four requests or fewer and put the status code in the failure, not just a `TypeError`.
 - **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output. Under the runner's minimal role the query can fail with `Record 'scriptnote' was not found.`: a missing permission worded as a missing table (which permission is not yet identified).
+- **`N/cache` cannot watch a running probe.** In a sandbox at 2026.2, a probe that `put` its progress in a `Scope.PRIVATE` cache after each call, read by a second probe while it ran, showed only its first `put` for minutes or for good, even with a new key per call; in one run all its writes appeared 7 to 9 minutes later. That cost a deploy; no channel is known yet for a probe that outlives the CLI.
 - **Write probes with your editor or file tools, not a shell heredoc.** Backticks, `${}` and quotes in a probe broke a shell heredoc on Windows.
 - **An agent's tool can refuse the deploy command.** An auto-mode classifier blocked a deploy dry run chained in one shell line with other commands. Run the dry run alone and say so if it is still refused; the real deploy is the person's anyway.
 

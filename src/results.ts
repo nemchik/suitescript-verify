@@ -1,5 +1,6 @@
 import { relative } from "node:path";
 import { isSuitelet, type Probe } from "./probes.ts";
+import type { Usage } from "./usage.ts";
 
 /** A draft results page: the test, the NetSuite version, the results, and empty explanation and decision sections for a person to fill in. */
 export function resultsDraft(options: {
@@ -9,6 +10,8 @@ export function resultsDraft(options: {
   probeFile: string;
   resultsDir: string;
   scriptSource: string;
+  /** The governance usage the runner reported: shown beside the output, never part of an expectation. */
+  usage?: Usage;
   version: string;
 }): string {
   const link = relative(options.resultsDir, options.probeFile).replaceAll(
@@ -38,7 +41,17 @@ ${options.scriptSource.trimEnd()}
 \`\`\`json
 ${JSON.stringify(options.output, null, 2)}
 \`\`\`
+${
+  options.usage === undefined
+    ? ""
+    : `
+Usage (governance units remaining before and after the run; information only, never part of the expected output):
 
+\`\`\`json
+${JSON.stringify(options.usage, null, 2)}
+\`\`\`
+`
+}
 ## Explanation
 
 TODO(verify): what the results mean, and how they relate to what each source claims.

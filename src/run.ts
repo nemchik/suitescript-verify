@@ -36,6 +36,7 @@ import {
   requireSandbox,
   UsageError,
 } from "./shared.ts";
+import { governanceWarning, readUsage, type Usage } from "./usage.ts";
 
 /** Every `--param name=value` in the arguments, in order. The value may start with anything. */
 function suppliedParams(args: string[]): [string, string][] {
@@ -113,8 +114,9 @@ export const knownIds = (creds: Creds): KnownIds => ({
  * How many seconds the CLI waits past NetSuite's own limit for the probe's
  * script type, so that NetSuite's answer arrives and is reported instead of
  * the CLI giving up in the same instant: SSS_REQUEST_TIME_EXCEEDED from
- * requestSuitelet at about 45 seconds (seen in a sandbox), or
- * SSS_TIME_LIMIT_EXCEEDED at 300 (unverified).
+ * requestSuitelet at about 45 seconds (seen in a sandbox). A RESTlet probe got
+ * no answer within it in a sandbox at 2026.2 (still running at 331 seconds);
+ * the grace stays so the CLI reports a RESTlet limit if NetSuite ever answers.
  */
 export const graceSeconds = 15;
 
@@ -142,8 +144,8 @@ let patient: object | undefined;
 /**
  * A dispatcher for the runner call that never gives up waiting for headers or
  * body, built once. Node's global fetch (undici) does so after 300 seconds,
- * which would cut in as NetSuite reaches its own 300-second limit; the CLI's
- * limit (at most 300, plus the grace) is the only one that applies. Node does
+ * which would cut in before a RESTlet probe's ceiling (300, plus the grace);
+ * the CLI's limit is the only one that applies. Node does
  * not expose undici's Agent, so this copies the global dispatcher's class,
  * which exists once the first fetch has run. A test fails if a Node release
  * removes it; undefined here would silently restore the 300-second cut-off.
@@ -306,6 +308,7 @@ export async function runProbe(
     error?: string;
     response?: unknown;
     result?: unknown;
+    usage?: unknown;
     version?: string;
   };
   try {
@@ -313,14 +316,27 @@ export async function runProbe(
   } catch {
     throw new UsageError("The runner's answer was not JSON.");
   }
+  const usage: Usage | undefined = readUsage(body.usage);
   if (body.error) {
-    throw new UsageError(`The runner reported an error: ${body.error}`);
+    // The usage and any governance warning go beside the error, already scrubbed with the rest.
+    const warning = governanceWarning(usage);
+    throw new UsageError(
+      [
+        `The runner reported an error: ${body.error}`,
+        ...(usage ? [`Usage: ${JSON.stringify(usage)}`] : []),
+        ...(warning ? [warning] : []),
+      ].join("\n"),
+    );
   }
+  if (usage) body.usage = usage;
+  else delete body.usage;
   // A Suitelet probe that wrote its own response is reported as that response, not a result.
   const own = "response" in body ? ownResponse(body.response) : undefined;
   if (own) body.response = own;
   // Sorted as an expectation is written, so the printed output can be copied as one.
   console.log(JSON.stringify(sortKeys(body), null, 2));
+  const warning = governanceWarning(usage);
+  if (warning) console.log(`\n${warning}`);
 
   let status = 0;
   const expected = readExpect(probe.slug, config.probesDir);
@@ -353,6 +369,7 @@ export async function runProbe(
           probeFile,
           resultsDir,
           scriptSource: read(probeFile),
+          usage: usage,
           version: body.version ?? "unknown",
         }),
         known,

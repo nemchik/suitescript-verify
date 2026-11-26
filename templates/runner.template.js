@@ -200,9 +200,44 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     return { params };
   };
 
+  /** The USAGE header's name, lower-cased: the host's reading for an `own` answer. */
+  const USAGE = "x-ssv-usage";
+
+  /** A host's reading `{ before, after }` as finite numbers (and `exceeded` only when exactly true), or undefined: a malformed one is dropped, never trusted. */
+  const hostReading = (value) =>
+    value &&
+    typeof value === "object" &&
+    Number.isFinite(value.before) &&
+    Number.isFinite(value.after)
+      ? {
+          after: value.after,
+          before: value.before,
+          ...(value.exceeded === true ? { exceeded: true } : {}),
+        }
+      : undefined;
+
+  /** The host's reading from its X-SSV-Usage header (an `own` answer), or undefined. */
+  const headerUsage = (headers) => {
+    const key = Object.keys(headers).find(
+      (name) => name.toLowerCase() === USAGE,
+    );
+    if (key === undefined) return undefined;
+    try {
+      return hostReading(JSON.parse([].concat(headers[key])[0]));
+    } catch (_) {
+      return undefined;
+    }
+  };
+
   /** Asks the Suitelet host to run a probe; a failed or unexpected answer is reported, never thrown. */
   const viaSuitelet = (name, params) => {
+    // Usage is information only: this script's units just before and just
+    // after the call, so the runner's entry includes whatever
+    // requestSuitelet spends. The host's own reading is folded in beside it
+    // when the host answered. The reads cost nothing.
+    const before = runtime.getCurrentScript().getRemainingUsage();
     let reply;
+    let after;
     try {
       reply = https.requestSuitelet({
         deploymentId: host.deploymentId,
@@ -211,8 +246,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       });
     } catch (e) {
       const { message, name: kind } = e || {};
-      return { error: `the Suitelet host call failed: ${kind}: ${message}` };
+      after = runtime.getCurrentScript().getRemainingUsage();
+      return {
+        error: `the Suitelet host call failed: ${kind}: ${message}`,
+        usage: { RESTlet: usageEntry(before, after, e) },
+      };
     }
+    after = runtime.getCurrentScript().getRemainingUsage();
+    const usageOf = (reading) => ({
+      ...(reading ? { Suitelet: reading } : {}),
+      RESTlet: usageEntry(before, after),
+    });
+    const failWithUsage = (error, reading) => ({
+      error,
+      usage: usageOf(reading),
+    });
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
     const headers = reply?.headers || {};
@@ -226,21 +274,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
         probe: name,
         response: ownResponse(status, headers, text),
         scriptType: "Suitelet",
+        usage: usageOf(headerUsage(headers)),
         version: String(runtime.version),
       };
     }
     if (marker !== "wrapped") {
-      return {
-        error:
-          status === 200
-            ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
-            : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
-      };
+      return failWithUsage(
+        status === 200
+          ? `the Suitelet host answered HTTP 200 without its X-SSV-Mode header (a followed redirect or a login page does this): ${cut(text)}`
+          : `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      );
     }
     if (status !== 200) {
-      return {
-        error: `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
-      };
+      return failWithUsage(
+        `the Suitelet host answered HTTP ${status}: ${cut(text)}`,
+      );
     }
     let answer;
     try {
@@ -249,15 +297,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       answer = undefined;
     }
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
-      return { error: `the Suitelet host's answer was not JSON: ${cut(text)}` };
+      return failWithUsage(
+        `the Suitelet host's answer was not JSON: ${cut(text)}`,
+      );
     }
     if (answer.error) {
-      return { error: `the Suitelet host refused: ${cut(answer.error)}` };
+      return failWithUsage(
+        `the Suitelet host refused: ${cut(answer.error)}`,
+        hostReading(answer.usage),
+      );
     }
     return {
       probe: name,
       result: answer.result,
       scriptType: "Suitelet",
+      usage: usageOf(hostReading(answer.usage)),
       version: String(runtime.version),
     };
   };
@@ -378,6 +432,21 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       return "REJECTS: (a value that cannot be shown)";
     }
   };
+  /** A script's usage entry. `exceeded: true` is added when the caught error's `name` is SSS_USAGE_LIMIT_EXCEEDED (never parsed from text: a NetSuite error is not an Error) or the after reading is 0. */
+  const usageEntry = (before, after, caught) => {
+    let hit = false;
+    try {
+      hit =
+        caught !== null &&
+        typeof caught === "object" &&
+        caught.name === "SSS_USAGE_LIMIT_EXCEEDED";
+    } catch (_) {
+      hit = false;
+    }
+    return hit || after === 0
+      ? { after, before, exceeded: true }
+      : { after, before };
+  };
   const lostAwait = (path) => {
     return `the result holds a Promise that was not awaited at ${path}`;
   };
@@ -424,27 +493,34 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       const checked = checkParams(body, entry ? entry[1] : suitelet);
       if (checked.error) return { error: checked.error };
       if (!entry) return viaSuitelet(name, checked.params);
-      const answer = (result) => {
+      // Usage is information only: the units this script has left just before
+      // the probe's run() and just after it (once a returned Promise settles).
+      // The read costs nothing.
+      const before = runtime.getCurrentScript().getRemainingUsage();
+      const answer = (result, caught) => {
         const lost = findLostAwait(result);
-        return lost === undefined
-          ? {
-              probe: name,
-              result,
-              scriptType: "RESTlet",
-              version: String(runtime.version),
-            }
-          : { error: lostAwait(lost) };
+        if (lost !== undefined) return { error: lostAwait(lost) };
+        const after = runtime.getCurrentScript().getRemainingUsage();
+        return {
+          probe: name,
+          result,
+          scriptType: "RESTlet",
+          usage: { RESTlet: usageEntry(before, after, caught) },
+          version: String(runtime.version),
+        };
       };
       let result;
       try {
         result = entry[0].run(checked.params);
       } catch (e) {
-        return answer(`THROWS: ${e.name}: ${e.message}`);
+        return answer(`THROWS: ${e.name}: ${e.message}`, e);
       }
       // Only a probe that returns a thenable gets a promise back: a synchronous
       // probe keeps its synchronous answer.
       if (!isThenable(result)) return answer(result);
-      return Promise.resolve(result).then(answer, (e) => answer(rejection(e)));
+      return Promise.resolve(result).then(answer, (e) =>
+        answer(rejection(e), e),
+      );
     },
   };
 });

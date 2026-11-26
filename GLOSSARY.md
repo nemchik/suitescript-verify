@@ -32,6 +32,10 @@ The folder in a downstream project where its results pages live, named by `SUITE
 **Lesson**:
 A short, generic account of a runner, deploy, probe or sandbox problem: what happened, what it cost and how to avoid it. It holds no account identifiers and no findings about NetSuite itself, which belong on a results page.
 
+**Usage**:
+The governance units a probe's run spent, reported for each script that ran it as the units remaining before and after. Each script's limit is its own: the runner and a script host do not share one.
+_Avoid_: Cost
+
 **Expected output**:
 The `<probe>.expect.json` file holding the result a probe produced when it was verified, so a later run can report drift.
 

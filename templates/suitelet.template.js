@@ -45,6 +45,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
    * session cookie never reaches it otherwise.
    */
   const HEADERS = "X-SSV-Headers";
+  /** The host's reading of its own remaining units, for an `own` answer: `{ before, after }` as JSON. */
+  const USAGE = "X-SSV-Usage";
   /** Every `X-SSV-` header is the host's; a probe cannot set one. */
   const RESERVED = /^x-ssv-/i;
 
@@ -108,7 +110,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       const name = headerName(options);
       if (RESERVED.test(name)) {
         const e = new Error(
-          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}) are the host's`,
+          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}) are the host's`,
         );
         e.name = "SSV_RESERVED_HEADER";
         throw e;
@@ -223,6 +225,21 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       return "REJECTS: (a value that cannot be shown)";
     }
   };
+  /** A script's usage entry. `exceeded: true` is added when the caught error's `name` is SSS_USAGE_LIMIT_EXCEEDED (never parsed from text: a NetSuite error is not an Error) or the after reading is 0. */
+  const usageEntry = (before, after, caught) => {
+    let hit = false;
+    try {
+      hit =
+        caught !== null &&
+        typeof caught === "object" &&
+        caught.name === "SSS_USAGE_LIMIT_EXCEEDED";
+    } catch (_) {
+      hit = false;
+    }
+    return hit || after === 0
+      ? { after, before, exceeded: true }
+      : { after, before };
+  };
   const lostAwait = (path) => {
     return `the result holds a Promise that was not awaited at ${path}`;
   };
@@ -264,7 +281,11 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         method: request.method,
         parameters: Object.freeze({ ...checked.params }),
       });
+      // Usage is information only: this host's units just before the probe's
+      // run() and just after it (once a returned Promise settles). Reads cost nothing.
+      const before = runtime.getCurrentScript().getRemainingUsage();
       let result;
+      let caught;
       try {
         result = probe.run(checked.params, {
           request: view,
@@ -273,13 +294,20 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       } catch (e) {
         result = `THROWS: ${e.name}: ${e.message}`;
         recorded.calls.length = 0;
+        caught = e;
       }
       const finish = (result) => {
         recorded.seal();
+        const usage = usageEntry(
+          before,
+          runtime.getCurrentScript().getRemainingUsage(),
+          caught,
+        );
         if (recorded.calls.length > 0 && result !== undefined) {
           return answer(response, {
             error:
               "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
+            usage,
           });
         }
         const wrapped = (value) => {
@@ -291,6 +319,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
                   probe: name,
                   result: value,
                   scriptType: "Suitelet",
+                  usage,
                   version: String(runtime.version),
                 }
               : {
@@ -300,6 +329,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         };
         if (recorded.calls.length === 0) return wrapped(result);
         response.setHeader({ name: MARKER, value: "own" });
+        response.setHeader({ name: USAGE, value: JSON.stringify(usage) });
         try {
           // JSON with every non-ASCII character escaped, so it is a valid header value.
           response.setHeader({
@@ -335,6 +365,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             (value) => finish(value),
             (e) => {
               recorded.calls.length = 0;
+              caught = e;
               return finish(rejection(e));
             },
           )

@@ -205,7 +205,7 @@ suitescript-verify cleanup --approved  # turns the runner's and Suitelet host's 
 
 ## Probes
 
-A probe is a version-controlled module that exercises one platform behavior and returns the result as data. It must declare `@scriptType Restlet` or `@scriptType Suitelet`, and no `@writes`. Any other script type is refused by `run` and left out of `deploy`.
+A probe is a version-controlled module that exercises one platform behavior and returns the result as data. It must declare `@scriptType Restlet` or `@scriptType Suitelet`, and no `@writes`. It may import only allowed modules (see [Modules](#modules)). Any other script type is refused by `run` and left out of `deploy`.
 
 ```js
 /**
@@ -216,6 +216,17 @@ define(["N/record"], (record) => ({
   run: ({ recordType }) => /* ... */,
 }));
 ```
+
+### Modules
+
+A probe that does not write (no `@writes`, and no `@permission` above `VIEW`) may import only allowed modules. The package ships a classification of every known `N/` module as allowed (it only reads, or every write it makes needs a permission the role lacks) or writing. A module not on the list counts as writing.
+
+- The check covers the `define` dependencies and every `require` call. A module name in either must be a string literal, so `require(name)` and `require("N/" + x)` are refused.
+- A writing module, such as `N/email`, `N/https`, `N/file` or `N/task`, is refused by `run` and `deploy`. The message names the probe and the module, and says to add `@writes` or a permission level above `VIEW`, or to drop the import.
+- An unknown module is refused with a pre-filled GitHub new-issue link for this repository. It carries the module name and the package version only. The package never posts it and makes no network call: ask the person to open it so the module can be classified.
+- A probe with `@writes` or a level above `VIEW` is not subject to the allowlist. Probes with `@writes` are still refused today.
+- The guardrails stop mistakes, not a probe written to get around them. At NetSuite 2026.2 a sandbox run showed `search.save()` working under `VIEW`, so `N/search` is allowed anyway and saving a search is a write the guardrails do not stop. In the same run `email.send` worked with no permission, so `N/email` is writing.
+- A role made in the UI or by a deploy also holds Other Addresses (Full), so a probe that does not write can still do what that permission allows.
 
 ### Running one
 
@@ -343,7 +354,7 @@ The runner stays the only entry point, because the machine-to-machine token reac
 
 ### Tags
 
-The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, `@timeout`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
+The package validates the tags in a probe's leading JSDoc block: `@scriptType`, `@writes`, `@param`, `@permission`, `@timeout`, the NetSuite `@NApiVersion`, `@NScriptType` and `@NModuleScope`, and the ordinary `@see`, `@link`, `@example`, `@returns`, `@since` and `@deprecated`. Any other tag is reported and stops `run` and `deploy`, so a typo cannot pass silently. `@writes` (and a permission level above `VIEW`) lifts the module allowlist for that probe; see [Modules](#modules). A project that keeps its own tags registers them with `SUITESCRIPT_VERIFY_EXTRA_TAGS`, a comma-separated list of tag names without the `@` (for example `flavor,other`). The package checks only that a registered tag is known; what a tag means is up to the project.
 
 `@timeout <seconds>` sets how long `run` waits for the probe: a whole number from 1 to 300 for a RESTlet probe, and from 1 to 45 for a Suitelet probe, since `requestSuitelet` gave up at about 45 seconds in a sandbox at 2026.2 (see [Running one](#running-one)). Without it the limit is 60 seconds for a RESTlet probe and 45 for a Suitelet probe. A malformed or out-of-range value, or a repeated tag, stops `run` and `deploy`, naming the probe and the tag. See [Running one](#running-one) for what happens when the limit passes.
 

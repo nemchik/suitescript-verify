@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { moduleProblems, type ProbeImports, probeImports } from "./modules.ts";
 import { permissionKeys } from "./permissions.ts";
 
 export const read = (path: string) =>
@@ -19,6 +20,8 @@ export interface ProbePermission {
 }
 
 export interface Probe {
+  /** The modules the probe's `define` dependencies and `require` calls name. */
+  imports: ProbeImports;
   /** What is wrong with the probe's `@param` tags, if anything. */
   paramProblems: string[];
   params: ProbeParam[];
@@ -233,6 +236,7 @@ export function parseProbe(
     ...parseParams(block),
     ...parsePermissions(block),
     ...parseTimeout(block, scriptType),
+    imports: probeImports(source),
     scriptType,
     slug,
     unknownTags,
@@ -306,11 +310,20 @@ export const listDifferences = (paths: string[]) =>
     ? `${paths.slice(0, 10).join(", ")} and ${paths.length - 10} more`
     : paths.join(", ");
 
-/** What is wrong with a probe's tags, for the commands that refuse to run it. */
+/** Whether a probe declares no `@writes` and nothing above VIEW, so the module allowlist applies to it. */
+export const doesNotWrite = (probe: Probe) =>
+  !probe.writes &&
+  probe.permissions.every(
+    (p) =>
+      permissionLevels.indexOf(p.level) <= permissionLevels.indexOf("VIEW"),
+  );
+
+/** What is wrong with a probe's tags and imports, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [
   ...probe.paramProblems,
   ...probe.permissionProblems,
   ...probe.timeoutProblems,
+  ...(doesNotWrite(probe) ? moduleProblems(probe.slug, probe.imports) : []),
   ...probe.unknownTags.map(
     (name) =>
       `@${name} is not a tag the package knows; register it with SUITESCRIPT_VERIFY_EXTRA_TAGS=${name}`,

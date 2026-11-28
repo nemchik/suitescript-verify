@@ -11,8 +11,9 @@ import {
   type ProbePermission,
   permissionLevels,
 } from "./probes.ts";
+import { runnerRolePermissions } from "./roles.ts";
 import { callRunner, knownIds } from "./run.ts";
-import { buildFingerprint, rolePermissions } from "./sdf.ts";
+import { buildFingerprint } from "./sdf.ts";
 import { type Creds, requireSandbox } from "./shared.ts";
 import { packageVersion } from "./version.ts";
 
@@ -178,7 +179,7 @@ export async function selfCheckStep(config: Config): Promise<Check> {
   const probes = listProbes(config.probesDir, config.extraTags).filter(
     isRunnable,
   );
-  const wanted = rolePermissions(probes);
+  const wanted = [...runnerRolePermissions];
   const reasons = redeployReasons(
     check,
     probes,

@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { moduleProblems, type ProbeImports, probeImports } from "./modules.ts";
 import { permissionKeys } from "./permissions.ts";
 
 export const read = (path: string) =>
@@ -19,6 +20,8 @@ export interface ProbePermission {
 }
 
 export interface Probe {
+  /** The modules the probe's `define` dependencies and `require` calls name. */
+  imports: ProbeImports;
   /** What is wrong with the probe's `@param` tags, if anything. */
   paramProblems: string[];
   params: ProbeParam[];
@@ -82,7 +85,10 @@ export const maxTimeoutSeconds = 300;
 /**
  * The most a Suitelet probe may declare: the runner reaches the Suitelet host
  * through `requestSuitelet`, which gave up with SSS_REQUEST_TIME_EXCEEDED at
- * about 45 seconds in a sandbox at NetSuite 2026.2.
+ * about 45 seconds in a sandbox at NetSuite 2026.2. A RESTlet probe that
+ * declares a permission runs behind the same call (runner, then slot, then
+ * RESTlet host), and `requestRestlet` gave up at about 46 seconds, so it has
+ * the same maximum.
  */
 export const suiteletMaxTimeoutSeconds = 45;
 
@@ -95,14 +101,18 @@ const isSuiteletType = (scriptType: string) =>
  * the probe off there. It takes the tag's text, since `parseTimeout` runs before
  * the probe exists.
  */
-export const timeoutCeiling = (scriptType: string) =>
-  isSuiteletType(scriptType) ? suiteletMaxTimeoutSeconds : maxTimeoutSeconds;
+export const timeoutCeiling = (scriptType: string, hasPermission = false) =>
+  isSuiteletType(scriptType) ||
+  (hasPermission && scriptType.toLowerCase() === "restlet")
+    ? suiteletMaxTimeoutSeconds
+    : maxTimeoutSeconds;
 
 function parseTimeout(
   block: string,
   scriptType: string,
+  hasPermission: boolean,
 ): Pick<Probe, "timeoutProblems" | "timeoutSeconds"> {
-  const ceiling = timeoutCeiling(scriptType);
+  const ceiling = timeoutCeiling(scriptType, hasPermission);
   const fallback = Math.min(defaultTimeoutSeconds, ceiling);
   const values = [
     ...block.matchAll(/^[ \t]*\*?[ \t]*@timeout\b[ \t]*(.*)$/gm),
@@ -120,7 +130,9 @@ function parseTimeout(
   if (!(seconds >= 1 && seconds <= ceiling)) {
     const why = isSuiteletType(scriptType)
       ? " for a Suitelet probe, since requestSuitelet gave up at about 45 seconds in a sandbox at 2026.2"
-      : "";
+      : ceiling === suiteletMaxTimeoutSeconds
+        ? " for a RESTlet probe that declares a permission, since it runs through requestSuitelet and requestRestlet, which gave up at about 45 and 46 seconds in a sandbox at 2026.2"
+        : "";
     return problem(
       `@timeout "${value}" must be a whole number of seconds from 1 to ${ceiling}${why}: @timeout <seconds>`,
     );
@@ -135,12 +147,6 @@ export const permissionLevels: readonly string[] = [
   "EDIT",
   "FULL",
 ];
-
-/**
- * The highest level a probe may declare. Probes do not write (`@writes` is
- * refused), so VIEW is the cap.
- */
-const maxPermissionLevel = "VIEW";
 
 function parsePermissions(
   block: string,
@@ -162,14 +168,7 @@ function parsePermissions(
       );
     } else if (!permissionLevels.includes(level)) {
       permissionProblems.push(
-        `@permission ${permkey} ${level}: ${level} is not a permission level; use ${maxPermissionLevel}`,
-      );
-    } else if (
-      permissionLevels.indexOf(level) >
-      permissionLevels.indexOf(maxPermissionLevel)
-    ) {
-      permissionProblems.push(
-        `@permission ${permkey} ${level}: probes do not write, so the level must be ${maxPermissionLevel}`,
+        `@permission ${permkey} ${level}: ${level} is not a permission level; use VIEW, CREATE, EDIT or FULL`,
       );
     } else if (permissions.some((p) => p.permkey === permkey)) {
       permissionProblems.push(
@@ -229,10 +228,16 @@ export function parseProbe(
       !registered.has(name.toLowerCase()),
   );
   const scriptType = tags("scriptType")[0] ?? "";
+  const permissions = parsePermissions(block);
   return {
     ...parseParams(block),
-    ...parsePermissions(block),
-    ...parseTimeout(block, scriptType),
+    ...permissions,
+    ...parseTimeout(
+      block,
+      scriptType,
+      permissions.permissions.length > 0 || tags("writes").length > 0,
+    ),
+    imports: probeImports(source),
     scriptType,
     slug,
     unknownTags,
@@ -258,6 +263,21 @@ export const isRestlet = (probe: Probe) =>
 
 /** A Suitelet probe runs in the Suitelet host, which the runner calls. */
 export const isSuitelet = (probe: Probe) => isSuiteletType(probe.scriptType);
+
+/** A RESTlet probe that declares a permission or writes (`@writes`; every writing probe holds the scratch permissions): it runs in the RESTlet host, reached through its set's Suitelet slot. */
+export const isRestletHosted = (probe: Probe) =>
+  isRestlet(probe) && (probe.permissions.length > 0 || probe.writes);
+
+/** A probe that goes through a Suitelet host slot: a Suitelet probe, or a RESTlet probe with a permission. */
+export const needsSlot = (probe: Probe) =>
+  isSuitelet(probe) || isRestletHosted(probe);
+
+/** The most seconds this probe's `@timeout` may declare. */
+export const ceilingOf = (probe: Probe) =>
+  timeoutCeiling(
+    probe.scriptType,
+    probe.permissions.length > 0 || probe.writes,
+  );
 
 /** A probe the runner can run, itself or through a script host. */
 export const isRunnable = (probe: Probe) =>
@@ -306,11 +326,24 @@ export const listDifferences = (paths: string[]) =>
     ? `${paths.slice(0, 10).join(", ")} and ${paths.length - 10} more`
     : paths.join(", ");
 
-/** What is wrong with a probe's tags, for the commands that refuse to run it. */
+/** Whether a permission level is above VIEW. */
+export const aboveView = (level: string) =>
+  permissionLevels.indexOf(level) > permissionLevels.indexOf("VIEW");
+
+/** Whether a probe declares no `@writes` and nothing above VIEW, so the module allowlist applies to it. */
+export const doesNotWrite = (probe: Pick<Probe, "permissions" | "writes">) =>
+  !probe.writes && probe.permissions.every((p) => !aboveView(p.level));
+
+/** A writing probe declares `@writes` or a level above VIEW: it only ever runs through its execution role's slot. */
+export const isWriting = (probe: Pick<Probe, "permissions" | "writes">) =>
+  !doesNotWrite(probe);
+
+/** What is wrong with a probe's tags and imports, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [
   ...probe.paramProblems,
   ...probe.permissionProblems,
   ...probe.timeoutProblems,
+  ...(doesNotWrite(probe) ? moduleProblems(probe.slug, probe.imports) : []),
   ...probe.unknownTags.map(
     (name) =>
       `@${name} is not a tag the package knows; register it with SUITESCRIPT_VERIFY_EXTRA_TAGS=${name}`,

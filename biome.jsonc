@@ -18,6 +18,7 @@
       "!skills-lock.json",
       "!CHANGELOG.md",
       "!dist",
+      "!test/fixtures/module-sources",
       "!package-lock.json"
     ]
   },

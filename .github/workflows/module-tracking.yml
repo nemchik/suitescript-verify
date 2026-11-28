@@ -1,0 +1,43 @@
+name: Module tracking
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  pull_request:
+    paths:
+      - scripts/track-modules.ts
+      - .github/workflows/module-tracking.yml
+      - src/modules.ts
+permissions:
+  contents: read
+jobs:
+  # Pull requests: the findings go to the job summary and nothing is opened.
+  report:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+      - run: node scripts/track-modules.ts
+  # Schedule: the only job that can write, and only issues.
+  open-issues:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+      - run: node scripts/track-modules.ts --open-issues
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -11,14 +11,32 @@ import type { Config } from "./config.ts";
 import { runnerOfObjectFile, scriptNames } from "./netsuite.ts";
 import {
   isRestlet,
+  isRestletHosted,
   isRunnable,
   isSuitelet,
+  isWriting,
   listProbes,
+  needsSlot,
   type Probe,
   type ProbePermission,
   read,
   tagProblems,
 } from "./probes.ts";
+import {
+  type ExecutionRole,
+  executionRoleNamePrefix,
+  permissionSet,
+  permissionSetKey,
+  planSlots,
+  runnerRolePermissions,
+  type Slot,
+} from "./roles.ts";
+import {
+  scratchFolderName,
+  scratchMarkerFile,
+  scratchMaxAgeSeconds,
+  scratchRecordId,
+} from "./scratch.ts";
 import { UsageError } from "./shared.ts";
 import { packageVersion } from "./version.ts";
 
@@ -28,44 +46,35 @@ const template = (name: string) =>
 
 const q = (value: string) => JSON.stringify(value);
 
-/** The minimum the runner needs to be called with a token. */
-const minimumPermissions: ProbePermission[] = [
-  { level: "FULL", permkey: "ADMI_LOGIN_OAUTH2" },
-  { level: "FULL", permkey: "ADMI_RESTWEBSERVICES" },
-];
+/** The probes that go through a Suitelet host slot, as `planSlots` takes them. */
+const slotProbes = (probes: Probe[]) =>
+  probes.filter(needsSlot).map((probe) => ({
+    permissions: probe.permissions,
+    restlet: isRestletHosted(probe),
+    slug: probe.slug,
+    writes: probe.writes,
+  }));
 
 /**
- * The runner role's permissions: the minimum, then each permission the probes
- * declare with `@permission`, once, sorted by key. A key the minimum already
- * holds keeps the minimum's level. A deploy writes these to the role object
- * and leaves any other permission on the role in place (confirmed in a
- * sandbox), so a hand-added one stays until it is removed by hand.
+ * A generated role object. `inactive` writes the role's `isinactive` field
+ * (an execution role is always written, active or retired); the runner's role
+ * leaves it out.
  */
-export function rolePermissions(
-  probes: Pick<Probe, "permissions">[],
-): ProbePermission[] {
-  const held = new Set(minimumPermissions.map(({ permkey }) => permkey));
-  const declared = new Map<string, string>();
-  for (const { level, permkey } of probes.flatMap((p) => p.permissions)) {
-    if (!held.has(permkey)) declared.set(permkey, level);
-  }
-  return [
-    ...minimumPermissions,
-    ...[...declared]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([permkey, level]) => ({ level, permkey })),
-  ];
-}
-
-/** The generated role object; its name comes from the runner id and fits the platform's 40 characters. */
 const roleObject = (
   roleId: string,
-  runnerId: string,
-  permissions: ProbePermission[],
+  name: string,
+  permissions: readonly ProbePermission[],
+  inactive?: boolean,
 ) =>
   template("sdf/role.xml")
     .replaceAll("%%ROLE_ID%%", roleId)
-    .replaceAll("%%NAME%%", `ssv runner role ${runnerId}`)
+    .replaceAll("%%NAME%%", name)
+    .replace(
+      "%%INACTIVE%%",
+      inactive === undefined
+        ? ""
+        : `  <isinactive>${inactive ? "T" : "F"}</isinactive>\n`,
+    )
     .replace(
       "%%PERMISSIONS%%",
       permissions
@@ -76,13 +85,33 @@ const roleObject = (
         .join(""),
     );
 
+/** The scratch record type's object: access by permission list, so only roles that hold its permission can use it. */
+const scratchRecordObject = (runnerId: string) =>
+  template("sdf/scratch-record.xml")
+    .replaceAll("%%RECORD_ID%%", scratchRecordId(runnerId))
+    .replaceAll("%%RUNNER_ID%%", runnerId);
+
+/** The scratch marker file's path as a script reads it, in the scratch folder inside the runner's folder. */
+const scratchMarkerPath = (runnerId: string) =>
+  `/SuiteScripts/${scriptNames(runnerId, "rl").folder}/${scratchFolderName}/${scratchMarkerFile}`;
+
+/** The runner's role object: its name comes from the runner id and fits the platform's 40 characters. */
+const runnerRoleObject = (roleId: string, runnerId: string) =>
+  roleObject(roleId, `ssv runner role ${runnerId}`, runnerRolePermissions);
+
+/** An execution role's object, active or retired. */
+const executionRoleObject = (role: ExecutionRole, inactive: boolean) =>
+  roleObject(role.id, role.name, role.permissions, inactive);
+
 /**
  * A script's source (the runner or a script host) with its dependency list
- * generated from the probe slugs.
+ * generated from the probe slugs. Each probe's entry is its module, its
+ * parameters and then the `extra` values the script needs about it.
  */
-function generateScript(
-  probes: Pick<Probe, "params" | "slug">[],
+function generateScript<T extends Pick<Probe, "params" | "slug">>(
+  probes: T[],
   source: string,
+  extra: (probe: T) => unknown[] = () => [],
 ): string {
   const slugs = probes.map((probe) => probe.slug);
   const names = slugs.map((_, i) => `probe${i}`);
@@ -99,19 +128,42 @@ function generateScript(
       slugs
         .map(
           (slug, i) =>
-            `[${q(slug)}, [${names[i]}, ${JSON.stringify(probes[i]?.params ?? [])}]],`,
+            `[${q(slug)}, [${names[i]}, ${JSON.stringify(probes[i]?.params ?? [])}${(probes[i] ? extra(probes[i]) : []).map((value) => `, ${JSON.stringify(value)}`).join("")}]],`,
         )
         .join(" "),
     );
 }
 
 /**
- * The runner's list of probes it hands to the Suitelet host: their names and
- * parameters only, never their code.
+ * The runner's list of probes it hands to the Suitelet host: their names,
+ * parameters and the deployment of their slot, never their code.
  */
-const hostedEntries = (hosted: Pick<Probe, "params" | "slug">[]) =>
+const hostedEntries = (hosted: Probe[], slotOf: Map<string, Slot>) =>
   hosted
-    .map((probe) => `[${q(probe.slug)}, ${JSON.stringify(probe.params)}],`)
+    .map(
+      (probe) =>
+        `[${q(probe.slug)}, ${JSON.stringify(probe.params)}, ${q(slotOf.get(probe.slug)?.deploymentId ?? "")}, ${isRestletHosted(probe)}],`,
+    )
+    .join(" ");
+
+/** The Suitelet host's list of the RESTlet probes it forwards: their parameters and permission set text, never their code. */
+const forwardedEntries = (forwarded: Probe[], runnerId: string) =>
+  forwarded
+    .map(
+      (probe) =>
+        `[${q(probe.slug)}, ${JSON.stringify(probe.params)}, ${q(permissionSetKey(permissionSet(probe, runnerId)))}],`,
+    )
+    .join(" ");
+
+/**
+ * The host's table of slots: the deployment id of each slot a probe uses
+ * (lower case, as a deployment id is compared) and the text of the permission
+ * set it runs as.
+ */
+const slotEntries = (slots: Slot[]) =>
+  slots
+    .filter((slot) => slot.used)
+    .map((slot) => `[${q(slot.deploymentId.toLowerCase())}, ${q(slot.key)}],`)
     .join(" ");
 
 /** The placeholder the build fingerprint replaces, left in place while it is computed. */
@@ -127,31 +179,79 @@ const BUILD = "%%BUILD%%";
 function generateScripts(
   probes: Probe[],
   { probesDir, runnerId }: Pick<Config, "probesDir" | "runnerId">,
-): { build: string; host: string; runner: string } {
-  const restlets = probes.filter(isRestlet);
+  { slotOf, slots }: ReturnType<typeof planSlots>,
+): {
+  build: string;
+  host: string;
+  restletHost: string;
+  runner: string;
+  scratch: string;
+} {
+  const restlets = probes.filter(
+    (probe) => isRestlet(probe) && !isRestletHosted(probe),
+  );
+  const forwarded = probes.filter(isRestletHosted);
   const suitelets = probes.filter(isSuitelet);
   const host = scriptNames(runnerId, "sl");
+  const restletNames = scriptNames(runnerId, "rh");
   const slugList = (list: Probe[]) =>
     list
       .map((probe) => probe.slug)
       .sort()
       .join(",");
   const runner = generateScript(restlets, template("runner.template.js"))
-    .replace("/*SUITELET_ENTRIES*/", hostedEntries(suitelets))
+    .replace(
+      "/*SUITELET_ENTRIES*/",
+      hostedEntries([...suitelets, ...forwarded], slotOf),
+    )
     .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)
-    .replace("%%SUITELET_DEPLOY_ID%%", host.deployId)
+    // The self-check slot: the one running as no permissions.
+    .replace("%%SUITELET_DEPLOY_ID%%", slots[0]?.deploymentId ?? "")
     .replace("%%PACKAGE_VERSION%%", packageVersion)
     .replace(
       "%%PERMISSIONS%%",
-      rolePermissions(probes)
-        .map(({ permkey }) => permkey)
-        .join(","),
+      runnerRolePermissions.map(({ permkey }) => permkey).join(","),
     )
     .replace("%%PROBES%%", slugList(probes));
-  const hostScript = generateScript(suitelets, template("suitelet.template.js"))
+  const scratch = template("scratch.template.js")
+    .replace("%%MAX_AGE_SECONDS%%", String(scratchMaxAgeSeconds))
+    .replace("%%SCRATCH_RECORD%%", scratchRecordId(runnerId))
+    .replace("%%SCRATCH_MARKER%%", scratchMarkerPath(runnerId));
+  const hostScript = generateScript(
+    suitelets,
+    template("suitelet.template.js"),
+    (probe) => {
+      const set = permissionSet(probe, runnerId);
+      return [
+        permissionSetKey(set),
+        set.map(({ permkey }) => permkey),
+        isWriting(probe),
+      ];
+    },
+  )
+    .replace("/*RESTLET_ENTRIES*/", forwardedEntries(forwarded, runnerId))
+    .replace("%%RESTLET_DEPLOY_ID%%", restletNames.deployId)
+    .replace("%%RESTLET_SCRIPT_ID%%", restletNames.scriptId)
+    .replace("/*SLOT_ENTRIES*/", slotEntries(slots))
     .replace("%%PACKAGE_VERSION%%", packageVersion)
     .replace("%%PROBES%%", slugList(suitelets));
-  const hash = createHash("sha256").update(runner).update(hostScript);
+  const restletHostScript = generateScript(
+    forwarded,
+    template("restlethost.template.js"),
+    (probe) => {
+      const set = permissionSet(probe, runnerId);
+      return [
+        permissionSetKey(set),
+        set.map(({ permkey }) => permkey),
+        isWriting(probe),
+      ];
+    },
+  ).replace("/*SLOT_ENTRIES*/", slotEntries(slots));
+  const hash = createHash("sha256")
+    .update(runner)
+    .update(hostScript)
+    .update(restletHostScript)
+    .update(scratch);
   for (const { slug } of probes) {
     hash.update(`\0${slug}\0${read(join(probesDir, `${slug}.js`))}`);
   }
@@ -159,7 +259,9 @@ function generateScripts(
   return {
     build,
     host: hostScript.replace(BUILD, build),
+    restletHost: restletHostScript,
     runner: runner.replace(BUILD, build),
+    scratch,
   };
 }
 
@@ -169,10 +271,12 @@ export function buildFingerprint({
   probesDir,
   runnerId,
 }: Pick<Config, "extraTags" | "probesDir" | "runnerId">): string {
-  return generateScripts(listProbes(probesDir, extraTags).filter(isRunnable), {
-    probesDir,
-    runnerId,
-  }).build;
+  const probes = listProbes(probesDir, extraTags).filter(isRunnable);
+  return generateScripts(
+    probes,
+    { probesDir, runnerId },
+    planSlots(runnerId, slotProbes(probes)),
+  ).build;
 }
 
 /** A script's SDF object: its ids, file, name and role, and whether it is deployed. */
@@ -192,15 +296,77 @@ const scriptObject = (
     .replaceAll("%%ROLE_ID%%", roleId);
 
 /**
+ * The Suitelet host's SDF object: one deployment per slot, each running as its
+ * slot's execution role (`runasrole`), for the runner's role only and never
+ * online. A slot no probe uses is switched off, like every slot in cleanup.
+ */
+const suiteletObject = (
+  names: ReturnType<typeof scriptNames>,
+  runnerRoleId: string,
+  slots: Slot[],
+  deployed: boolean,
+) =>
+  template("sdf/suitelet.xml")
+    .replaceAll("%%SCRIPT_ID%%", names.scriptId)
+    .replaceAll("%%FOLDER%%", names.folder)
+    .replaceAll("%%FILE%%", names.file)
+    .replaceAll("%%TITLE%%", names.title)
+    .replace("%%DEPLOYMENTS%%", () =>
+      slots
+        .map((slot) =>
+          template("sdf/suitelet-deployment.xml")
+            .replaceAll("%%DEPLOY_ID%%", slot.deploymentId)
+            .replaceAll("%%TITLE%%", `${names.title} s${slot.index}`)
+            .replace("%%DEPLOYED%%", deployed && slot.used ? "T" : "F")
+            .replaceAll("%%ROLE_ID%%", runnerRoleId)
+            .replaceAll("%%RUN_AS_ROLE%%", slot.role.id),
+        )
+        .join(""),
+    );
+
+/**
+ * The RESTlet host's SDF object. A RESTlet deployment cannot run as a role, so
+ * it runs as its caller: its audience is the execution roles of the slots that
+ * RESTlet probes go through (the runner's role only when none does, since an
+ * audience cannot be empty, and then the deployment is off).
+ */
+const restletHostObject = (
+  names: ReturnType<typeof scriptNames>,
+  runnerRoleId: string,
+  slots: Slot[],
+  deployed: boolean,
+) => {
+  const audience = [
+    ...new Set(slots.filter((slot) => slot.restlet).map((s) => s.role.id)),
+  ];
+  return template("sdf/restlet-host.xml")
+    .replaceAll("%%SCRIPT_ID%%", names.scriptId)
+    .replaceAll("%%DEPLOY_ID%%", names.deployId)
+    .replaceAll("%%FOLDER%%", names.folder)
+    .replaceAll("%%FILE%%", names.file)
+    .replaceAll("%%TITLE%%", names.title)
+    .replace("%%DEPLOYED%%", deployed && audience.length > 0 ? "T" : "F")
+    .replace(
+      "%%AUDIENCE%%",
+      (audience.length > 0 ? audience : [runnerRoleId])
+        .map((id) => `[${id}]`)
+        .join(","),
+    );
+};
+
+/**
  * Writes the generated runner, the probe copies and the SDF project files into
  * the SDF folder. RESTlet probes go in the runner and Suitelet probes in the
  * Suitelet host beside it, which is generated even with no Suitelet probes. With
- * `deployed: false` both deployments are switched off (cleanup). A runner
- * generated here under another id, or by 1.x (`_runner`) under any id, is
- * removed so it is not deployed again; `replacedRunners` names them, since each
- * may still be deployed in the sandbox. The runner's role is written too, the
- * same in deploy and cleanup (cleanup leaves it alone); a role object written
- * here under another id is removed so it is not deployed again.
+ * `deployed: false` the runner's and every slot's deployment are switched off
+ * (cleanup). A runner generated here under another id, or by 1.x (`_runner`)
+ * under any id, is removed so it is not deployed again; `replacedRunners` names
+ * them, since each may still be deployed in the sandbox. The runner's role is
+ * written too, the same in deploy and cleanup (cleanup leaves it alone); a role
+ * object written here under another id is removed so it is not deployed again.
+ * Each current execution role is written active. One left in the folder by an
+ * earlier deploy that no slot uses is written again inactive, since SDF can
+ * neither delete a role nor take permissions off it.
  */
 export function buildSdfProject(
   {
@@ -215,6 +381,7 @@ export function buildSdfProject(
   files: string[];
   replacedRunners: { id: string; legacy: boolean }[];
   slugs: string[];
+  restletHostSlugs: string[];
   suiteletSlugs: string[];
 } {
   const probes = listProbes(probesDir, extraTags).filter(isRunnable);
@@ -226,6 +393,10 @@ export function buildSdfProject(
         .join("\n")}`,
     );
   }
+  const plan = planSlots(runnerId, slotProbes(probes));
+  const current = new Map<string, ExecutionRole>(
+    plan.slots.map(({ role }) => [role.id, role]),
+  );
   const src = join(sdfDir, "src");
   const names = scriptNames(runnerId, "rl");
   const folder = join(src, "FileCabinet", "SuiteScripts", names.folder);
@@ -244,8 +415,28 @@ export function buildSdfProject(
       ) {
         replacedRunners.push(runner);
       }
-    } else if (/^customrole_.*\.xml$/.test(file) && file !== `${roleId}.xml`) {
+    } else if (
+      /^customrecord_.*\.xml$/.test(file) &&
+      file !== `${scratchRecordId(runnerId)}.xml` &&
+      read(join(src, "Objects", file)).includes("<recordname>ssv scratch ")
+    ) {
+      // The scratch record type of another runner id: not deployed again.
       rmSync(join(src, "Objects", file));
+    } else if (/^customrole_.*\.xml$/.test(file) && file !== `${roleId}.xml`) {
+      const path = join(src, "Objects", file);
+      const retired = read(path);
+      if (!retired.includes(`<name>${executionRoleNamePrefix}`)) {
+        rmSync(path);
+      } else if (!current.has(file.replace(/\.xml$/, ""))) {
+        // An execution role no slot uses: written again, inactive.
+        writeFileSync(
+          path,
+          retired.replace(
+            "<isinactive>F</isinactive>",
+            "<isinactive>T</isinactive>",
+          ),
+        );
+      }
     }
   }
   writeFileSync(join(sdfDir, "package.json"), template("sdf/package.json"));
@@ -256,7 +447,17 @@ export function buildSdfProject(
   writeFileSync(join(src, "manifest.xml"), template("sdf/manifest.xml"));
   writeFileSync(
     join(src, "Objects", `${roleId}.xml`),
-    roleObject(roleId, runnerId, rolePermissions(probes)),
+    runnerRoleObject(roleId, runnerId),
+  );
+  for (const role of current.values()) {
+    writeFileSync(
+      join(src, "Objects", `${role.id}.xml`),
+      executionRoleObject(role, false),
+    );
+  }
+  writeFileSync(
+    join(src, "Objects", `${scratchRecordId(runnerId)}.xml`),
+    scratchRecordObject(runnerId),
   );
   writeFileSync(
     join(src, "deploy.xml"),
@@ -269,12 +470,29 @@ export function buildSdfProject(
   const host = scriptNames(runnerId, "sl");
   writeFileSync(
     join(src, "Objects", `${host.scriptId}.xml`),
-    scriptObject("sdf/suitelet.xml", host, roleId, deployed),
+    suiteletObject(host, roleId, plan.slots, deployed),
   );
-  const scripts = generateScripts(probes, { probesDir, runnerId });
-  const files: string[] = [names.file, host.file];
+  const restletHost = scriptNames(runnerId, "rh");
+  writeFileSync(
+    join(src, "Objects", `${restletHost.scriptId}.xml`),
+    restletHostObject(restletHost, roleId, plan.slots, deployed),
+  );
+  const scripts = generateScripts(probes, { probesDir, runnerId }, plan);
+  const files: string[] = [
+    names.file,
+    host.file,
+    restletHost.file,
+    "scratch.js",
+  ];
   writeFileSync(join(folder, names.file), scripts.runner);
   writeFileSync(join(folder, host.file), scripts.host);
+  writeFileSync(join(folder, restletHost.file), scripts.restletHost);
+  writeFileSync(join(folder, "scratch.js"), scripts.scratch);
+  mkdirSync(join(folder, scratchFolderName), { recursive: true });
+  writeFileSync(
+    join(folder, scratchFolderName, scratchMarkerFile),
+    "suitescript-verify's scratch folder: writing probes keep what they create here, and the host deletes it. Do not keep anything here.",
+  );
   for (const slug of probes.map((probe) => probe.slug)) {
     writeFileSync(
       join(folder, "probes", `${slug}.js`),
@@ -285,7 +503,10 @@ export function buildSdfProject(
   return {
     files,
     replacedRunners,
-    slugs: probes.filter(isRestlet).map((probe) => probe.slug),
+    restletHostSlugs: probes.filter(isRestletHosted).map((probe) => probe.slug),
+    slugs: probes
+      .filter((probe) => isRestlet(probe) && !isRestletHosted(probe))
+      .map((probe) => probe.slug),
     suiteletSlugs: probes.filter(isSuitelet).map((probe) => probe.slug),
   };
 }

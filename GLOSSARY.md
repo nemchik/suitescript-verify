@@ -30,6 +30,9 @@ The role the runner's token logs in with. It holds what logging in and calling t
 A role the deploy writes for one set of permissions that probes declare. Every probe declaring exactly that set runs under it, and no token ever logs in with it.
 _Avoid_: Write role, probe role
 
+**Slot**:
+One of the Suitelet host's fixed deployments, which runs as the execution role of one set of permissions. The runner sends each probe to the slot of its set, and the host refuses a probe whose set is not the slot's.
+
 **Self-check**:
 The runner's reserved, read-only answer about its own deployment: whether the account is a sandbox, the role it runs as and what that role holds, the package version and probes it was deployed with, and whether its script hosts answer. It proves the whole chain without a probe.
 _Avoid_: Probe-zero, health check

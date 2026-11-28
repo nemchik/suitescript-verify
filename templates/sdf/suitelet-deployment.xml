@@ -1,0 +1,10 @@
+    <scriptdeployment scriptid="%%DEPLOY_ID%%">
+      <allroles>F</allroles>
+      <audslctrole>[%%ROLE_ID%%]</audslctrole>
+      <isdeployed>%%DEPLOYED%%</isdeployed>
+      <isonline>F</isonline>
+      <loglevel>DEBUG</loglevel>
+      <runasrole>[%%RUN_AS_ROLE%%]</runasrole>
+      <status>RELEASED</status>
+      <title>%%TITLE%%</title>
+    </scriptdeployment>

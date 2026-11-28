@@ -5,8 +5,14 @@
  * into this file's dependency list by `suitescript-verify deploy`.
  *
  * A Suitelet probe runs in the Suitelet host deployed beside the runner, which
- * the runner calls from inside the account with `N/https.requestSuitelet`. The
- * runner knows each Suitelet probe's name and parameters, never its code.
+ * the runner calls from inside the account with `N/https.requestSuitelet`,
+ * through the host's slot for the probe's set of permissions: each slot runs
+ * as an execution role holding exactly that set, and the runner's own role
+ * holds only what logging in needs. The runner knows each Suitelet probe's
+ * name, parameters and slot, never its code. A RESTlet probe that declares a
+ * permission cannot run in here either, since this role holds none: it goes
+ * the same way, to its set's slot, which forwards it to the RESTlet host with
+ * `requestRestlet`; the runner never calls the RESTlet host itself.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
  * status, headers (one lower-cased key per name: the platform's content
@@ -27,9 +33,20 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   const probes = new Map([
     /*PROBE_ENTRIES*/
   ]);
-  const suitelets = new Map([
-    /*SUITELET_ENTRIES*/
-  ]);
+  /**
+   * Each probe that runs behind a slot (a Suitelet probe, or a RESTlet probe
+   * that declares a permission): its parameters, the deployment id of its slot
+   * and whether it is a RESTlet probe, which the RESTlet host runs.
+   */
+  const suitelets = new Map(
+    [
+      /*SUITELET_ENTRIES*/
+    ].map(([slug, params, slot, restlet]) => [
+      slug,
+      [params, slot, restlet === true],
+    ]),
+  );
+  /** The host: its script, and the slot that answers the self-check (the one that runs as no permissions). Each probe has its own slot. */
   const host = {
     deploymentId: "%%SUITELET_DEPLOY_ID%%",
     scriptId: "%%SUITELET_SCRIPT_ID%%",
@@ -202,6 +219,34 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
 
   /** The USAGE header's name, lower-cased: the host's reading for an `own` answer. */
   const USAGE = "x-ssv-usage";
+  /** The PERMISSIONS header's name, lower-cased: the execution role's levels for an `own` answer. */
+  const PERMISSIONS = "x-ssv-permissions";
+
+  /** The execution role's levels from the host: a map of permission key to level name, or undefined (never trusted when it is anything else). */
+  const hostLevels = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const levels = {};
+    for (const key of Object.keys(value)) {
+      if (typeof value[key] !== "string") return undefined;
+      levels[key] = value[key];
+    }
+    return levels;
+  };
+
+  /** The levels from the host's X-SSV-Permissions header (an `own` answer), or undefined. */
+  const headerLevels = (headers) => {
+    const key = Object.keys(headers).find(
+      (name) => name.toLowerCase() === PERMISSIONS,
+    );
+    if (key === undefined) return undefined;
+    try {
+      return hostLevels(JSON.parse([].concat(headers[key])[0]));
+    } catch (_) {
+      return undefined;
+    }
+  };
 
   /** A host's reading `{ before, after }` as finite numbers (and `exceeded` only when exactly true), or undefined: a malformed one is dropped, never trusted. */
   const hostReading = (value) =>
@@ -229,8 +274,9 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     }
   };
 
-  /** Asks the Suitelet host to run a probe; a failed or unexpected answer is reported, never thrown. */
-  const viaSuitelet = (name, params) => {
+  /** Asks the Suitelet host to run a probe through its slot; a failed or unexpected answer is reported, never thrown. */
+  const viaSuitelet = (name, params, slot, restlet) => {
+    const scriptType = restlet ? "RESTlet" : "Suitelet";
     // Usage is information only: this script's units just before and just
     // after the call, so the runner's entry includes whatever
     // requestSuitelet spends. The host's own reading is folded in beside it
@@ -240,7 +286,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     let after;
     try {
       reply = https.requestSuitelet({
-        deploymentId: host.deploymentId,
+        deploymentId: slot,
         scriptId: host.scriptId,
         urlParams: { params: JSON.stringify(params), probe: name },
       });
@@ -253,13 +299,14 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       };
     }
     after = runtime.getCurrentScript().getRemainingUsage();
-    const usageOf = (reading) => ({
+    const usageOf = (reading, restletReading) => ({
       ...(reading ? { Suitelet: reading } : {}),
+      ...(restletReading ? { "RESTlet host": restletReading } : {}),
       RESTlet: usageEntry(before, after),
     });
-    const failWithUsage = (error, reading) => ({
+    const failWithUsage = (error, reading, restletReading) => ({
       error,
-      usage: usageOf(reading),
+      usage: usageOf(reading, restletReading),
     });
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
@@ -270,10 +317,12 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
     const marker =
       markerKey === undefined ? undefined : [].concat(headers[markerKey])[0];
     if (marker === "own") {
+      const levels = headerLevels(headers);
       return {
         probe: name,
+        ...(levels ? { permissions: levels } : {}),
         response: ownResponse(status, headers, text),
-        scriptType: "Suitelet",
+        scriptType,
         usage: usageOf(headerUsage(headers)),
         version: String(runtime.version),
       };
@@ -305,13 +354,19 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       return failWithUsage(
         `the Suitelet host refused: ${cut(answer.error)}`,
         hostReading(answer.usage),
+        hostReading(answer.restletUsage),
       );
     }
+    const levels = hostLevels(answer.permissions);
     return {
       probe: name,
+      ...(levels ? { permissions: levels } : {}),
       result: answer.result,
-      scriptType: "Suitelet",
-      usage: usageOf(hostReading(answer.usage)),
+      scriptType,
+      usage: usageOf(
+        hostReading(answer.usage),
+        hostReading(answer.restletUsage),
+      ),
       version: String(runtime.version),
     };
   };
@@ -319,7 +374,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   /**
    * What the deploy baked in: the package version, the build fingerprint (a
    * hash of the generated scripts and probes, shared with the host), every
-   * probe and each permission written to the role.
+   * probe and each permission written to the runner's role.
    */
   const deployment = {
     build: "%%BUILD%%",
@@ -490,9 +545,11 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
           known: [...probes.keys(), ...suitelets.keys()],
         };
       }
-      const checked = checkParams(body, entry ? entry[1] : suitelet);
+      const checked = checkParams(body, entry ? entry[1] : suitelet[0]);
       if (checked.error) return { error: checked.error };
-      if (!entry) return viaSuitelet(name, checked.params);
+      if (!entry) {
+        return viaSuitelet(name, checked.params, suitelet[1], suitelet[2]);
+      }
       // Usage is information only: the units this script has left just before
       // the probe's run() and just after it (once a returned Promise settles).
       // The read costs nothing.

@@ -626,7 +626,7 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
       // 1.x cleanup cannot build this folder while it holds the 2.0 objects.
       assert.match(
         result.stderr,
-        /first delete customrole_\*\.xml, customscript_\*_rl\.xml and customscript_\*_sl\.xml from [^\n]*Objects[^\n]*"Upgrading from 1\.x"/,
+        /first delete customrole_\*\.xml, customscript_\*_rl\.xml, customscript_\*_sl\.xml and customscript_\*_rh\.xml from [^\n]*Objects[^\n]*"Upgrading from 1\.x"/,
       );
       assert.equal(
         cli([command], project).stderr.includes("still be deployed"),

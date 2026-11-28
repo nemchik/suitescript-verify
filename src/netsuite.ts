@@ -1,9 +1,10 @@
 import { createPrivateKey, sign } from "node:crypto";
 
-/** The script types deployed for a runner id: the runner (`rl`) and the Suitelet host (`sl`). */
-export type ScriptType = "rl" | "sl";
+/** The script types deployed for a runner id: the runner (`rl`), the Suitelet host (`sl`) and the RESTlet host (`rh`: `rl` is the runner's). */
+export type ScriptType = "rl" | "sl" | "rh";
 
 const scriptFiles = {
+  rh: { file: "restlethost.js", title: "ssv restlet" },
   rl: { file: "restlet.js", title: "ssv runner" },
   sl: { file: "suitelet.js", title: "ssv suitelet" },
 } as const;
@@ -26,13 +27,13 @@ export const scriptNames = (runnerId: string, type: ScriptType) => ({
 /**
  * The runner a generated object file belongs to, from its name: its id, and
  * whether 1.x wrote it (the `_runner` suffix). The runner's own object (`_rl`)
- * and its Suitelet host's (`_sl`) both belong to it. Undefined for any other
+ * its Suitelet host's (`_sl`) and its RESTlet host's (`_rh`) all belong to it. Undefined for any other
  * file.
  */
 export function runnerOfObjectFile(
   file: string,
 ): { id: string; legacy: boolean } | undefined {
-  const match = /^customscript_([a-z0-9_]+)_(rl|sl|runner)\.xml$/.exec(file);
+  const match = /^customscript_([a-z0-9_]+)_(rl|sl|rh|runner)\.xml$/.exec(file);
   return match?.[1] === undefined
     ? undefined
     : { id: match[1], legacy: match[2] === "runner" };

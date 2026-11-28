@@ -62,7 +62,7 @@ define(["N/file", "N/record", "N/search"], (file, record, search) => {
           else record.delete({ id, type });
           progress++;
         } catch (e) {
-          errors.push(`${type} ${id}: ${e && e.name}: ${e && e.message}`);
+          errors.push(`${type} ${id}: ${e?.name}: ${e?.message}`);
         }
       }
       deleted += progress;
@@ -107,7 +107,7 @@ define(["N/file", "N/record", "N/search"], (file, record, search) => {
           records = remove(RECORD_TYPE, filters(prefix), () => false, errors);
           files = remove("file", inFolder(prefix), () => false, errors);
         } catch (e) {
-          errors.push(`${e && e.name}: ${e && e.message}`);
+          errors.push(`${e?.name}: ${e?.message}`);
         }
         finished =
           errors.length === 0
@@ -125,7 +125,7 @@ define(["N/file", "N/record", "N/search"], (file, record, search) => {
           records = remove(RECORD_TYPE, filters(BASE), spared, errors);
           files = remove("file", inFolder(BASE), spared, errors);
         } catch (e) {
-          errors.push(`${e && e.name}: ${e && e.message}`);
+          errors.push(`${e?.name}: ${e?.message}`);
         }
         return errors.length === 0
           ? { files, records }

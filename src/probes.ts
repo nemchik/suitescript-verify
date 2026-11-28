@@ -85,7 +85,10 @@ export const maxTimeoutSeconds = 300;
 /**
  * The most a Suitelet probe may declare: the runner reaches the Suitelet host
  * through `requestSuitelet`, which gave up with SSS_REQUEST_TIME_EXCEEDED at
- * about 45 seconds in a sandbox at NetSuite 2026.2.
+ * about 45 seconds in a sandbox at NetSuite 2026.2. A RESTlet probe that
+ * declares a permission runs behind the same call (runner, then slot, then
+ * RESTlet host), and `requestRestlet` gave up at about 46 seconds, so it has
+ * the same maximum.
  */
 export const suiteletMaxTimeoutSeconds = 45;
 
@@ -98,14 +101,18 @@ const isSuiteletType = (scriptType: string) =>
  * the probe off there. It takes the tag's text, since `parseTimeout` runs before
  * the probe exists.
  */
-export const timeoutCeiling = (scriptType: string) =>
-  isSuiteletType(scriptType) ? suiteletMaxTimeoutSeconds : maxTimeoutSeconds;
+export const timeoutCeiling = (scriptType: string, hasPermission = false) =>
+  isSuiteletType(scriptType) ||
+  (hasPermission && scriptType.toLowerCase() === "restlet")
+    ? suiteletMaxTimeoutSeconds
+    : maxTimeoutSeconds;
 
 function parseTimeout(
   block: string,
   scriptType: string,
+  hasPermission: boolean,
 ): Pick<Probe, "timeoutProblems" | "timeoutSeconds"> {
-  const ceiling = timeoutCeiling(scriptType);
+  const ceiling = timeoutCeiling(scriptType, hasPermission);
   const fallback = Math.min(defaultTimeoutSeconds, ceiling);
   const values = [
     ...block.matchAll(/^[ \t]*\*?[ \t]*@timeout\b[ \t]*(.*)$/gm),
@@ -123,7 +130,9 @@ function parseTimeout(
   if (!(seconds >= 1 && seconds <= ceiling)) {
     const why = isSuiteletType(scriptType)
       ? " for a Suitelet probe, since requestSuitelet gave up at about 45 seconds in a sandbox at 2026.2"
-      : "";
+      : ceiling === suiteletMaxTimeoutSeconds
+        ? " for a RESTlet probe that declares a permission, since it runs through requestSuitelet and requestRestlet, which gave up at about 45 and 46 seconds in a sandbox at 2026.2"
+        : "";
     return problem(
       `@timeout "${value}" must be a whole number of seconds from 1 to ${ceiling}${why}: @timeout <seconds>`,
     );
@@ -219,10 +228,15 @@ export function parseProbe(
       !registered.has(name.toLowerCase()),
   );
   const scriptType = tags("scriptType")[0] ?? "";
+  const permissions = parsePermissions(block);
   return {
     ...parseParams(block),
-    ...parsePermissions(block),
-    ...parseTimeout(block, scriptType),
+    ...permissions,
+    ...parseTimeout(
+      block,
+      scriptType,
+      permissions.permissions.length > 0 || tags("writes").length > 0,
+    ),
     imports: probeImports(source),
     scriptType,
     slug,
@@ -249,6 +263,21 @@ export const isRestlet = (probe: Probe) =>
 
 /** A Suitelet probe runs in the Suitelet host, which the runner calls. */
 export const isSuitelet = (probe: Probe) => isSuiteletType(probe.scriptType);
+
+/** A RESTlet probe that declares a permission or writes (`@writes`; every writing probe holds the scratch permissions): it runs in the RESTlet host, reached through its set's Suitelet slot. */
+export const isRestletHosted = (probe: Probe) =>
+  isRestlet(probe) && (probe.permissions.length > 0 || probe.writes);
+
+/** A probe that goes through a Suitelet host slot: a Suitelet probe, or a RESTlet probe with a permission. */
+export const needsSlot = (probe: Probe) =>
+  isSuitelet(probe) || isRestletHosted(probe);
+
+/** The most seconds this probe's `@timeout` may declare. */
+export const ceilingOf = (probe: Probe) =>
+  timeoutCeiling(
+    probe.scriptType,
+    probe.permissions.length > 0 || probe.writes,
+  );
 
 /** A probe the runner can run, itself or through a script host. */
 export const isRunnable = (probe: Probe) =>

@@ -1,0 +1,17 @@
+<restlet scriptid="%%SCRIPT_ID%%">
+  <description>Runs one version-controlled RESTlet probe that declares a permission, by name in a sandbox, when a suitescript-verify Suitelet host slot asks, under the execution role of that slot. Source: the project's verification folder, through suitescript-verify.</description>
+  <isinactive>F</isinactive>
+  <name>%%TITLE%%</name>
+  <notifyowner>F</notifyowner>
+  <scriptfile>[/SuiteScripts/%%FOLDER%%/%%FILE%%]</scriptfile>
+  <scriptdeployments>
+    <scriptdeployment scriptid="%%DEPLOY_ID%%">
+      <allroles>F</allroles>
+      <audslctrole>%%AUDIENCE%%</audslctrole>
+      <isdeployed>%%DEPLOYED%%</isdeployed>
+      <loglevel>DEBUG</loglevel>
+      <status>RELEASED</status>
+      <title>%%TITLE%%</title>
+    </scriptdeployment>
+  </scriptdeployments>
+</restlet>

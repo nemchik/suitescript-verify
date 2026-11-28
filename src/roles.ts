@@ -100,6 +100,8 @@ export interface Slot {
   /** The slugs of the probes that go through this slot. */
   probes: string[];
   role: ExecutionRole;
+  /** Whether a RESTlet probe goes through this slot to the RESTlet host: its role must be in that host's audience. */
+  restlet: boolean;
   /** Whether a probe uses the slot: an unused one is switched off. */
   used: boolean;
 }
@@ -113,16 +115,20 @@ export interface Slot {
  */
 export function planSlots(
   runnerId: string,
-  probes: Pick<Probe, "permissions" | "slug" | "writes">[],
+  probes: (Pick<Probe, "permissions" | "slug" | "writes"> & {
+    restlet?: boolean;
+  })[],
 ): { slots: Slot[]; slotOf: Map<string, Slot> } {
-  const sets = new Map<string, { probes: string[]; set: ProbePermission[] }>([
-    ["", { probes: [], set: [] }],
-  ]);
+  const sets = new Map<
+    string,
+    { probes: string[]; restlet: boolean; set: ProbePermission[] }
+  >([["", { probes: [], restlet: false, set: [] }]]);
   for (const probe of probes) {
     const set = permissionSet(probe, runnerId);
     const key = permissionSetKey(set);
-    const known = sets.get(key) ?? { probes: [], set };
+    const known = sets.get(key) ?? { probes: [], restlet: false, set };
     known.probes.push(probe.slug);
+    known.restlet ||= probe.restlet === true;
     sets.set(key, known);
   }
   const keys = [...sets.keys()].sort();
@@ -140,6 +146,7 @@ export function planSlots(
       index,
       key: key ?? "",
       probes: entry?.probes ?? [],
+      restlet: entry?.restlet ?? false,
       role: entry ? executionRole(runnerId, entry.set) : empty,
       used: entry !== undefined,
     };

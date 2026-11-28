@@ -10,7 +10,9 @@
  * as an execution role holding exactly that set, and the runner's own role
  * holds only what logging in needs. The runner knows each Suitelet probe's
  * name, parameters and slot, never its code. A RESTlet probe that declares a
- * permission or writes is refused, since nothing it runs in here could hold it.
+ * permission cannot run in here either, since this role holds none: it goes
+ * the same way, to its set's slot, which forwards it to the RESTlet host with
+ * `requestRestlet`; the runner never calls the RESTlet host itself.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
  * status, headers (one lower-cased key per name: the platform's content
@@ -31,11 +33,18 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   const probes = new Map([
     /*PROBE_ENTRIES*/
   ]);
-  /** Each Suitelet probe's parameters and the deployment id of its slot. */
+  /**
+   * Each probe that runs behind a slot (a Suitelet probe, or a RESTlet probe
+   * that declares a permission): its parameters, the deployment id of its slot
+   * and whether it is a RESTlet probe, which the RESTlet host runs.
+   */
   const suitelets = new Map(
     [
       /*SUITELET_ENTRIES*/
-    ].map(([slug, params, slot]) => [slug, [params, slot]]),
+    ].map(([slug, params, slot, restlet]) => [
+      slug,
+      [params, slot, restlet === true],
+    ]),
   );
   /** The host: its script, and the slot that answers the self-check (the one that runs as no permissions). Each probe has its own slot. */
   const host = {
@@ -266,7 +275,8 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
   };
 
   /** Asks the Suitelet host to run a probe through its slot; a failed or unexpected answer is reported, never thrown. */
-  const viaSuitelet = (name, params, slot) => {
+  const viaSuitelet = (name, params, slot, restlet) => {
+    const scriptType = restlet ? "RESTlet" : "Suitelet";
     // Usage is information only: this script's units just before and just
     // after the call, so the runner's entry includes whatever
     // requestSuitelet spends. The host's own reading is folded in beside it
@@ -289,13 +299,14 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       };
     }
     after = runtime.getCurrentScript().getRemainingUsage();
-    const usageOf = (reading) => ({
+    const usageOf = (reading, restletReading) => ({
       ...(reading ? { Suitelet: reading } : {}),
+      ...(restletReading ? { "RESTlet host": restletReading } : {}),
       RESTlet: usageEntry(before, after),
     });
-    const failWithUsage = (error, reading) => ({
+    const failWithUsage = (error, reading, restletReading) => ({
       error,
-      usage: usageOf(reading),
+      usage: usageOf(reading, restletReading),
     });
     const status = reply ? reply.code : undefined;
     const text = reply && reply.body !== undefined ? String(reply.body) : "";
@@ -311,7 +322,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
         probe: name,
         ...(levels ? { permissions: levels } : {}),
         response: ownResponse(status, headers, text),
-        scriptType: "Suitelet",
+        scriptType,
         usage: usageOf(headerUsage(headers)),
         version: String(runtime.version),
       };
@@ -343,6 +354,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       return failWithUsage(
         `the Suitelet host refused: ${cut(answer.error)}`,
         hostReading(answer.usage),
+        hostReading(answer.restletUsage),
       );
     }
     const levels = hostLevels(answer.permissions);
@@ -350,8 +362,11 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       probe: name,
       ...(levels ? { permissions: levels } : {}),
       result: answer.result,
-      scriptType: "Suitelet",
-      usage: usageOf(hostReading(answer.usage)),
+      scriptType,
+      usage: usageOf(
+        hostReading(answer.usage),
+        hostReading(answer.restletUsage),
+      ),
       version: String(runtime.version),
     };
   };
@@ -532,12 +547,8 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       }
       const checked = checkParams(body, entry ? entry[1] : suitelet[0]);
       if (checked.error) return { error: checked.error };
-      if (!entry) return viaSuitelet(name, checked.params, suitelet[1]);
-      if (entry[2]) {
-        return {
-          error:
-            "refused: a RESTlet probe that declares a permission or writes cannot run in the runner, whose role holds none; write it as a Suitelet probe",
-        };
+      if (!entry) {
+        return viaSuitelet(name, checked.params, suitelet[1], suitelet[2]);
       }
       // Usage is information only: the units this script has left just before
       // the probe's run() and just after it (once a returned Promise settles).

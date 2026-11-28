@@ -47,8 +47,9 @@
  * @NApiVersion 2.1
  * @NScriptType Suitelet
  */
-define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
-  runtime /*PROBE_NAMES*/,
+define(["N/runtime", "N/https" /*PROBE_PATHS*/, "./scratch"], (
+  runtime,
+  https /*PROBE_NAMES*/,
   scratch,
 ) => {
   /** Each probe: its module, its parameters, the text of its permission set, the keys it declares and whether it writes. */
@@ -59,6 +60,17 @@ define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
   const slots = new Map([
     /*SLOT_ENTRIES*/
   ]);
+  /** Each RESTlet probe that declares a permission: its parameters and the text of its permission set. Its code is in the RESTlet host, never here. */
+  const restletProbes = new Map(
+    [
+      /*RESTLET_ENTRIES*/
+    ].map(([slug, params, set]) => [slug, [params, set]]),
+  );
+  /** The RESTlet host these probes are forwarded to. */
+  const restletHost = {
+    deploymentId: "%%RESTLET_DEPLOY_ID%%",
+    scriptId: "%%RESTLET_SCRIPT_ID%%",
+  };
   const MARKER = "X-SSV-Mode";
   /**
    * The host's report of the probe's own headers, for an `own` answer: the
@@ -308,6 +320,84 @@ define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
     }
   };
 
+  const cut = (text) => String(text).slice(0, 500);
+  /** A reading `{ before, after }` as finite numbers (and `exceeded` only when exactly true), or undefined: a malformed one is dropped, never trusted. */
+  const reading = (value) =>
+    value &&
+    typeof value === "object" &&
+    Number.isFinite(value.before) &&
+    Number.isFinite(value.after)
+      ? {
+          after: value.after,
+          before: value.before,
+          ...(value.exceeded === true ? { exceeded: true } : {}),
+        }
+      : undefined;
+
+  /**
+   * Forwards a RESTlet probe to the RESTlet host with `requestRestlet`, naming
+   * this slot, and answers with what the host reported: this slot's units
+   * around the call as `usage`, and the RESTlet host's own as `restletUsage`.
+   * A failed or unexpected answer is reported, never thrown.
+   */
+  const forward = (response, name, params, slot) => {
+    const before = runtime.getCurrentScript().getRemainingUsage();
+    const used = (caught) =>
+      usageEntry(
+        before,
+        runtime.getCurrentScript().getRemainingUsage(),
+        caught,
+      );
+    let reply;
+    try {
+      reply = https.requestRestlet({
+        body: JSON.stringify({ params, probe: name, slot }),
+        deploymentId: restletHost.deploymentId,
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        scriptId: restletHost.scriptId,
+      });
+    } catch (e) {
+      const { message, name: kind } = e || {};
+      return answer(response, {
+        error: `the RESTlet host call failed: ${kind}: ${message}`,
+        usage: used(e),
+      });
+    }
+    const usage = used();
+    const status = reply ? reply.code : undefined;
+    const text = reply && reply.body !== undefined ? String(reply.body) : "";
+    let sent;
+    try {
+      sent = JSON.parse(text);
+    } catch (_) {
+      sent = undefined;
+    }
+    if (status !== 200 || !sent || typeof sent !== "object") {
+      return answer(response, {
+        error: `the RESTlet host answered HTTP ${status}: ${cut(text)}`,
+        usage,
+      });
+    }
+    const restletUsage = reading(sent.usage);
+    if (sent.error) {
+      return answer(response, {
+        error: `the RESTlet host refused: ${cut(sent.error)}`,
+        ...(restletUsage ? { restletUsage } : {}),
+        usage,
+      });
+    }
+    return answer(response, {
+      permissions: sent.permissions,
+      probe: name,
+      result: sent.result,
+      ...(restletUsage ? { restletUsage } : {}),
+      scriptType: "RESTlet",
+      usage,
+      version: String(runtime.version),
+    });
+  };
+
   /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
   const deployment = {
     build: "%%BUILD%%",
@@ -330,6 +420,20 @@ define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
       }
       const sent = request.parameters || {};
       const name = typeof sent.probe === "string" ? sent.probe : "";
+      const forwarded = restletProbes.get(name);
+      if (forwarded) {
+        const [declared, set] = forwarded;
+        const slot = currentSlot();
+        if (slots.get(slot) !== set) {
+          return answer(response, {
+            error:
+              "refused: the probe's set of permissions does not match the slot it was reached through",
+          });
+        }
+        const checked = checkParams(sent.params, declared);
+        if (checked.error) return answer(response, { error: checked.error });
+        return forward(response, name, checked.params, slot);
+      }
       const entry = probes.get(name);
       if (!entry) {
         return answer(response, {
@@ -354,7 +458,7 @@ define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
           swept = area.sweep();
         } catch (e) {
           return answer(response, {
-            error: `the scratch area is not available: ${e && e.name}: ${e && e.message}`,
+            error: `the scratch area is not available: ${e?.name}: ${e?.message}`,
           });
         }
       }

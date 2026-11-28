@@ -10,7 +10,9 @@ import {
 } from "./netsuite.ts";
 import {
   anchored,
+  ceilingOf,
   differingPaths,
+  isRestletHosted,
   isRunnable,
   isSlug,
   isSuitelet,
@@ -21,7 +23,6 @@ import {
   readExpect,
   sortKeys,
   tagProblems,
-  timeoutCeiling,
 } from "./probes.ts";
 import {
   ownResponse,
@@ -121,8 +122,7 @@ export const knownIds = (creds: Creds): KnownIds => ({
 export const graceSeconds = 15;
 
 /** Whether a probe's limit is the most its script type allows, where NetSuite answers itself. */
-const atCeiling = (probe: Probe) =>
-  probe.timeoutSeconds >= timeoutCeiling(probe.scriptType);
+const atCeiling = (probe: Probe) => probe.timeoutSeconds >= ceilingOf(probe);
 
 /** How long the CLI waits for a probe, in seconds: its limit, plus the grace at its ceiling. */
 export const secondsToWait = (probe: Probe) =>
@@ -132,8 +132,8 @@ export const secondsToWait = (probe: Probe) =>
 export const timedOutMessage = (probe: Probe) =>
   `${probe.slug} timed out after ${secondsToWait(probe)} seconds, so there is no result. It may still be running in NetSuite. ${
     atCeiling(probe)
-      ? `Its limit is the most a ${isSuitelet(probe) ? "Suitelet" : "RESTlet"} probe allows: split it, or narrow what it reads.`
-      : `To give it more time, declare @timeout <seconds> (up to ${timeoutCeiling(probe.scriptType)}) in its JSDoc block.`
+      ? `Its limit is the most a ${isSuitelet(probe) ? "Suitelet" : isRestletHosted(probe) ? "RESTlet probe that declares a permission" : "RESTlet"} probe allows: split it, or narrow what it reads.`
+      : `To give it more time, declare @timeout <seconds> (up to ${ceilingOf(probe)}) in its JSDoc block.`
   }`;
 
 /** Raised when the runner did not answer within the probe's time limit. */

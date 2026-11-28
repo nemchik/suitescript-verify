@@ -677,12 +677,26 @@ describe("SUITESCRIPT_VERIFY_RUNNER_ID", () => {
     const hostValues = [
       ...host.matchAll(/scriptid="([^"]+)"|<(?:name|title)>([^<]+)</g),
     ].map((m) => m[1] ?? m[2] ?? "");
-    assert.deepEqual(hostValues.sort(), [
-      "customdeploy_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
-      "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
-      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
-      "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
-    ]);
+    // The host's script, and each of its ten slots with the slot's own title.
+    assert.deepEqual(
+      hostValues
+        .filter(
+          (value) =>
+            !/_s\d$|suitelet aaaaaaaaaaaaaaaaaaaaaaaa s\d$/.test(value),
+        )
+        .sort(),
+      [
+        "customscript_aaaaaaaaaaaaaaaaaaaaaaaa_sl",
+        "ssv suitelet aaaaaaaaaaaaaaaaaaaaaaaa",
+      ],
+    );
+    assert.deepEqual(
+      hostValues.filter((value) => /customdeploy_.*_s\d$/.test(value)).sort(),
+      Array.from(
+        { length: 10 },
+        (_, i) => `customdeploy_aaaaaaaaaaaaaaaaaaaaaaaa_s${i}`,
+      ),
+    );
     for (const value of hostValues) assert.ok(value.length <= 40, value);
   });
 

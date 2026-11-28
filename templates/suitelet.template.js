@@ -1,8 +1,16 @@
 /**
  * The Suitelet host: runs one Suitelet probe by name when the suitescript-verify
- * runner asks. Its deployment is never available without login and is limited
- * to the runner's role, and the runner calls it from inside the account with
- * `N/https.requestSuitelet`.
+ * runner asks. Its deployments are never available without login and are
+ * limited to the runner's role, and the runner calls them from inside the
+ * account with `N/https.requestSuitelet`.
+ *
+ * Each deployment is a slot that runs as an execution role holding exactly one
+ * set of permissions, and a probe runs only through the slot of its own set:
+ * the host knows its slot by `runtime.getCurrentScript().deploymentId` (never
+ * by `getCurrentUser().roleId`, which names the caller's role inside a slot
+ * that runs as another) and refuses a probe whose set is not the slot's. It
+ * proves the role it runs under by reporting `getPermission` for each key the
+ * probe declares, in every answer.
  *
  * It never runs code from the request: the probes below are the only code it
  * can run, generated from the probes folder into this file's dependency list
@@ -34,8 +42,13 @@
  * @NScriptType Suitelet
  */
 define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
+  /** Each probe: its module, its parameters, the text of its permission set and the keys it declares. */
   const probes = new Map([
     /*PROBE_ENTRIES*/
+  ]);
+  /** Each slot a probe uses: its deployment id (lower case) and the text of the permission set it runs as. */
+  const slots = new Map([
+    /*SLOT_ENTRIES*/
   ]);
   const MARKER = "X-SSV-Mode";
   /**
@@ -47,6 +60,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
   const HEADERS = "X-SSV-Headers";
   /** The host's reading of its own remaining units, for an `own` answer: `{ before, after }` as JSON. */
   const USAGE = "X-SSV-Usage";
+  /** The execution role's levels for the probe's declared keys, for an `own` answer: `{ key: level }` as JSON. */
+  const PERMISSIONS = "X-SSV-Permissions";
   /** Every `X-SSV-` header is the host's; a probe cannot set one. */
   const RESERVED = /^x-ssv-/i;
 
@@ -110,7 +125,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       const name = headerName(options);
       if (RESERVED.test(name)) {
         const e = new Error(
-          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}) are the host's`,
+          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}, ${PERMISSIONS}) are the host's`,
         );
         e.name = "SSV_RESERVED_HEADER";
         throw e;
@@ -244,6 +259,44 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
     return `the result holds a Promise that was not awaited at ${path}`;
   };
 
+  /** The level the running role holds of a permission, by its name in `runtime.Permission`; a key it cannot read is reported, never thrown. */
+  const heldLevel = (user, name) => {
+    try {
+      const held = user.getPermission({ name });
+      const level = Object.keys(runtime.Permission).find(
+        (key) => runtime.Permission[key] === held,
+      );
+      return level === undefined ? String(held) : level;
+    } catch (e) {
+      const { message, name: kind } = e || {};
+      return `UNREADABLE: ${kind}: ${message}`;
+    }
+  };
+  /** The execution role's levels for the keys a probe declares: what the role really holds, read with getPermission. */
+  const levelsFor = (keys) => {
+    const levels = {};
+    let user;
+    try {
+      user = runtime.getCurrentUser();
+    } catch (_) {
+      user = undefined;
+    }
+    for (const key of keys) {
+      levels[key] = user
+        ? heldLevel(user, key)
+        : "UNREADABLE: the current user is not available";
+    }
+    return levels;
+  };
+  /** The deployment this request reached, lower case, as `runtime.getCurrentScript().deploymentId` names it. */
+  const currentSlot = () => {
+    try {
+      return String(runtime.getCurrentScript().deploymentId).toLowerCase();
+    } catch (_) {
+      return "";
+    }
+  };
+
   /** What the deploy baked in: the package version, the build fingerprint (shared with the runner) and this host's probes. */
   const deployment = {
     build: "%%BUILD%%",
@@ -273,10 +326,17 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
           known: [...probes.keys()],
         });
       }
-      const [probe, declared] = entry;
+      const [probe, declared, set, keys] = entry;
+      if (slots.get(currentSlot()) !== set) {
+        return answer(response, {
+          error:
+            "refused: the probe's set of permissions does not match the slot it was reached through",
+        });
+      }
       const checked = checkParams(sent.params, declared);
       if (checked.error) return answer(response, { error: checked.error });
       const recorded = recorder();
+      const levels = levelsFor(keys);
       const view = Object.freeze({
         method: request.method,
         parameters: Object.freeze({ ...checked.params }),
@@ -316,6 +376,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             response,
             lost === undefined
               ? {
+                  permissions: levels,
                   probe: name,
                   result: value,
                   scriptType: "Suitelet",
@@ -330,6 +391,10 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         if (recorded.calls.length === 0) return wrapped(result);
         response.setHeader({ name: MARKER, value: "own" });
         response.setHeader({ name: USAGE, value: JSON.stringify(usage) });
+        response.setHeader({
+          name: PERMISSIONS,
+          value: JSON.stringify(levels),
+        });
         try {
           // JSON with every non-ASCII character escaped, so it is a valid header value.
           response.setHeader({

@@ -1,6 +1,6 @@
 <role scriptid="%%ROLE_ID%%">
   <centertype>ACCOUNTCENTER</centertype>
-  <issalesrole>F</issalesrole>
+%%INACTIVE%%  <issalesrole>F</issalesrole>
   <issupportrole>F</issupportrole>
   <name>%%NAME%%</name>
   <restricttimeandexpenses>F</restricttimeandexpenses>

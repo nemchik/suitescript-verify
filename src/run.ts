@@ -306,6 +306,7 @@ export async function runProbe(
   }
   let body: {
     error?: string;
+    permissions?: Record<string, string>;
     response?: unknown;
     result?: unknown;
     usage?: unknown;
@@ -365,6 +366,7 @@ export async function runProbe(
         resultsDraft({
           date: new Date().toISOString().slice(0, 10),
           output: sortKeys(own ?? body.result),
+          permissions: body.permissions,
           probe,
           probeFile,
           resultsDir,

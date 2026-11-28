@@ -6,6 +6,8 @@ import type { Usage } from "./usage.ts";
 export function resultsDraft(options: {
   date: string;
   output: unknown;
+  /** The execution role's level for each permission key the probe declared, shown beside the output. */
+  permissions?: Record<string, string>;
   probe: Probe;
   probeFile: string;
   resultsDir: string;
@@ -42,6 +44,17 @@ ${options.scriptSource.trimEnd()}
 ${JSON.stringify(options.output, null, 2)}
 \`\`\`
 ${
+  options.permissions === undefined ||
+  Object.keys(options.permissions).length === 0
+    ? ""
+    : `
+Permissions (the level the probe's execution role held of each key it declared, read in the host):
+
+\`\`\`json
+${JSON.stringify(options.permissions, null, 2)}
+\`\`\`
+`
+}${
   options.usage === undefined
     ? ""
     : `

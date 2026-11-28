@@ -1,18 +1,9 @@
 <suitelet scriptid="%%SCRIPT_ID%%">
-  <description>Runs one version-controlled Suitelet probe by name in a sandbox, when the suitescript-verify runner asks. Never available without login. Source: the project's verification folder, through suitescript-verify.</description>
+  <description>Runs one version-controlled Suitelet probe by name in a sandbox, when the suitescript-verify runner asks, under the execution role of its deployment. Never available without login. Source: the project's verification folder, through suitescript-verify.</description>
   <isinactive>F</isinactive>
   <name>%%TITLE%%</name>
   <notifyowner>F</notifyowner>
   <scriptfile>[/SuiteScripts/%%FOLDER%%/%%FILE%%]</scriptfile>
   <scriptdeployments>
-    <scriptdeployment scriptid="%%DEPLOY_ID%%">
-      <allroles>F</allroles>
-      <audslctrole>[%%ROLE_ID%%]</audslctrole>
-      <isdeployed>%%DEPLOYED%%</isdeployed>
-      <isonline>F</isonline>
-      <loglevel>DEBUG</loglevel>
-      <status>RELEASED</status>
-      <title>%%TITLE%%</title>
-    </scriptdeployment>
-  </scriptdeployments>
+%%DEPLOYMENTS%%  </scriptdeployments>
 </suitelet>

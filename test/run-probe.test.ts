@@ -995,6 +995,28 @@ describe("run", () => {
       assert.match(results ?? "", /"ok": true/);
     });
 
+    it("prints the execution role's levels and carries them in the Results section", () => {
+      const p = project();
+      withProbe(p);
+      p.script(
+        ...ok({
+          permissions: { LIST_CUSTJOB: "NONE" },
+          result: { ok: true },
+          scriptType: "Suitelet",
+          version: "2026.2",
+        }),
+      );
+      const result = cli(p, ["run", "one", "--draft"]);
+      assert.equal(result.status, 0, result.all);
+      assert.match(result.stdout, /"permissions": \{\s+"LIST_CUSTJOB": "NONE"/);
+      const text = readFileSync(page(p), "utf8");
+      const results = text.split("## Results")[1]?.split("## Explanation")[0];
+      assert.match(
+        results ?? "",
+        /Permissions \(.*\):\s+```json\s+\{\s+"LIST_CUSTJOB": "NONE"/,
+      );
+    });
+
     it("refuses without a results folder, names the key and writes nothing", () => {
       const p = project();
       withProbe(p);
@@ -1273,13 +1295,15 @@ describe("@permission", () => {
   const rolePermissions = (p: Project) =>
     [
       ...(
-        calls(p).objects.find((xml) => xml.startsWith("<role")) ?? ""
+        calls(p).objects.find((xml) =>
+          xml.startsWith('<role scriptid="customrole_suitescript_verify">'),
+        ) ?? ""
       ).matchAll(
         /<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>/g,
       ),
     ].map((match) => `${match[1]} ${match[2]}`);
 
-  it("adds each permission declared by RESTlet and Suitelet probes to the role once, after the minimum", () => {
+  it("leaves the runner's role with only the token-login and REST web services permissions, whatever the probes declare", () => {
     const p = project();
     withTags(p, "one", [
       "@permission TRAN_SALESORD VIEW",
@@ -1296,9 +1320,6 @@ describe("@permission", () => {
     assert.deepEqual(rolePermissions(p), [
       "ADMI_LOGIN_OAUTH2 FULL",
       "ADMI_RESTWEBSERVICES FULL",
-      "LIST_CUSTJOB VIEW",
-      "LIST_EMPLOYEE VIEW",
-      "TRAN_SALESORD VIEW",
     ]);
   });
 
@@ -1340,6 +1361,224 @@ describe("@permission", () => {
   });
 });
 
+describe("execution roles", () => {
+  const suitelet = "@scriptType Suitelet";
+  const probe = (p: Project, slug: string, ...tags: string[]) =>
+    write(
+      p.dir,
+      `verification/probes/${slug}.js`,
+      probeSource(
+        [tags[0]?.startsWith("@scriptType") ? "" : suitelet, ...tags]
+          .filter(Boolean)
+          .map((l) => ` * ${l}`)
+          .join("\n"),
+      ),
+    );
+  const roles = (p: Project) =>
+    calls(p)
+      .objects.filter((xml) => xml.startsWith("<role "))
+      .map((xml) => ({
+        id: /<role scriptid="([^"]+)">/.exec(xml)?.[1] ?? "",
+        inactive: /<isinactive>T<\/isinactive>/.test(xml),
+        name: /<name>([^<]*)<\/name>/.exec(xml)?.[1] ?? "",
+        permissions: [
+          ...xml.matchAll(
+            /<permkey>([^<]+)<\/permkey>\s*<permlevel>([^<]+)<\/permlevel>/g,
+          ),
+        ].map((m) => `${m[1]} ${m[2]}`),
+        xml,
+      }));
+  const execution = (p: Project) =>
+    roles(p).filter((role) => role.name.startsWith("ssv exec "));
+  const hostXml = (p: Project) =>
+    calls(p).objects.find((o) => o.startsWith("<suitelet")) ?? "";
+  const slots = (p: Project) =>
+    [
+      ...hostXml(p).matchAll(
+        /<scriptdeployment scriptid="([^"]+)">([\s\S]*?)<\/scriptdeployment>/g,
+      ),
+    ].map((m) => {
+      const body = m[2] ?? "";
+      const field = (name: string) =>
+        new RegExp(`<${name}>([^<]*)</${name}>`).exec(body)?.[1];
+      const ref = (name: string) =>
+        new RegExp(`<${name}>\\[([^\\]]+)\\]</${name}>`).exec(body)?.[1];
+      return {
+        allroles: field("allroles"),
+        audience: ref("audslctrole"),
+        deployed: field("isdeployed"),
+        id: m[1] ?? "",
+        online: field("isonline"),
+        runAs: ref("runasrole"),
+        title: field("title") ?? "",
+      };
+    });
+  const view = (key: string) => `@permission ${key} VIEW`;
+
+  it("writes one active execution role per distinct permission set of Suitelet probes, shared by the probes that declare it, and one for no permissions", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    probe(p, "b", view("LIST_CUSTJOB"));
+    probe(p, "c", view("LIST_EMPLOYEE"), view("LIST_CUSTJOB"));
+    probe(p, "d");
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const found = execution(p);
+    assert.deepEqual(found.map((r) => r.permissions.join(", ")).sort(), [
+      "",
+      "LIST_CUSTJOB VIEW",
+      "LIST_CUSTJOB VIEW, LIST_EMPLOYEE VIEW",
+    ]);
+    for (const role of found) {
+      assert.match(role.id, /^customrole_suitescript_verify_[0-9a-f]{8}$/);
+      assert.ok(role.id.length <= 40 && role.name.length <= 40, role.id);
+      assert.equal(role.inactive, false);
+      assert.match(role.xml, /<isinactive>F<\/isinactive>/);
+    }
+    assert.equal(new Set(found.map((r) => r.id)).size, 3);
+    assert.equal(new Set(found.map((r) => r.name)).size, 3);
+  });
+
+  it("keeps ids and names within 40 characters for the longest runner id", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    const id = "a".repeat(24);
+    const result = cli(p, ["deploy"], { SUITESCRIPT_VERIFY_RUNNER_ID: id });
+    assert.equal(result.status, 0, result.all);
+    assert.equal(execution(p).length, 2);
+    for (const role of execution(p)) {
+      assert.ok(role.id.length <= 40, role.id);
+      assert.ok(role.name.length <= 40, role.name);
+    }
+    for (const slot of slots(p)) {
+      assert.ok(slot.id.length <= 40, slot.id);
+      assert.ok(slot.title.length <= 40, slot.title);
+    }
+  });
+
+  it("gives the same set the same role on every deploy, and another runner id another role", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const first = execution(p).map((r) => r.id);
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    assert.deepEqual(
+      execution(p).map((r) => r.id),
+      first,
+    );
+    const other = cli(p, ["deploy"], { SUITESCRIPT_VERIFY_RUNNER_ID: "other" });
+    assert.equal(other.status, 0, other.all);
+    const second = execution(p).filter((r) => !r.inactive);
+    assert.equal(second.length, 2);
+    assert.equal(
+      second.some((r) => first.includes(r.id)),
+      false,
+    );
+  });
+
+  it("writes the host's slots: runasrole set to the slot's role, the runner's role as audience, never online, unused slots off", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    probe(p, "b", view("LIST_EMPLOYEE"));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const found = slots(p);
+    assert.deepEqual(
+      found.map((s) => s.id),
+      Array.from(
+        { length: found.length },
+        (_, i) => `customdeploy_suitescript_verify_s${i}`,
+      ),
+    );
+    assert.equal(found.length, 10);
+    const byId = new Map(execution(p).map((r) => [r.id, r]));
+    for (const slot of found) {
+      assert.equal(slot.audience, "customrole_suitescript_verify");
+      assert.equal(slot.allroles, "F");
+      assert.equal(slot.online, "F");
+      assert.ok(slot.runAs && byId.has(slot.runAs), slot.id);
+    }
+    const used = found.filter((s) => s.deployed === "T");
+    assert.deepEqual(
+      used.map((s) => byId.get(s.runAs ?? "")?.permissions.join(",")),
+      ["", "LIST_CUSTJOB VIEW", "LIST_EMPLOYEE VIEW"],
+    );
+    for (const slot of found.filter((s) => s.deployed === "F")) {
+      assert.equal(slot.runAs, used[0]?.runAs);
+    }
+    assert.doesNotMatch(hostXml(p), /customdeploy_suitescript_verify_sl"/);
+  });
+
+  it("switches every slot off in cleanup", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    assert.equal(cli(p, ["cleanup"]).status, 0);
+    assert.deepEqual(new Set(slots(p).map((s) => s.deployed)), new Set(["F"]));
+  });
+
+  it("writes an earlier deploy's execution role that no slot uses as inactive, and a returning set active again", () => {
+    const p = project();
+    probe(p, "a", view("LIST_CUSTJOB"));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const old = execution(p).find((r) => r.permissions.length === 1);
+    assert.ok(old);
+    probe(p, "a", view("LIST_EMPLOYEE"));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const now = execution(p);
+    assert.equal(now.find((r) => r.id === old.id)?.inactive, true);
+    assert.deepEqual(
+      now
+        .filter((r) => !r.inactive)
+        .map((r) => r.permissions.join(","))
+        .sort(),
+      ["", "LIST_EMPLOYEE VIEW"],
+    );
+    assert.equal(
+      slots(p).some((s) => s.runAs === old.id),
+      false,
+      "nothing refers to the retired role",
+    );
+    probe(p, "a", view("LIST_CUSTJOB"));
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    assert.equal(execution(p).find((r) => r.id === old.id)?.inactive, false);
+  });
+
+  it("removes a runner role object left under another role id, and keeps no execution role for it", () => {
+    const p = project();
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const result = cli(p, ["deploy"], {
+      SUITESCRIPT_VERIFY_ROLE_ID: "customrole_other_one",
+    });
+    assert.equal(result.status, 0, result.all);
+    assert.deepEqual(
+      roles(p)
+        .filter((r) => !r.name.startsWith("ssv exec "))
+        .map((r) => r.id),
+      ["customrole_other_one"],
+    );
+  });
+
+  it("refuses a deploy whose probes declare more permission sets than the host has slots", () => {
+    const p = project();
+    [
+      "LIST_CUSTJOB",
+      "LIST_EMPLOYEE",
+      "LIST_CONTACT",
+      "LIST_ITEM",
+      "LIST_VENDOR",
+      "LIST_PARTNER",
+      "LIST_CLASS",
+      "LIST_LOCATION",
+      "LIST_DEPARTMENT",
+      "LIST_CURRENCY",
+    ].forEach((key, i) => {
+      probe(p, `p${i}`, view(key));
+    });
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /11 different sets of permissions/);
+    assert.equal(existsSync(join(p.dir, "calls.json")), false);
+  });
+});
+
 /** Loads a generated script with a stubbed `define`, handing its factory the given modules. */
 function load<T>(source: string, ...modules: unknown[]): T {
   let factory: ((...m: unknown[]) => T) | undefined;
@@ -1350,11 +1589,22 @@ function load<T>(source: string, ...modules: unknown[]): T {
   return factory(...modules);
 }
 
+/** The deployment id of the host's slot `index`, as `getCurrentScript().deploymentId` names it. */
+const slot = (index: number) => `customdeploy_suitescript_verify_s${index}`;
+
 const sandbox = {
   EnvType: { PRODUCTION: "PRODUCTION", SANDBOX: "SANDBOX" },
   envType: "SANDBOX",
-  /** Reads a steady 5,000 units, the RESTlet limit: nothing is spent. */
-  getCurrentScript: () => ({ getRemainingUsage: () => 5000 }),
+  /** Reads a steady 5,000 units, the RESTlet limit: nothing is spent. Reached through slot 0, which runs as no permissions. */
+  getCurrentScript: () => ({
+    deploymentId: slot(0),
+    getRemainingUsage: () => 5000,
+  }),
+  getCurrentUser: () => ({
+    getPermission: () => 0,
+    roleId: "customrole_suitescript_verify",
+  }),
+  Permission: { CREATE: 2, EDIT: 3, FULL: 4, NONE: 0, VIEW: 1 },
   version: "2026.2",
 };
 
@@ -1719,9 +1969,9 @@ describe("Suitelet probes", () => {
       host,
       /<suitelet scriptid="customscript_suitescript_verify_sl">/,
     );
-    assert.match(host, /scriptid="customdeploy_suitescript_verify_sl"/);
+    assert.match(host, /scriptid="customdeploy_suitescript_verify_s0"/);
     assert.match(host, /<name>ssv suitelet suitescript_verify<\/name>/);
-    assert.match(host, /<title>ssv suitelet suitescript_verify<\/title>/);
+    assert.match(host, /<title>ssv suitelet suitescript_verify s0<\/title>/);
     assert.match(
       host,
       /<description>[^<]*suitescript-verify[^<]*<\/description>/,
@@ -1736,12 +1986,13 @@ describe("Suitelet probes", () => {
     assert.match(calls(p).suitelet.join(""), /new Map\(\[\s*\]\)/);
   });
 
-  it("switches the host off in cleanup, with the runner", () => {
+  it("switches the host's slots off in cleanup, with the runner", () => {
     const p = project();
     withProbe(p, suitelet, "page");
     assert.equal(cli(p, ["cleanup"]).status, 0);
     const objects = calls(p).objects.join("");
-    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 2);
+    // The runner and the host's ten slots.
+    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 11);
     assert.doesNotMatch(objects, /<isdeployed>T/);
   });
 
@@ -2053,7 +2304,7 @@ describe("Suitelet probes", () => {
       });
       assert.deepEqual(seen, [
         {
-          deploymentId: "customdeploy_suitescript_verify_sl",
+          deploymentId: "customdeploy_suitescript_verify_s0",
           scriptId: "customscript_suitescript_verify_sl",
           urlParams: { params: JSON.stringify({ id: "42" }), probe: "page" },
         },
@@ -2108,6 +2359,126 @@ describe("Suitelet probes", () => {
         "the Suitelet host's answer was not JSON: <html>login</html>",
         "the Suitelet host refused: unknown probe",
       ]);
+    });
+
+    describe("its slots", () => {
+      const wrapped = { "x-ssv-mode": "wrapped" };
+      const deployAll = (p: Project) => {
+        withProbe(p, restlet, "one");
+        withProbe(p, `${restlet}\n * @permission LIST_CUSTJOB VIEW`, "gated");
+        withProbe(p, suitelet, "plain");
+        withProbe(p, `${suitelet}\n * @permission LIST_CUSTJOB VIEW`, "seen");
+        withProbe(
+          p,
+          `${suitelet}\n * @permission LIST_CUSTJOB VIEW\n * @permission LIST_EMPLOYEE VIEW`,
+          "both",
+        );
+        assert.equal(cli(p, ["deploy"]).status, 0);
+        return calls(p).runner.join("");
+      };
+
+      it("sends each Suitelet probe to the slot of its permission set", () => {
+        const p = project();
+        const seen: { deploymentId: string; probe: string }[] = [];
+        const runner = load<Runner>(
+          deployAll(p),
+          sandbox,
+          {
+            requestSuitelet: (options: {
+              deploymentId: string;
+              urlParams: { probe: string };
+            }) => {
+              seen.push({
+                deploymentId: options.deploymentId,
+                probe: options.urlParams.probe,
+              });
+              return {
+                body: JSON.stringify({ result: 1 }),
+                code: 200,
+                headers: wrapped,
+              };
+            },
+          },
+          { run: () => "restlet" },
+        );
+        for (const probe of ["plain", "seen", "both"]) runner.post({ probe });
+        // Sets sort by their text: none, then LIST_CUSTJOB, then LIST_CUSTJOB with LIST_EMPLOYEE.
+        assert.deepEqual(seen, [
+          { deploymentId: slot(0), probe: "plain" },
+          { deploymentId: slot(1), probe: "seen" },
+          { deploymentId: slot(2), probe: "both" },
+        ]);
+      });
+
+      it("reports the role's levels the host answered with, for a wrapped answer and an own one", () => {
+        const p = project();
+        const levels = { LIST_CUSTJOB: "VIEW", LIST_EMPLOYEE: "NONE" };
+        const answers = [
+          {
+            body: JSON.stringify({ permissions: levels, result: 1 }),
+            code: 200,
+            headers: wrapped,
+          },
+          {
+            body: "hi",
+            code: 200,
+            headers: {
+              "content-type": "text/plain",
+              "x-ssv-mode": "own",
+              "x-ssv-permissions": JSON.stringify(levels),
+            },
+          },
+        ];
+        const runner = load<Runner>(
+          deployAll(p),
+          sandbox,
+          { requestSuitelet: () => answers.shift() },
+          { run: () => "restlet" },
+        );
+        for (let i = 0; i < 2; i++) {
+          const answer = runner.post({ probe: "both" }) as {
+            permissions?: unknown;
+          };
+          assert.deepEqual(answer.permissions, levels);
+        }
+      });
+
+      it("drops a levels report that is not a map of strings, rather than trusting it", () => {
+        const p = project();
+        const runner = load<Runner>(
+          deployAll(p),
+          sandbox,
+          {
+            requestSuitelet: () => ({
+              body: JSON.stringify({ permissions: { A: 1 }, result: 1 }),
+              code: 200,
+              headers: wrapped,
+            }),
+          },
+          { run: () => "restlet" },
+        );
+        assert.equal(
+          "permissions" in (runner.post({ probe: "both" }) as object),
+          false,
+        );
+      });
+
+      it("refuses a RESTlet probe that declares a permission, which the runner's role cannot give it, without running it", () => {
+        const p = project();
+        let ran = 0;
+        const runner = load<Runner>(
+          deployAll(p),
+          sandbox,
+          { requestSuitelet: () => ({ body: "{}", code: 200 }) },
+          { run: () => ran++ },
+        );
+        assert.match(
+          runner.post({ probe: "gated" }).error ?? "",
+          /RESTlet probe that declares a permission/,
+        );
+        assert.equal(ran, 0);
+        assert.equal(runner.post({ probe: "one" }).scriptType, "RESTlet");
+      });
     });
 
     describe("usage", () => {
@@ -2659,6 +3030,7 @@ describe("Suitelet probes", () => {
       })(sandbox);
       const params = JSON.stringify({ id: "7" });
       assert.deepEqual(call(host, { params, probe: "page" }), {
+        permissions: {},
         probe: "page",
         result: { got: { id: "7" } },
         scriptType: "Suitelet",
@@ -2697,6 +3069,160 @@ describe("Suitelet probes", () => {
       assert.equal(ran, 0);
     });
 
+    describe("its execution role", () => {
+      const two = [
+        "@permission LIST_CUSTJOB VIEW",
+        "@permission LIST_EMPLOYEE VIEW",
+      ];
+      /** Deploys a probe with no permission and one with two, and loads the host as slot `index` runs it, holding `held`. */
+      const hostAs = (
+        p: Project,
+        index: number,
+        held: Record<string, number> = {},
+        run: (params: unknown, context: Context) => unknown = () => "ok",
+      ) => {
+        write(
+          p.dir,
+          "verification/probes/plain.js",
+          probeSource(` * ${suitelet}`),
+        );
+        write(
+          p.dir,
+          "verification/probes/two.js",
+          probeSource([suitelet, ...two].map((l) => ` * ${l}`).join("\n")),
+        );
+        assert.equal(cli(p, ["deploy"]).status, 0);
+        return load<Host>(
+          calls(p).suitelet.join(""),
+          {
+            ...sandbox,
+            getCurrentScript: () => ({
+              deploymentId: slot(index),
+              getRemainingUsage: () => 5000,
+            }),
+            getCurrentUser: () => ({
+              getPermission: ({ name }: { name: string }) => held[name] ?? 0,
+              roleId: "customrole_suitescript_verify",
+            }),
+          },
+          { run },
+          { run },
+        );
+      };
+      // Sets sort by their text, the empty set first: slot 0 has none, slot 1 has two.
+
+      it("reports the role's level for each key the probe declares, read with getPermission", () => {
+        const p = project();
+        const host = hostAs(p, 1, { LIST_CUSTJOB: 1 });
+        const answer = call(host, { probe: "two" });
+        assert.deepEqual(answer.permissions, {
+          LIST_CUSTJOB: "VIEW",
+          LIST_EMPLOYEE: "NONE",
+        });
+        assert.equal(answer.result, "ok");
+      });
+
+      it("reports no levels for a probe that declares nothing", () => {
+        const p = project();
+        const answer = call(hostAs(p, 0), { probe: "plain" });
+        assert.deepEqual(answer.permissions, {});
+      });
+
+      it("reports a level it cannot read as it found it, never throwing", () => {
+        const p = project();
+        write(
+          p.dir,
+          "verification/probes/two.js",
+          probeSource(` * ${suitelet}\n * ${two[0]}`),
+        );
+        assert.equal(cli(p, ["deploy"]).status, 0);
+        const host = load<Host>(
+          calls(p).suitelet.join(""),
+          {
+            ...sandbox,
+            getCurrentScript: () => ({
+              deploymentId: slot(1),
+              getRemainingUsage: () => 5000,
+            }),
+            getCurrentUser: () => ({
+              getPermission: () => {
+                throw Object.assign(new Error("bad key"), { name: "SSS_X" });
+              },
+            }),
+          },
+          { run: () => "ok" },
+        );
+        assert.deepEqual(call(host, { probe: "two" }).permissions, {
+          LIST_CUSTJOB: "UNREADABLE: SSS_X: bad key",
+        });
+      });
+
+      it("refuses a probe whose set does not match the slot it was reached through, without running it", () => {
+        const p = project();
+        let ran = 0;
+        const asSlot = (index: number) => hostAs(p, index, {}, () => ran++);
+        for (const [index, name] of [
+          [0, "two"],
+          [1, "plain"],
+          [2, "plain"],
+          [9, "two"],
+        ] as const) {
+          assert.match(
+            call(asSlot(index), { probe: name }).error,
+            /does not match the slot/,
+            `${name} through slot ${index}`,
+          );
+        }
+        assert.equal(ran, 0);
+        assert.equal(call(asSlot(0), { probe: "plain" }).result, 0);
+        assert.equal(call(asSlot(1), { probe: "two" }).result, 1);
+      });
+
+      it("takes its slot from the deployment id, never from the role id", () => {
+        const p = project();
+        const host = hostAs(p, 0);
+        const lying = load<Host>(
+          calls(p).suitelet.join(""),
+          {
+            ...sandbox,
+            getCurrentScript: () => ({
+              deploymentId: slot(1).toUpperCase(),
+              getRemainingUsage: () => 5000,
+            }),
+            getCurrentUser: () => ({
+              getPermission: () => 0,
+              roleId: "customrole_suitescript_verify_s0",
+            }),
+          },
+          { run: () => "ok" },
+          { run: () => "ok" },
+        );
+        assert.equal(call(lying, { probe: "two" }).result, "ok");
+        assert.match(call(host, { probe: "two" }).error, /does not match/);
+      });
+
+      it("sends the levels of an own response in X-SSV-Permissions", () => {
+        const p = project();
+        const host = hostAs(
+          p,
+          1,
+          { LIST_EMPLOYEE: 1 },
+          (_params, { response }) => {
+            response.write({ output: "hi" });
+          },
+        );
+        const { marker, seen } = serve(host, { probe: "two" });
+        assert.deepEqual(marker, ["own"]);
+        const header = seen
+          .map(([, arg]) => arg as { name?: string; value?: string })
+          .find(({ name }) => name === "X-SSV-Permissions")?.value;
+        assert.deepEqual(JSON.parse(header ?? ""), {
+          LIST_CUSTJOB: "NONE",
+          LIST_EMPLOYEE: "VIEW",
+        });
+      });
+    });
+
     const params = JSON.stringify({ id: "7" });
 
     const usageHeader = JSON.stringify({ after: 5000, before: 5000 });
@@ -2716,6 +3242,7 @@ describe("Suitelet probes", () => {
       assert.deepEqual(seen, [
         ["setHeader", { name: "X-SSV-Mode", value: "own" }],
         ["setHeader", { name: "X-SSV-Usage", value: usageHeader }],
+        ["setHeader", { name: "X-SSV-Permissions", value: "{}" }],
         [
           "setHeader",
           {
@@ -2787,6 +3314,7 @@ describe("Suitelet probes", () => {
         await run.done;
         assert.deepEqual(run.marker, ["wrapped"]);
         assert.deepEqual(written(run.seen), {
+          permissions: {},
           probe: "page",
           result: { found: [1] },
           scriptType: "Suitelet",
@@ -2956,6 +3484,7 @@ describe("Suitelet probes", () => {
           .map(([, o]) => (o as { output: string }).output);
         const answer = writes.at(-1) ?? "";
         assert.deepEqual(JSON.parse(answer), {
+          permissions: {},
           probe: "page",
           result: "THROWS: SSS_INVALID_PAGE: cannot write a page now",
           scriptType: "Suitelet",
@@ -2988,6 +3517,7 @@ describe("Suitelet probes", () => {
         " x-ssv-MODE",
         "X-SSV-Headers",
         "x-ssv-usage",
+        "X-SSV-Permissions",
         "x-ssv-other",
       ]) {
         const p = project();
@@ -3012,7 +3542,7 @@ describe("Suitelet probes", () => {
         swallow = true;
         const { marker, seen } = serve(host, { params, probe: "page" });
         assert.deepEqual(marker, ["own"]);
-        assert.deepEqual(seen.slice(2), [
+        assert.deepEqual(seen.slice(3), [
           ["setHeader", { name: "X-SSV-Headers", value: "[]" }],
           ["write", { output: '{"result":"forged"}' }],
         ]);
@@ -3027,6 +3557,7 @@ describe("Suitelet probes", () => {
         return {
           ...sandbox,
           getCurrentScript: () => ({
+            deploymentId: slot(0),
             getRemainingUsage: () =>
               left.length > 1 ? (left.shift() as number) : (left[0] as number),
           }),
@@ -3079,6 +3610,7 @@ describe("Suitelet probes", () => {
         })({
           ...sandbox,
           getCurrentScript: () => ({
+            deploymentId: slot(0),
             getRemainingUsage: () => (spent ? 900 : 1000),
           }),
         });
@@ -3358,7 +3890,6 @@ describe("the self-check", () => {
           permissions: {
             ADMI_LOGIN_OAUTH2: "FULL",
             ADMI_RESTWEBSERVICES: "FULL",
-            LIST_EMPLOYEE: "VIEW",
           },
           probes: ["one", "page"],
           role: "customrole_suitescript_verify",
@@ -3368,7 +3899,7 @@ describe("the self-check", () => {
       });
       assert.deepEqual(seen, [
         {
-          deploymentId: "customdeploy_suitescript_verify_sl",
+          deploymentId: "customdeploy_suitescript_verify_s0",
           scriptId: "customscript_suitescript_verify_sl",
           urlParams: { selfCheck: "1" },
         },
@@ -3409,12 +3940,12 @@ describe("the self-check", () => {
 
     it("reports a permission the role lacks, or cannot read, as it found it", () => {
       const p = project();
-      const runtime = runtimeFor({ ADMI_LOGIN_OAUTH2: 4 });
+      const runtime = runtimeFor({});
       const user = runtime.getCurrentUser();
       runtime.getCurrentUser = () => ({
         ...user,
         getPermission: ({ name }: { name: string }) => {
-          if (name === "LIST_EMPLOYEE") {
+          if (name === "ADMI_RESTWEBSERVICES") {
             throw Object.assign(new Error("bad key"), { name: "SSS_X" });
           }
           return user.getPermission({ name });
@@ -3429,9 +3960,8 @@ describe("the self-check", () => {
         permissions: unknown;
       };
       assert.deepEqual(answer.permissions, {
-        ADMI_LOGIN_OAUTH2: "FULL",
-        ADMI_RESTWEBSERVICES: "NONE",
-        LIST_EMPLOYEE: "UNREADABLE: SSS_X: bad key",
+        ADMI_LOGIN_OAUTH2: "NONE",
+        ADMI_RESTWEBSERVICES: "UNREADABLE: SSS_X: bad key",
       });
     });
 
@@ -3529,7 +4059,6 @@ describe("doctor calls the self-check", () => {
     permissions: {
       ADMI_LOGIN_OAUTH2: "FULL",
       ADMI_RESTWEBSERVICES: "FULL",
-      LIST_EMPLOYEE: "VIEW",
     },
     probes: ["one", "page"],
     role: "customrole_suitescript_verify",
@@ -3648,13 +4177,31 @@ describe("doctor calls the self-check", () => {
   it("reports drift when the role lacks a permission the deploy wrote", () => {
     const p = deployedProject();
     const answer = healthy(p);
-    answer.permissions.LIST_EMPLOYEE = "NONE";
+    answer.permissions.ADMI_RESTWEBSERVICES = "NONE";
     p.script(...ok({ selfCheck: answer }));
     const out = doctor(p);
     assert.match(lineOf(out), /^FAIL /);
     assert.match(out, /Maintainer's own step: Drift/);
-    assert.match(out, /LIST_EMPLOYEE/);
+    assert.match(out, /ADMI_RESTWEBSERVICES \(wants FULL, holds NONE\)/);
     assert.doesNotMatch(out, /ADMI_LOGIN_OAUTH2 \(/);
+  });
+
+  it("expects only the login and REST web services permissions on the runner's role", () => {
+    const p = deployedProject();
+    const answer = healthy(p);
+    p.script(
+      ...ok({
+        selfCheck: {
+          ...answer,
+          permissions: { ...answer.permissions, LIST_EMPLOYEE: "VIEW" },
+        },
+      }),
+    );
+    const out = doctor(p);
+    assert.match(lineOf(out), /^FAIL /);
+    assert.match(out, /Redeploy: [^\n]*role permissions/);
+    p.script(...ok({ selfCheck: answer }));
+    assert.match(lineOf(doctor(p)), /^ok /);
   });
 
   it("fails when the runner runs as another role or outside a sandbox", () => {

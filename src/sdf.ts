@@ -13,6 +13,7 @@ import {
   isRestlet,
   isRunnable,
   isSuitelet,
+  isWriting,
   listProbes,
   type Probe,
   type ProbePermission,
@@ -158,8 +159,8 @@ function generateScripts(
   const runner = generateScript(
     restlets,
     template("runner.template.js"),
-    // Whether the probe declares a permission, which the runner's role cannot give it.
-    (probe) => [probe.permissions.length > 0],
+    // Whether the probe declares a permission or writes, which the runner's role cannot give it.
+    (probe) => [probe.permissions.length > 0 || isWriting(probe)],
   )
     .replace("/*SUITELET_ENTRIES*/", hostedEntries(suitelets, slotOf))
     .replace("%%SUITELET_SCRIPT_ID%%", host.scriptId)

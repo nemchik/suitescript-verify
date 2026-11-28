@@ -139,12 +139,6 @@ export const permissionLevels: readonly string[] = [
   "FULL",
 ];
 
-/**
- * The highest level a probe may declare. Probes do not write (`@writes` is
- * refused), so VIEW is the cap.
- */
-const maxPermissionLevel = "VIEW";
-
 function parsePermissions(
   block: string,
 ): Pick<Probe, "permissionProblems" | "permissions"> {
@@ -165,14 +159,7 @@ function parsePermissions(
       );
     } else if (!permissionLevels.includes(level)) {
       permissionProblems.push(
-        `@permission ${permkey} ${level}: ${level} is not a permission level; use ${maxPermissionLevel}`,
-      );
-    } else if (
-      permissionLevels.indexOf(level) >
-      permissionLevels.indexOf(maxPermissionLevel)
-    ) {
-      permissionProblems.push(
-        `@permission ${permkey} ${level}: probes do not write, so the level must be ${maxPermissionLevel}`,
+        `@permission ${permkey} ${level}: ${level} is not a permission level; use VIEW, CREATE, EDIT or FULL`,
       );
     } else if (permissions.some((p) => p.permkey === permkey)) {
       permissionProblems.push(
@@ -310,13 +297,16 @@ export const listDifferences = (paths: string[]) =>
     ? `${paths.slice(0, 10).join(", ")} and ${paths.length - 10} more`
     : paths.join(", ");
 
+/** Whether a permission level is above VIEW. */
+export const aboveView = (level: string) =>
+  permissionLevels.indexOf(level) > permissionLevels.indexOf("VIEW");
+
 /** Whether a probe declares no `@writes` and nothing above VIEW, so the module allowlist applies to it. */
 export const doesNotWrite = (probe: Probe) =>
-  !probe.writes &&
-  probe.permissions.every(
-    (p) =>
-      permissionLevels.indexOf(p.level) <= permissionLevels.indexOf("VIEW"),
-  );
+  !probe.writes && probe.permissions.every((p) => !aboveView(p.level));
+
+/** A writing probe declares `@writes` or a level above VIEW: it only ever runs through its execution role's slot. */
+export const isWriting = (probe: Probe) => !doesNotWrite(probe);
 
 /** What is wrong with a probe's tags and imports, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [

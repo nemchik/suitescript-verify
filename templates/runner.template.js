@@ -10,7 +10,7 @@
  * as an execution role holding exactly that set, and the runner's own role
  * holds only what logging in needs. The runner knows each Suitelet probe's
  * name, parameters and slot, never its code. A RESTlet probe that declares a
- * permission is refused, since nothing it runs in here could hold it.
+ * permission or writes is refused, since nothing it runs in here could hold it.
  * The host's X-SSV-Mode header says how to read its answer: `wrapped` JSON
  * holding the probe's result, or the probe's `own` response, reported as its
  * status, headers (one lower-cased key per name: the platform's content
@@ -536,7 +536,7 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       if (entry[2]) {
         return {
           error:
-            "refused: a RESTlet probe that declares a permission cannot run in the runner, whose role holds none; write it as a Suitelet probe",
+            "refused: a RESTlet probe that declares a permission or writes cannot run in the runner, whose role holds none; write it as a Suitelet probe",
         };
       }
       // Usage is information only: the units this script has left just before

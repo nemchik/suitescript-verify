@@ -227,26 +227,26 @@ describe("deploy builds the runner from the probes", () => {
     assert.equal(existsSync(join(p.dir, "calls.json")), false);
   });
 
-  it("deploys for real once the person types DEPLOY at the terminal", () => {
+  it("deploys for real once the person types VIEW at the terminal, when no probe writes", () => {
     const p = project();
     write(p.dir, "verification/probes/one.js", probeSource(restlet));
     const result = cli(
       p,
       ["deploy", "--approved"],
-      fakeTerminal(["DEPLOY"], p.env),
+      fakeTerminal(["VIEW"], p.env),
     );
     assert.equal(result.status, 0, result.all);
     assert.match(
       result.stdout,
-      /This deploys to the sandbox\. Type DEPLOY to continue: /,
+      /This deploys to the sandbox, with no writing probes\. Type VIEW to continue: /,
     );
     const call = calls(p);
     assert.deepEqual(call.args, ["project:deploy"]);
     assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
   });
 
-  for (const typed of ["deploy", "yes", "CLEANUP", ""]) {
-    it(`deploys nothing when the person types ${JSON.stringify(typed)} instead of DEPLOY`, () => {
+  for (const typed of ["view", "yes", "CLEANUP", "DEPLOY", ""]) {
+    it(`deploys nothing when the person types ${JSON.stringify(typed)} instead of VIEW`, () => {
       const p = project();
       const result = cli(
         p,
@@ -649,17 +649,15 @@ describe("run", () => {
     assert.deepEqual(p.requests(), []);
   });
 
-  it("refuses a probe that is not a RESTlet or declares @writes", () => {
+  it("refuses a probe that is not a RESTlet or Suitelet", () => {
     const p = project();
     withProbe(p, "@scriptType Client", "client");
     withProbe(p, "", "undeclared");
-    withProbe(p, `${restlet}\n * @writes`, "writer");
     p.script(...ok({ result: {}, version: "1" }));
     const client = cli(p, ["run", "client"]).stderr;
     assert.match(client, /RESTlet and Suitelet probes/);
     assert.doesNotMatch(client, /docs\/verification/);
     assert.match(cli(p, ["run", "undeclared"]).stderr, /undeclared/);
-    assert.match(cli(p, ["run", "writer"]).stderr, /@writes/);
     assert.deepEqual(p.requests(), []);
   });
 
@@ -1332,7 +1330,7 @@ describe("@permission", () => {
     assert.equal(result.status, 0, result.all);
   });
 
-  it("refuses a malformed tag, an unknown key or level, or a level above VIEW, at run and deploy, before anything is sent", () => {
+  it("refuses a malformed tag, an unknown key or level, or a level that is not VIEW, CREATE, EDIT or FULL, at run and deploy, before anything is sent", () => {
     const p = project();
     p.script(...ok({ result: {}, version: "1" }));
     for (const line of [
@@ -1344,9 +1342,8 @@ describe("@permission", () => {
       "@permission customrecord_thing VIEW",
       "@permission LIST_CUSTJOB READ",
       "@permission LIST_CUSTJOB view",
-      "@permission LIST_CUSTJOB CREATE",
-      "@permission LIST_CUSTJOB EDIT",
-      "@permission LIST_CUSTJOB FULL",
+      "@permission LIST_CUSTJOB WRITE",
+      "@permission LIST_CUSTJOB full",
     ]) {
       withTags(p, "one", [line]);
       const run = cli(p, ["run", "one"]);
@@ -4610,14 +4607,222 @@ describe("module allowlist", () => {
     }
   });
 
-  it("does not apply to a probe that declares @writes, which is still refused as before", () => {
-    const p = setup(
-      `define(["N/email"], () => ({ run() {} }));`,
-      `${restletTags}\n * @writes`,
+  it("does not apply to a probe that declares @writes or a level above VIEW", () => {
+    for (const tag of ["@writes", "@permission LIST_CUSTJOB CREATE"]) {
+      const p = setup(
+        `define(["N/email"], () => ({ run() {} }));`,
+        `${restletTags}\n * ${tag}`,
+      );
+      p.script(...ok({ probe: "one", result: {}, version: "1" }));
+      const run = cli(p, ["run", "one"]);
+      assert.equal(run.status, 0, run.all);
+      assert.doesNotMatch(run.stderr, /N\/email/);
+      assert.equal(cli(p, ["deploy"]).status, 0);
+    }
+  });
+});
+
+describe("writing probes", () => {
+  const restletTag = "@scriptType Restlet";
+  const suiteletTag = "@scriptType Suitelet";
+  const withProbe = (p: Project, slug: string, ...tags: string[]) =>
+    write(
+      p.dir,
+      `verification/probes/${slug}.js`,
+      probeSource(tags.map((tag) => ` * ${tag}`).join("\n")),
     );
-    const run = cli(p, ["run", "one"]);
-    assert.equal(run.status, 1);
-    assert.match(run.stderr, /declares @writes/);
-    assert.doesNotMatch(run.stderr, /N\/email/);
+  const approve = (p: Project, typed: string) =>
+    cli(p, ["deploy", "--approved"], fakeTerminal([typed], p.env));
+  const deployed = (p: Project) => existsSync(join(p.dir, "calls.json"));
+
+  it("writes CREATE, EDIT and FULL into the probe's execution role", () => {
+    const p = project();
+    withProbe(
+      p,
+      "a",
+      suiteletTag,
+      "@permission LIST_CUSTJOB CREATE",
+      "@permission LIST_EMPLOYEE EDIT",
+      "@permission LIST_CONTACT FULL",
+      "@permission LIST_CLASS VIEW",
+    );
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    const role = calls(p).objects.find(
+      (o) => o.includes("<name>ssv exec ") && o.includes("LIST_CUSTJOB"),
+    );
+    assert.ok(role);
+    for (const [key, level] of [
+      ["LIST_CUSTJOB", "CREATE"],
+      ["LIST_EMPLOYEE", "EDIT"],
+      ["LIST_CONTACT", "FULL"],
+      ["LIST_CLASS", "VIEW"],
+    ]) {
+      assert.match(
+        role,
+        new RegExp(
+          `<permkey>${key}</permkey>\\s*<permlevel>${level}</permlevel>`,
+        ),
+      );
+    }
+  });
+
+  it("runs a Suitelet probe with @writes through the runner, which sends it to its slot", () => {
+    const p = project();
+    withProbe(p, "mail", suiteletTag, "@writes");
+    p.script(...ok({ probe: "mail", result: { ok: true }, version: "1" }));
+    const run = cli(p, ["run", "mail"]);
+    assert.equal(run.status, 0, run.all);
+    assert.equal(p.requests().length, 2);
+  });
+
+  it("makes the runner refuse a RESTlet writing probe, however it writes, without running it", () => {
+    const p = project();
+    withProbe(p, "edit", restletTag, "@permission LIST_CUSTJOB EDIT");
+    withProbe(p, "mail", restletTag, "@writes");
+    withProbe(p, "plain", restletTag);
+    assert.equal(cli(p, ["deploy"]).status, 0);
+    let ran = 0;
+    const probe = { run: () => ran++ };
+    const runner = load<{
+      post: (body: object) => { error?: string; scriptType?: string };
+    }>(
+      calls(p).runner.join(""),
+      sandbox,
+      { requestSuitelet: () => ({ body: "{}", code: 200 }) },
+      probe,
+      probe,
+      probe,
+    );
+    for (const name of ["mail", "edit"]) {
+      assert.match(
+        runner.post({ probe: name }).error ?? "",
+        /RESTlet probe that declares a permission or writes/,
+        name,
+      );
+    }
+    assert.equal(ran, 0);
+    assert.equal(runner.post({ probe: "plain" }).scriptType, "RESTlet");
+  });
+
+  it("lifts the module allowlist for a writing probe only", () => {
+    const p = project();
+    for (const [slug, writes] of [
+      ["mail", " * @writes\n"],
+      ["read", ""],
+    ]) {
+      write(
+        p.dir,
+        `verification/probes/${slug}.js`,
+        `/**\n * @scriptType Suitelet\n${writes} */\ndefine(["N/email"], () => ({ run() {} }));\n`,
+      );
+    }
+    const result = cli(p, ["deploy"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /- read: .*N\/email/);
+    assert.doesNotMatch(result.stderr, /- mail:/);
+  });
+
+  describe("the deploy approval", () => {
+    const writers = (p: Project) => {
+      withProbe(p, "mail", suiteletTag, "@writes");
+      withProbe(
+        p,
+        "cust",
+        suiteletTag,
+        "@permission LIST_CUSTJOB CREATE",
+        "@permission LIST_EMPLOYEE VIEW",
+      );
+      withProbe(p, "read", suiteletTag, "@permission LIST_EMPLOYEE VIEW");
+    };
+
+    it("prints a table of writing probes with both flags, and names the highest level in the dry run", () => {
+      const p = project();
+      writers(p);
+      const result = cli(p, ["deploy"]);
+      assert.equal(result.status, 0, result.all);
+      assert.match(result.stdout, /Writing probes this deploy includes:/);
+      assert.match(result.stdout, /Probe\s+Permission\s+Level\s+Flags/);
+      assert.match(
+        result.stdout,
+        /cust\s+LIST_CUSTJOB\s+CREATE\s+standard-record write/,
+      );
+      assert.match(result.stdout, /mail\s+-\s+-\s+write with no permission/);
+      assert.doesNotMatch(result.stdout, /read\s+LIST_EMPLOYEE/);
+      assert.match(
+        result.stdout,
+        /types CREATE to approve it \(the highest level among the writing probes included\)/,
+      );
+    });
+
+    it("says no writing probes are included, and names VIEW, when none writes", () => {
+      const p = project();
+      withProbe(p, "read", suiteletTag, "@permission LIST_EMPLOYEE VIEW");
+      const result = cli(p, ["deploy"]);
+      assert.match(result.stdout, /Writing probes: none\./);
+      assert.match(
+        result.stdout,
+        /types VIEW to approve it \(no writing probes are included\)/,
+      );
+    });
+
+    const words: [string, string[][]][] = [
+      ["WRITES", [["@writes"]]],
+      ["WRITES", [["@writes", "@permission LIST_CUSTJOB VIEW"]]],
+      ["CREATE", [["@writes"], ["@permission LIST_CUSTJOB CREATE"]]],
+      [
+        "EDIT",
+        [
+          ["@permission LIST_CUSTJOB CREATE"],
+          ["@permission LIST_EMPLOYEE EDIT"],
+        ],
+      ],
+      [
+        "FULL",
+        [
+          ["@permission LIST_CUSTJOB EDIT", "@permission LIST_EMPLOYEE FULL"],
+          ["@writes"],
+        ],
+      ],
+    ];
+    words.forEach(([word, probes], n) => {
+      it(`asks for ${word} and deploys only when it is typed exactly (case ${n + 1})`, () => {
+        const p = project();
+        probes.forEach((tags, i) => {
+          withProbe(p, `p${i}`, suiteletTag, ...tags);
+        });
+        const wrong = approve(p, word === "FULL" ? "EDIT" : "FULL");
+        assert.equal(wrong.status, 1);
+        assert.match(wrong.stderr, /Not confirmed\. Nothing was changed\./);
+        assert.equal(deployed(p), false);
+        const right = approve(p, word);
+        assert.equal(right.status, 0, right.all);
+        assert.match(
+          right.stdout,
+          new RegExp(
+            `including the writing probes above\\. Type ${word} to continue: `,
+          ),
+        );
+        assert.deepEqual(calls(p).args, ["project:deploy"]);
+      });
+    });
+
+    it("deploys nothing for DEPLOY, a lower word or an empty answer when a probe writes", () => {
+      const p = project();
+      writers(p);
+      for (const typed of ["DEPLOY", "VIEW", "WRITES", "create", ""]) {
+        const result = approve(p, typed);
+        assert.equal(result.status, 1, typed);
+        assert.equal(deployed(p), false, typed);
+      }
+    });
+
+    it("refuses without a terminal, before touching anything", () => {
+      const p = project();
+      writers(p);
+      const result = cli(p, ["deploy", "--approved"]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /needs the user at a terminal/);
+      assert.equal(deployed(p), false);
+    });
   });
 });

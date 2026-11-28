@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v2.0.0...suitescript-verify-v2.1.0) (2026-11-28)
+
+
+### Features
+
+* probes that return a Promise, and probe timeouts ([#68](https://github.com/nemchik/suitescript-verify/issues/68)) ([b1080b1](https://github.com/nemchik/suitescript-verify/commit/b1080b14853bf7b6fdfc9348ed272f4c2a89d417))
+* report each probe's governance usage ([#82](https://github.com/nemchik/suitescript-verify/issues/82)) ([89ef903](https://github.com/nemchik/suitescript-verify/commit/89ef9037ffcffbb205b22d71e19ca5a0f20d2655))
+
+
+### Bug Fixes
+
+* doctor suggests --dir . in a verification folder ([#70](https://github.com/nemchik/suitescript-verify/issues/70)) ([#75](https://github.com/nemchik/suitescript-verify/issues/75)) ([14f7301](https://github.com/nemchik/suitescript-verify/commit/14f7301f521ac12387c7abc8480166c79c39d23a))
+
 ## [2.0.0](https://github.com/nemchik/suitescript-verify/compare/suitescript-verify-v1.1.0...suitescript-verify-v2.0.0) (2026-11-18)
 
 

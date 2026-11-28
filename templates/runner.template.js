@@ -550,6 +550,12 @@ define(["N/runtime", "N/https" /*PROBE_PATHS*/], (
       if (!entry) {
         return viaSuitelet(name, checked.params, suitelet[1], suitelet[2]);
       }
+      if (entry[2]) {
+        return {
+          error:
+            "refused: a RESTlet probe that writes (@writes) and declares no permission cannot run in the runner, whose role holds none; declare the permissions it needs, so it runs in the RESTlet host, or write it as a Suitelet probe",
+        };
+      }
       // Usage is information only: the units this script has left just before
       // the probe's run() and just after it (once a returned Promise settles).
       // The read costs nothing.

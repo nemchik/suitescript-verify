@@ -272,11 +272,6 @@ export async function runProbe(
       `${probe.slug} needs a ${probe.scriptType || "(undeclared)"} script. The runner only runs RESTlet and Suitelet probes (declare @scriptType Restlet or @scriptType Suitelet); ask the user to run it by hand in a sandbox console.`,
     );
   }
-  if (probe.writes) {
-    throw new UsageError(
-      `${probe.slug} declares @writes, which needs the user's separate approval. That path is not automated.`,
-    );
-  }
   const params = validateParams(probe, args);
   if (!existsSync(creds.privateKeyPath)) {
     throw new UsageError("The runner private key file does not exist.");

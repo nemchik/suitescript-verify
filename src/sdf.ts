@@ -14,6 +14,7 @@ import {
   isRestletHosted,
   isRunnable,
   isSuitelet,
+  isWriting,
   listProbes,
   needsSlot,
   type Probe,
@@ -175,7 +176,12 @@ function generateScripts(
       .map((probe) => probe.slug)
       .sort()
       .join(",");
-  const runner = generateScript(restlets, template("runner.template.js"))
+  const runner = generateScript(
+    restlets,
+    template("runner.template.js"),
+    // Whether the probe writes (`@writes`; a RESTlet probe with a permission is in the RESTlet host), which the runner's role cannot do.
+    (probe) => [isWriting(probe)],
+  )
     .replace(
       "/*SUITELET_ENTRIES*/",
       hostedEntries([...suitelets, ...forwarded], slotOf),

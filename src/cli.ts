@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { deployApproval } from "./approval.ts";
 import { certificate } from "./certificate.ts";
 import {
   type Config,
@@ -129,8 +130,18 @@ async function initCommand(args: string[]): Promise<number> {
 function setupCommand(args: string[]): Promise<number> {
   return setup(process.cwd(), args, {
     configure: () => configure(args, true),
-    deploy: (config) => {
+    deploy: async (config) => {
       prepareDeploy(config);
+      // The person typed DEPLOY; a writing probe needs the highest level too.
+      const { included, table, word } = deployApproval(
+        config.probesDir,
+        config.extraTags,
+      );
+      if (included) {
+        console.log(`
+${table}`);
+        await confirmWrite(word, "This deploys writing probes to the sandbox");
+      }
       return runSuitecloud(config, ["project:deploy"]);
     },
     doctor: () => doctor(args),
@@ -180,10 +191,25 @@ async function deploy(args: string[]): Promise<number> {
   const config = configure(args, true);
   prepareDeploy(config);
   const approved = args.includes("--approved");
-  if (approved) await confirmWrite("DEPLOY", "This deploys to the sandbox");
-  else {
+  const { included, table, word } = deployApproval(
+    config.probesDir,
+    config.extraTags,
+  );
+  console.log(`\n${table}`);
+  if (approved) {
+    await confirmWrite(
+      word,
+      included
+        ? "This deploys to the sandbox, including the writing probes above"
+        : "This deploys to the sandbox, with no writing probes",
+    );
+  } else {
     console.log(
-      "\nDry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved.",
+      `\nDry run only. Deploying writes to the sandbox, so ask the user for approval, then rerun with --approved. The user types ${word} to approve it (${
+        included
+          ? "the highest level among the writing probes included"
+          : "no writing probes are included"
+      }).`,
     );
   }
   return runSuitecloud(config, [

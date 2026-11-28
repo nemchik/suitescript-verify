@@ -20,7 +20,7 @@ _Avoid_: Second runner, probe Suitelet
 The script host for Suitelet probes.
 
 **Writing probe**:
-A probe that declares a permission level above VIEW, or `@writes` for a write that no permission shows. Only a writing probe may change anything in the sandbox, and the person accepts writing probes when they deploy.
+A probe that declares a permission level above VIEW, or `@writes` for a write that no permission shows. Only a writing probe is meant to change anything in the sandbox, and the person accepts writing probes when they deploy. The guardrails stop most other changes, not all of them (saving a search needs no more than VIEW).
 _Avoid_: Write test, unsafe probe
 
 **Runner's role**:
@@ -35,7 +35,7 @@ The runner's reserved, read-only answer about its own deployment: whether the ac
 _Avoid_: Probe-zero, health check
 
 **Scratch area**:
-The custom record type and File Cabinet folder the verification package owns in a sandbox, one of each per runner, where probes that write keep what they create so that it can be cleaned up.
+The custom record type and File Cabinet folder the verification package owns in a sandbox, one of each per runner, where writing probes keep what they create so that it can be cleaned up.
 _Avoid_: Test data, sandbox folder
 
 **Results page**:

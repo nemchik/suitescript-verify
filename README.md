@@ -434,6 +434,10 @@ The runner's role holds less than the deploy wrote: someone changed the role in 
 
 The runner certificate is mapped to a role other than `SUITESCRIPT_VERIFY_ROLE_ID` (`doctor` prints the one in use). Map it to the runner's role in the sandbox (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).
 
+### After `cleanup`, the deployments are missing from the Script Deployments list
+
+They are still in the account. `cleanup` switches them off, and in a sandbox at 2026.2 the list (Customization > Scripting > Script Deployments) did not show them until **Show Inactives** was checked. Check it to find them, for example to delete them by hand.
+
 ### Every probe returns HTTP 400 and names no probe
 
 The message looks like `com.netsuite.suitescript.scriptobject.ScriptNullObjectAdapter@...`. One probe's top-level code failed in a way its own `try/catch` cannot capture, so the runner never loaded.

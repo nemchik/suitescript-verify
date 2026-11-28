@@ -371,10 +371,10 @@ define(["N/runtime", "N/query"], (runtime, query) => ({
 }));
 ```
 
-### Writing probes that do not cost a deploy
+### Probes that do not cost a deploy
 
 - **Keep module-scope code rare and tiny.** The runner loads every probe as a dependency of its own `define()`. A probe whose top-level code fails in a way its own `try/catch` cannot capture takes the whole runner down. If you need one, make it one governed call, run it last and one per deploy, so a failure points at one call. Do not keep a probe that is expected to take the runner down; its results page carries the code.
-- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions plus what probes declare (and anything added by hand, which no deploy removes). A probe that searches or loads a record without the record's permission gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence. A probe that needs a record permission declares it with `@permission <permkey> VIEW` (see [Permissions](#permissions)); never add it to the role by hand. A transaction search also needs Find Transaction (`@permission TRAN_FIND VIEW`). Prefer objects that need no permission (`runtime`, `search.createColumn`).
+- **The role is minimal.** The runner's role holds only the token-login and REST web services permissions plus what probes declare (and _Other Addresses_, which NetSuite adds, and anything added by hand, which no deploy removes). A probe that searches or loads a record without the record's permission gets `INSUFFICIENT_PERMISSION`. That error comes after type validation, which is often still evidence. A probe that needs a record permission declares it with `@permission <permkey> VIEW` (see [Permissions](#permissions)); never add it to the role by hand. A transaction search also needs Find Transaction (`@permission TRAN_FIND VIEW`). Prefer objects that need no permission (`runtime`, `search.createColumn`).
 - **Check how an API is chained before relying on it.** `crypto.createHash(...).update(...)` returns nothing, so chaining `.digest()` threw `Cannot read property 'digest' of undefined` and cost a deploy. Read the method page for the return type.
 - **Outbound calls rate-limit.** A public echo service answered four requests in a row and failed the fifth with a body that had no `headers`. Keep a probe to four requests or fewer and put the status code in the failure, not just a `TypeError`.
 - **Read the execution log with SuiteQL.** A probe can read `scriptnote`, the script execution log, with `query.runSuiteQL` (columns `date`, `type`, `title`, `detail`, `scripttype`; `type` is the log level, such as `ERROR`). `search.create({ type: "scriptnote" })` throws `INVALID_RCRD_TYPE`, and Oracle documents no such table. Return counts and levels rather than a log's title or detail: log text can carry identifiers, which makes `run` refuse the output. Under the runner's minimal role the query can fail with `Record 'scriptnote' was not found.`: a missing permission worded as a missing table (which permission is not yet identified).
@@ -433,6 +433,10 @@ The runner's role holds less than the deploy wrote: someone changed the role in 
 ### `doctor` says the runner runs as another role
 
 The runner certificate is mapped to a role other than `SUITESCRIPT_VERIFY_ROLE_ID` (`doctor` prints the one in use). Map it to the runner's role in the sandbox (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).
+
+### After `cleanup`, the deployments are missing from the Script Deployments list
+
+They are still in the account. `cleanup` switches them off, and in a sandbox at 2026.2 the list (Customization > Scripting > Script Deployments) did not show them until **Show Inactives** was checked. Check it to find them, for example to delete them by hand.
 
 ### Every probe returns HTTP 400 and names no probe
 

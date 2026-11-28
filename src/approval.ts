@@ -6,13 +6,16 @@ import {
   type Probe,
   permissionLevels,
 } from "./probes.ts";
+import { scratchFolderPermissionKey } from "./scratch.ts";
 
 /**
- * The permission keys of the scratch area's custom records, which a writing
- * probe may hold above VIEW without it counting as a standard-record write.
- * Empty until the scratch area exists.
+ * The scratch area's standard permission keys, which a writing probe may hold
+ * above VIEW without it counting as a standard-record write. The scratch
+ * record type's own key is a custom record's (`customrecord_`).
  */
-const scratchPermissionKeys: ReadonlySet<string> = new Set();
+const scratchPermissionKeys: ReadonlySet<string> = new Set([
+  scratchFolderPermissionKey,
+]);
 
 /** The flag on a row whose permission is a standard record's, written above VIEW. */
 export const standardWriteFlag = "standard-record write";

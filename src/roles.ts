@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { ProbePermission } from "./probes.ts";
+import { isWriting, type Probe, type ProbePermission } from "./probes.ts";
+import { scratchPermissions } from "./scratch.ts";
 import { UsageError } from "./shared.ts";
 
 /**
@@ -33,12 +34,21 @@ const byKey = (a: ProbePermission, b: ProbePermission) =>
   a.permkey < b.permkey ? -1 : a.permkey > b.permkey ? 1 : 0;
 
 /**
- * The permissions a probe runs with: what it declares, sorted by key. This is
- * the one place a later ticket adds to a probe's set.
+ * The permissions a probe runs with: what it declares plus, for a writing
+ * probe, FULL on the scratch area (which wins over a lower level it declares
+ * for the same key), sorted by key. This is the one place a later ticket adds
+ * to a probe's set.
  */
-export const permissionSet = (probe: {
-  permissions: ProbePermission[];
-}): ProbePermission[] => [...probe.permissions].sort(byKey);
+export function permissionSet(
+  probe: Pick<Probe, "permissions" | "writes">,
+  runnerId: string,
+): ProbePermission[] {
+  const held = new Map(probe.permissions.map((p) => [p.permkey, p]));
+  if (isWriting(probe)) {
+    for (const p of scratchPermissions(runnerId)) held.set(p.permkey, p);
+  }
+  return [...held.values()].sort(byKey);
+}
 
 /** A set as one string, `KEY:LEVEL` per permission, sorted: the same set always gives the same text, and no set gives `""`. */
 export const permissionSetKey = (set: ProbePermission[]) =>
@@ -103,13 +113,13 @@ export interface Slot {
  */
 export function planSlots(
   runnerId: string,
-  probes: { permissions: ProbePermission[]; slug: string }[],
+  probes: Pick<Probe, "permissions" | "slug" | "writes">[],
 ): { slots: Slot[]; slotOf: Map<string, Slot> } {
   const sets = new Map<string, { probes: string[]; set: ProbePermission[] }>([
     ["", { probes: [], set: [] }],
   ]);
   for (const probe of probes) {
-    const set = permissionSet(probe);
+    const set = permissionSet(probe, runnerId);
     const key = permissionSetKey(set);
     const known = sets.get(key) ?? { probes: [], set };
     known.probes.push(probe.slug);

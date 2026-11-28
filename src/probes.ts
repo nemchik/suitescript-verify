@@ -302,11 +302,12 @@ export const aboveView = (level: string) =>
   permissionLevels.indexOf(level) > permissionLevels.indexOf("VIEW");
 
 /** Whether a probe declares no `@writes` and nothing above VIEW, so the module allowlist applies to it. */
-export const doesNotWrite = (probe: Probe) =>
+export const doesNotWrite = (probe: Pick<Probe, "permissions" | "writes">) =>
   !probe.writes && probe.permissions.every((p) => !aboveView(p.level));
 
 /** A writing probe declares `@writes` or a level above VIEW: it only ever runs through its execution role's slot. */
-export const isWriting = (probe: Probe) => !doesNotWrite(probe);
+export const isWriting = (probe: Pick<Probe, "permissions" | "writes">) =>
+  !doesNotWrite(probe);
 
 /** What is wrong with a probe's tags and imports, for the commands that refuse to run it. */
 export const tagProblems = (probe: Probe) => [

@@ -29,6 +29,12 @@ import {
   runnerRolePermissions,
   type Slot,
 } from "./roles.ts";
+import {
+  scratchFolderName,
+  scratchMarkerFile,
+  scratchMaxAgeSeconds,
+  scratchRecordId,
+} from "./scratch.ts";
 import { UsageError } from "./shared.ts";
 import { packageVersion } from "./version.ts";
 
@@ -67,6 +73,16 @@ const roleObject = (
         )
         .join(""),
     );
+
+/** The scratch record type's object: access by permission list, so only roles that hold its permission can use it. */
+const scratchRecordObject = (runnerId: string) =>
+  template("sdf/scratch-record.xml")
+    .replaceAll("%%RECORD_ID%%", scratchRecordId(runnerId))
+    .replaceAll("%%RUNNER_ID%%", runnerId);
+
+/** The scratch marker file's path as a script reads it, in the scratch folder inside the runner's folder. */
+const scratchMarkerPath = (runnerId: string) =>
+  `/SuiteScripts/${scriptNames(runnerId, "rl").folder}/${scratchFolderName}/${scratchMarkerFile}`;
 
 /** The runner's role object: its name comes from the runner id and fits the platform's 40 characters. */
 const runnerRoleObject = (roleId: string, runnerId: string) =>
@@ -147,7 +163,7 @@ function generateScripts(
   probes: Probe[],
   { probesDir, runnerId }: Pick<Config, "probesDir" | "runnerId">,
   { slotOf, slots }: ReturnType<typeof planSlots>,
-): { build: string; host: string; runner: string } {
+): { build: string; host: string; runner: string; scratch: string } {
   const restlets = probes.filter(isRestlet);
   const suitelets = probes.filter(isSuitelet);
   const host = scriptNames(runnerId, "sl");
@@ -172,18 +188,29 @@ function generateScripts(
       runnerRolePermissions.map(({ permkey }) => permkey).join(","),
     )
     .replace("%%PROBES%%", slugList(probes));
+  const scratch = template("scratch.template.js")
+    .replace("%%MAX_AGE_SECONDS%%", String(scratchMaxAgeSeconds))
+    .replace("%%SCRATCH_RECORD%%", scratchRecordId(runnerId))
+    .replace("%%SCRATCH_MARKER%%", scratchMarkerPath(runnerId));
   const hostScript = generateScript(
     suitelets,
     template("suitelet.template.js"),
     (probe) => {
-      const set = permissionSet(probe);
-      return [permissionSetKey(set), set.map(({ permkey }) => permkey)];
+      const set = permissionSet(probe, runnerId);
+      return [
+        permissionSetKey(set),
+        set.map(({ permkey }) => permkey),
+        isWriting(probe),
+      ];
     },
   )
     .replace("/*SLOT_ENTRIES*/", slotEntries(slots))
     .replace("%%PACKAGE_VERSION%%", packageVersion)
     .replace("%%PROBES%%", slugList(suitelets));
-  const hash = createHash("sha256").update(runner).update(hostScript);
+  const hash = createHash("sha256")
+    .update(runner)
+    .update(hostScript)
+    .update(scratch);
   for (const { slug } of probes) {
     hash.update(`\0${slug}\0${read(join(probesDir, `${slug}.js`))}`);
   }
@@ -192,6 +219,7 @@ function generateScripts(
     build,
     host: hostScript.replace(BUILD, build),
     runner: runner.replace(BUILD, build),
+    scratch,
   };
 }
 
@@ -314,6 +342,13 @@ export function buildSdfProject(
       ) {
         replacedRunners.push(runner);
       }
+    } else if (
+      /^customrecord_.*\.xml$/.test(file) &&
+      file !== `${scratchRecordId(runnerId)}.xml` &&
+      read(join(src, "Objects", file)).includes("<recordname>ssv scratch ")
+    ) {
+      // The scratch record type of another runner id: not deployed again.
+      rmSync(join(src, "Objects", file));
     } else if (/^customrole_.*\.xml$/.test(file) && file !== `${roleId}.xml`) {
       const path = join(src, "Objects", file);
       const retired = read(path);
@@ -348,6 +383,10 @@ export function buildSdfProject(
     );
   }
   writeFileSync(
+    join(src, "Objects", `${scratchRecordId(runnerId)}.xml`),
+    scratchRecordObject(runnerId),
+  );
+  writeFileSync(
     join(src, "deploy.xml"),
     template("sdf/deploy.xml").replaceAll("%%FOLDER%%", names.folder),
   );
@@ -361,9 +400,15 @@ export function buildSdfProject(
     suiteletObject(host, roleId, plan.slots, deployed),
   );
   const scripts = generateScripts(probes, { probesDir, runnerId }, plan);
-  const files: string[] = [names.file, host.file];
+  const files: string[] = [names.file, host.file, "scratch.js"];
   writeFileSync(join(folder, names.file), scripts.runner);
   writeFileSync(join(folder, host.file), scripts.host);
+  writeFileSync(join(folder, "scratch.js"), scripts.scratch);
+  mkdirSync(join(folder, scratchFolderName), { recursive: true });
+  writeFileSync(
+    join(folder, scratchFolderName, scratchMarkerFile),
+    "suitescript-verify's scratch folder: writing probes keep what they create here, and the host deletes it. Do not keep anything here.",
+  );
   for (const slug of probes.map((probe) => probe.slug)) {
     writeFileSync(
       join(folder, "probes", `${slug}.js`),

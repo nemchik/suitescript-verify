@@ -19,6 +19,12 @@
  * A request with `selfCheck` (never a probe name) asks for its self-check,
  * which only reads.
  *
+ * A writing probe also gets `context.scratch = { recordType, folderId, prefix }`
+ * from the scratch area (`./scratch`, shared with the RESTlet host): the host
+ * sweeps old scratch items before the run and, once the probe has settled
+ * (returned, thrown or rejected), deletes every scratch record and file named
+ * with the run's prefix, before it answers, and reports both in `scratch`.
+ *
  * A probe gets `run(params, context)`: a request view of only the method and
  * its declared parameters, and a response that records every call and replays
  * nothing until the probe returns. The host then answers in one mode, named by
@@ -41,8 +47,11 @@
  * @NApiVersion 2.1
  * @NScriptType Suitelet
  */
-define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
-  /** Each probe: its module, its parameters, the text of its permission set and the keys it declares. */
+define(["N/runtime" /*PROBE_PATHS*/, "./scratch"], (
+  runtime /*PROBE_NAMES*/,
+  scratch,
+) => {
+  /** Each probe: its module, its parameters, the text of its permission set, the keys it declares and whether it writes. */
   const probes = new Map([
     /*PROBE_ENTRIES*/
   ]);
@@ -62,6 +71,8 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
   const USAGE = "X-SSV-Usage";
   /** The execution role's levels for the probe's declared keys, for an `own` answer: `{ key: level }` as JSON. */
   const PERMISSIONS = "X-SSV-Permissions";
+  /** The scratch area's sweep and cleanup, for an `own` answer: `{ cleanup, sweep }` as JSON. */
+  const SCRATCH = "X-SSV-Scratch";
   /** Every `X-SSV-` header is the host's; a probe cannot set one. */
   const RESERVED = /^x-ssv-/i;
 
@@ -125,7 +136,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       const name = headerName(options);
       if (RESERVED.test(name)) {
         const e = new Error(
-          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}, ${PERMISSIONS}) are the host's`,
+          `the probe cannot set ${name}: X-SSV- headers (${MARKER}, ${HEADERS}, ${USAGE}, ${PERMISSIONS}, ${SCRATCH}) are the host's`,
         );
         e.name = "SSV_RESERVED_HEADER";
         throw e;
@@ -326,7 +337,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
           known: [...probes.keys()],
         });
       }
-      const [probe, declared, set, keys] = entry;
+      const [probe, declared, set, keys, writing] = entry;
       if (slots.get(currentSlot()) !== set) {
         return answer(response, {
           error:
@@ -335,6 +346,18 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
       }
       const checked = checkParams(sent.params, declared);
       if (checked.error) return answer(response, { error: checked.error });
+      let area;
+      let swept;
+      if (writing) {
+        try {
+          area = scratch.open();
+          swept = area.sweep();
+        } catch (e) {
+          return answer(response, {
+            error: `the scratch area is not available: ${e && e.name}: ${e && e.message}`,
+          });
+        }
+      }
       const recorded = recorder();
       const levels = levelsFor(keys);
       const view = Object.freeze({
@@ -350,6 +373,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         result = probe.run(checked.params, {
           request: view,
           response: recorded.response,
+          ...(area ? { scratch: area.context } : {}),
         });
       } catch (e) {
         result = `THROWS: ${e.name}: ${e.message}`;
@@ -363,10 +387,15 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
           runtime.getCurrentScript().getRemainingUsage(),
           caught,
         );
+        // Whatever happens next, the run's scratch items go now: the probe has settled.
+        const scratchReport = area
+          ? { cleanup: area.cleanup(), sweep: swept }
+          : undefined;
         if (recorded.calls.length > 0 && result !== undefined) {
           return answer(response, {
             error:
               "the probe both wrote a response and returned a value; a Suitelet probe does one or the other",
+            ...(scratchReport ? { scratch: scratchReport } : {}),
             usage,
           });
         }
@@ -379,6 +408,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
                   permissions: levels,
                   probe: name,
                   result: value,
+                  ...(scratchReport ? { scratch: scratchReport } : {}),
                   scriptType: "Suitelet",
                   usage,
                   version: String(runtime.version),
@@ -391,6 +421,12 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
         if (recorded.calls.length === 0) return wrapped(result);
         response.setHeader({ name: MARKER, value: "own" });
         response.setHeader({ name: USAGE, value: JSON.stringify(usage) });
+        if (scratchReport) {
+          response.setHeader({
+            name: SCRATCH,
+            value: JSON.stringify(scratchReport),
+          });
+        }
         response.setHeader({
           name: PERMISSIONS,
           value: JSON.stringify(levels),
@@ -435,6 +471,7 @@ define(["N/runtime" /*PROBE_PATHS*/], (runtime /*PROBE_NAMES*/) => {
             },
           )
           .catch((e) => {
+            if (area) area.cleanup();
             // Answering failed (a result that cannot be serialized, say). Never
             // let it reject: that is an HTTP 500 page the runner cannot read.
             try {

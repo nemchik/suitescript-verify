@@ -1,0 +1,7 @@
+<customrecordtype scriptid="%%RECORD_ID%%">
+  <accesstype>USEPERMISSIONLIST</accesstype>
+  <description>Where suitescript-verify's writing probes keep what they create in a sandbox. Emptied by the host after each run and by cleanup. Only the execution roles of writing probes can use it.</description>
+  <includename>T</includename>
+  <isinactive>F</isinactive>
+  <recordname>ssv scratch %%RUNNER_ID%%</recordname>
+</customrecordtype>

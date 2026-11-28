@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
+import { moduleClasses } from "../src/modules.ts";
 import { listProbes, parseProbe } from "../src/probes.ts";
 import {
   graceSeconds,
@@ -4473,5 +4474,150 @@ describe("probe timeouts", () => {
       assert.match(readme, /`SSS_REQUEST_TIME_EXCEEDED`/);
       assert.ok(readme.includes("from 1 to 45"));
     });
+  });
+});
+
+describe("module allowlist", () => {
+  const restletTags = "@scriptType Restlet";
+  const source = (body: string, tags = restletTags) =>
+    `/**\n * A probe.\n *\n * ${tags}\n */\n${body}\n`;
+  const setup = (body: string, tags = restletTags) => {
+    const p = project();
+    write(p.dir, "verification/probes/one.js", source(body, tags));
+    p.script(...ok({ probe: "one", result: {}, version: "1" }));
+    return p;
+  };
+  const refused = (p: Project) => {
+    const run = cli(p, ["run", "one"]);
+    assert.equal(run.status, 1, run.all);
+    assert.deepEqual(p.requests(), []);
+    const deploy = cli(p, ["deploy"]);
+    assert.equal(deploy.status, 1, deploy.all);
+    return { deploy: deploy.stderr, run: run.stderr };
+  };
+
+  it("classifies every module as allowed or writing", () => {
+    const entries = Object.entries(moduleClasses);
+    assert.ok(entries.length > 20);
+    for (const [name, kind] of entries) {
+      assert.match(name, /^N\//);
+      assert.ok(kind === "allowed" || kind === "writing", name);
+    }
+    assert.equal(moduleClasses["N/record"], "allowed");
+    assert.equal(moduleClasses["N/search"], "allowed");
+    assert.equal(moduleClasses["N/email"], "writing");
+  });
+
+  it("runs and deploys a probe that imports only allowed modules", () => {
+    const p = setup(
+      `define(["N/record", "N/search", "N/runtime"], (record, search, runtime) => ({ run() { return {}; } }));`,
+    );
+    const run = cli(p, ["run", "one"]);
+    assert.equal(run.status, 0, run.all);
+    const deploy = cli(p, ["deploy"]);
+    assert.equal(deploy.status, 0, deploy.all);
+  });
+
+  it("allows a literal require of an allowed module, inside define or as an async call", () => {
+    const p = setup(
+      `define(["require"], (require) => ({ run() { const r = require("N/record"); require(["N/query"], () => {}); return {}; } }));`,
+    );
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+  });
+
+  it("ignores a module named in a comment or a string", () => {
+    const p = setup(
+      `// define(["N/email"])\ndefine([], () => ({ run() { return "require('N/email')"; } }));`,
+    );
+    assert.equal(cli(p, ["run", "one"]).status, 0);
+  });
+
+  it("refuses a writing module in define, naming the probe, module and tags to add", () => {
+    const p = setup(`define(["N/email"], (email) => ({ run() {} }));`);
+    const { deploy, run } = refused(p);
+    for (const text of [run, deploy]) {
+      assert.match(text, /one/);
+      assert.match(text, /N\/email/);
+      assert.match(text, /@writes/);
+      assert.match(text, /above VIEW/);
+    }
+  });
+
+  it("refuses a writing module reached through require", () => {
+    const p = setup(
+      `define([], () => ({ run() { return require("N/https"); } }));`,
+    );
+    assert.match(refused(p).run, /N\/https/);
+  });
+
+  it("refuses a module the package does not know with a pre-filled new-issue link, and makes no request", () => {
+    const p = setup(`define(["N/madeUp"], (m) => ({ run() {} }));`);
+    const { deploy, run } = refused(p);
+    for (const text of [run, deploy]) {
+      assert.match(text, /N\/madeUp/);
+      const link =
+        /https:\/\/github\.com\/nemchik\/suitescript-verify\/issues\/new\?\S+/.exec(
+          text,
+        )?.[0];
+      assert.ok(link, text);
+      const url = new URL(link);
+      assert.match(url.searchParams.get("body") ?? "", /N\/madeUp/);
+      assert.match(
+        url.searchParams.get("body") ?? "",
+        /2\.\d+\.\d+|\d+\.\d+\.\d+/,
+      );
+      assert.match(text, /ask the person/i);
+    }
+  });
+
+  it("puts nothing but the module name and version in the link", () => {
+    const p = setup(
+      `define(["N/madeUp"], (m) => ({ run() { return "secret-token-123"; } }));`,
+      `${restletTags}\n * @param secretParam ^x$`,
+    );
+    const link = /issues\/new\?\S+/.exec(refused(p).run)?.[0] ?? "";
+    assert.doesNotMatch(decodeURIComponent(link), /secret|one\b/);
+  });
+
+  it("refuses a module that is not an N/ module, with no link", () => {
+    const p = setup(
+      `define(["./helper", "/SuiteScripts/x"], () => ({ run() {} }));`,
+    );
+    const { run } = refused(p);
+    assert.match(run, /\.\/helper/);
+    assert.doesNotMatch(run, /issues\/new/);
+  });
+
+  it("refuses a require whose module name is not a literal", () => {
+    for (const body of [
+      `define([], () => ({ run() { const n = "N/record"; return require(n); } }));`,
+      `define([], () => ({ run() { return require("N/" + "record"); } }));`,
+      `define([], () => ({ run() { return require(\`N/\${x}\`); } }));`,
+      `define([], () => ({ run() { return require(["N/record", name]); } }));`,
+    ]) {
+      const p = setup(body);
+      assert.match(refused(p).run, /not a literal/, body);
+    }
+  });
+
+  it("refuses define dependencies that are not a literal list of strings", () => {
+    for (const body of [
+      `const deps = ["N/record"];\ndefine(deps, () => ({ run() {} }));`,
+      `define(["N/rec" + "ord"], () => ({ run() {} }));`,
+    ]) {
+      const p = setup(body);
+      assert.match(refused(p).run, /not a literal/, body);
+    }
+  });
+
+  it("does not apply to a probe that declares @writes, which is still refused as before", () => {
+    const p = setup(
+      `define(["N/email"], () => ({ run() {} }));`,
+      `${restletTags}\n * @writes`,
+    );
+    const run = cli(p, ["run", "one"]);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /declares @writes/);
+    assert.doesNotMatch(run.stderr, /N\/email/);
   });
 });

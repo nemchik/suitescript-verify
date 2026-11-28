@@ -201,6 +201,7 @@ describe("deploy builds the runner from the probes", () => {
       "SuiteScripts/suitescript-verify/probes",
       "SuiteScripts/suitescript-verify/probes/one.js",
       "SuiteScripts/suitescript-verify/restlet.js",
+      "SuiteScripts/suitescript-verify/restlethost.js",
       "SuiteScripts/suitescript-verify/suitelet.js",
     ]);
     assert.match(call.objects.join(""), /<isdeployed>T<\/isdeployed>/);
@@ -295,7 +296,7 @@ describe("cleanup", () => {
     assert.equal(result.status, 0, result.all);
     assert.match(
       result.stdout,
-      /This turns the runner's and the Suitelet host's deployments off\. Type CLEANUP to continue: /,
+      /This turns the runner's, the Suitelet host's and the RESTlet host's deployments off\. Type CLEANUP to continue: /,
     );
     const call = calls(p);
     assert.deepEqual(call.args, ["project:deploy"]);
@@ -1590,6 +1591,15 @@ function load<T>(source: string, ...modules: unknown[]): T {
   return factory(...modules);
 }
 
+/** Loads the generated Suitelet host with `N/https` stubbed out, handing its factory the runtime and then its probes' modules. */
+function loadHost<T>(
+  source: string,
+  runtime: unknown,
+  ...probes: unknown[]
+): T {
+  return load<T>(source, runtime, {}, ...probes);
+}
+
 /** The deployment id of the host's slot `index`, as `getCurrentScript().deploymentId` names it. */
 const slot = (index: number) => `customdeploy_suitescript_verify_s${index}`;
 
@@ -1896,7 +1906,7 @@ describe("a RESTlet probe's usage", () => {
   });
 });
 
-describe("the two templates' shared helpers", () => {
+describe("the three templates' shared helpers", () => {
   // The runner and the Suitelet host deploy as separate scripts, so each keeps
   // its own copy of these helpers. The copies must not drift apart.
   const source = (file: string) =>
@@ -1916,10 +1926,14 @@ describe("the two templates' shared helpers", () => {
     "rejection",
     "usageEntry",
   ]) {
-    it(`keeps ${name} identical in both`, () => {
+    it(`keeps ${name} identical in all three`, () => {
       assert.equal(
         helper(source("runner.template.js"), name),
         helper(source("suitelet.template.js"), name),
+      );
+      assert.equal(
+        helper(source("runner.template.js"), name),
+        helper(source("restlethost.template.js"), name),
       );
     });
   }
@@ -1950,6 +1964,7 @@ describe("Suitelet probes", () => {
         "SuiteScripts/suitescript-verify/probes/one.js",
         "SuiteScripts/suitescript-verify/probes/page.js",
         "SuiteScripts/suitescript-verify/restlet.js",
+        "SuiteScripts/suitescript-verify/restlethost.js",
         "SuiteScripts/suitescript-verify/suitelet.js",
       ],
     );
@@ -1992,8 +2007,8 @@ describe("Suitelet probes", () => {
     withProbe(p, suitelet, "page");
     assert.equal(cli(p, ["cleanup"]).status, 0);
     const objects = calls(p).objects.join("");
-    // The runner and the host's ten slots.
-    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 11);
+    // The runner, the host's ten slots and the RESTlet host.
+    assert.equal(objects.match(/<isdeployed>F<\/isdeployed>/g)?.length, 12);
     assert.doesNotMatch(objects, /<isdeployed>T/);
   });
 
@@ -2462,23 +2477,6 @@ describe("Suitelet probes", () => {
           "permissions" in (runner.post({ probe: "both" }) as object),
           false,
         );
-      });
-
-      it("refuses a RESTlet probe that declares a permission, which the runner's role cannot give it, without running it", () => {
-        const p = project();
-        let ran = 0;
-        const runner = load<Runner>(
-          deployAll(p),
-          sandbox,
-          { requestSuitelet: () => ({ body: "{}", code: 200 }) },
-          { run: () => ran++ },
-        );
-        assert.match(
-          runner.post({ probe: "gated" }).error ?? "",
-          /RESTlet probe that declares a permission/,
-        );
-        assert.equal(ran, 0);
-        assert.equal(runner.post({ probe: "one" }).scriptType, "RESTlet");
       });
     });
 
@@ -2950,7 +2948,7 @@ describe("Suitelet probes", () => {
       withProbe(p, `${suitelet}\n * @param id ^[0-9]+$`, "page");
       assert.equal(cli(p, ["deploy"]).status, 0);
       return (runtime: unknown) =>
-        load<Host>(calls(p).suitelet.join(""), runtime, { run });
+        loadHost<Host>(calls(p).suitelet.join(""), runtime, { run });
     };
     /** Calls the host with a fake server response that records every call it gets, in order. */
     const serve = (
@@ -3093,7 +3091,7 @@ describe("Suitelet probes", () => {
           probeSource([suitelet, ...two].map((l) => ` * ${l}`).join("\n")),
         );
         assert.equal(cli(p, ["deploy"]).status, 0);
-        return load<Host>(
+        return loadHost<Host>(
           calls(p).suitelet.join(""),
           {
             ...sandbox,
@@ -3137,7 +3135,7 @@ describe("Suitelet probes", () => {
           probeSource(` * ${suitelet}\n * ${two[0]}`),
         );
         assert.equal(cli(p, ["deploy"]).status, 0);
-        const host = load<Host>(
+        const host = loadHost<Host>(
           calls(p).suitelet.join(""),
           {
             ...sandbox,
@@ -3182,7 +3180,7 @@ describe("Suitelet probes", () => {
       it("takes its slot from the deployment id, never from the role id", () => {
         const p = project();
         const host = hostAs(p, 0);
-        const lying = load<Host>(
+        const lying = loadHost<Host>(
           calls(p).suitelet.join(""),
           {
             ...sandbox,
@@ -3808,7 +3806,7 @@ describe("the self-check", () => {
     const ask = (source: string, runtime: unknown) => {
       const written: string[] = [];
       let ran = 0;
-      load<{ onRequest: (c: unknown) => void }>(source, runtime, {
+      loadHost<{ onRequest: (c: unknown) => void }>(source, runtime, {
         run: () => ran++,
       }).onRequest({
         request: { method: "GET", parameters: { selfCheck: "1" } },

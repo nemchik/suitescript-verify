@@ -152,7 +152,7 @@ function buildRunner(config: Config, deployed: boolean) {
   for (const { id, legacy } of built.replacedRunners) {
     console.warn(
       legacy
-        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}, but first delete customrole_*.xml, customscript_*_rl.xml and customscript_*_sl.xml from ${objectsDir(config)}, or 1.x cannot build the folder. See the README's "Upgrading from 1.x".`
+        ? `This folder held a suitescript-verify 1.x runner for the id "${id}" (customscript_${id}_runner), which may still be deployed in the sandbox. To turn it off, run cleanup --approved with suitescript-verify 1.x and ${runnerIdKey}=${id}, but first delete customrole_*.xml, customscript_*_rl.xml, customscript_*_sl.xml and customscript_*_rh.xml from ${objectsDir(config)}, or 1.x cannot build the folder. See the README's "Upgrading from 1.x".`
         : `This folder held a runner for the id "${id}", which may still be deployed in the sandbox. To turn it off, run cleanup with ${runnerIdKey}=${id}, then switch back.`,
     );
   }
@@ -162,10 +162,16 @@ function buildRunner(config: Config, deployed: boolean) {
 /** Generates the runner with its deployments on and says what a deploy uploads. Sends nothing. */
 function prepareDeploy(config: Config) {
   requireSandbox(config);
-  const { files, slugs, suiteletSlugs } = buildRunner(config, true);
+  const { files, restletHostSlugs, slugs, suiteletSlugs } = buildRunner(
+    config,
+    true,
+  );
   console.log(`Probes in the runner: ${slugs.join(", ") || "(none)"}`);
   console.log(
     `Probes in the Suitelet host: ${suiteletSlugs.join(", ") || "(none)"}`,
+  );
+  console.log(
+    `Probes in the RESTlet host: ${restletHostSlugs.join(", ") || "(none)"}`,
   );
   console.log(`Files to upload: ${files.join(", ")}`);
 }
@@ -193,11 +199,11 @@ async function cleanup(args: string[]): Promise<number> {
   if (approved) {
     await confirmWrite(
       "CLEANUP",
-      "This turns the runner's and the Suitelet host's deployments off",
+      "This turns the runner's, the Suitelet host's and the RESTlet host's deployments off",
     );
   } else {
     console.log(
-      "Dry run only. This turns the runner's and the Suitelet host's deployments off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
+      "Dry run only. This turns the runner's, the Suitelet host's and the RESTlet host's deployments off in the sandbox, so ask the user for approval, then rerun with --approved.\nTo remove access entirely, the user revokes the certificate mapping (Setup > Integration > Manage Authentication > OAuth 2.0 Client Credentials (M2M) Setup).",
     );
   }
   buildRunner(config, false);

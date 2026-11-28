@@ -11,3 +11,5 @@ The runner's role is an SDF object in the generated project, so every deploy rew
 ## Consequences
 
 Setup relies on SDF replacing a hand-made role whose script id matches, which Oracle states for custom objects in general but was not tested for roles when this was decided; the first sandbox run of 2.0 confirms it, or setup falls back to the second trip. `cleanup` leaves the role in place, since deactivating it would break its token mapping.
+
+ADR 0005 replaces the rule that the role carries the permissions probes declare: from 3.0 the runner's role keeps only the token-login permissions, and probes run under execution roles.

@@ -20,11 +20,11 @@ _Avoid_: Second runner, probe Suitelet
 The script host for Suitelet probes.
 
 **Writing probe**:
-A probe that declares a permission level above VIEW, or `@writes` for a write that no permission shows. Only a writing probe is meant to change anything in the sandbox, and the person accepts writing probes when they deploy. The guardrails stop most other changes, not all of them (saving a search needs no more than VIEW).
+A probe that declares it may change the sandbox. The person accepts writing probes when they deploy.
 _Avoid_: Write test, unsafe probe
 
 **Runner's role**:
-The role the runner's token logs in with. It holds only what logging in needs and never a probe's permissions.
+The role the runner's token logs in with. It holds what logging in and calling the runner need, plus what NetSuite gives every role, and never a probe's permissions.
 
 **Execution role**:
 A role the deploy writes for one set of permissions that probes declare. Every probe declaring exactly that set runs under it, and no token ever logs in with it.
@@ -35,7 +35,7 @@ The runner's reserved, read-only answer about its own deployment: whether the ac
 _Avoid_: Probe-zero, health check
 
 **Scratch area**:
-The custom record type and File Cabinet folder the verification package owns in a sandbox, one of each per runner, where writing probes keep what they create so that it can be cleaned up.
+The place in the sandbox, owned by the package, where writing probes keep what they create so that it can be cleaned up.
 _Avoid_: Test data, sandbox folder
 
 **Results page**:

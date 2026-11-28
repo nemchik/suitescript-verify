@@ -24,7 +24,7 @@ A probe that declares it may change the sandbox. The person accepts writing prob
 _Avoid_: Write test, unsafe probe
 
 **Runner's role**:
-The role the runner's token logs in with. It holds what logging in and calling the runner need, plus what NetSuite gives every role, and never a probe's permissions.
+The role the runner's token logs in with. It holds what logging in and calling the runner need, plus Other Addresses, which NetSuite adds. From 3.0 it never holds a probe's permissions.
 
 **Execution role**:
 A role the deploy writes for one set of permissions that probes declare. Every probe declaring exactly that set runs under it, and no token ever logs in with it.
